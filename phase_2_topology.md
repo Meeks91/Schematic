@@ -5,11 +5,11 @@
 > - `schematic phase sign-off --schematic <name> 2` — on user `y`.
 > - `schematic phase complete --schematic <name> 2` — immediately after sign-off.
 
-Define what each class OWNS — produce Class ACs. Write to `<schematic_dir>/objective.md` §2. Max 3 classes per gate.
+Define what each class OWNS — produce Class ACs. Write the Component Summary to `<schematic_dir>/components/_overview.md` (NOT objective.md — that stays human-only). Max 3 classes per gate.
 
 ## Component Card Format (BINDING — every class)
 
-Every class is presented as a **boxed card**. The box surfaces the same surfaces every time so the user can scan a card cold and immediately see (1) what changes, (2) why, (3) what the class does, (4) where it fails loud. Apply the same shape to the in-chat presentation AND the on-disk `objective.md` block.
+Every class is presented as a **boxed card**. The box surfaces the same surfaces every time so the user can scan a card cold and immediately see (1) what changes, (2) why, (3) what the class does, (4) where it fails loud. Apply the same shape to the in-chat presentation AND the on-disk `components/_overview.md` block.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐

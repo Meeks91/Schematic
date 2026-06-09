@@ -141,7 +141,7 @@ AC TRACEABILITY MATRIX
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Feature AC-1: <title>  (objective.md)
-  └── Class AC: <ClassName> — <responsibility>  (objective.md component summary)
+  └── Class AC: <ClassName> — <responsibility>  (components/_overview.md component summary)
        └── Behaviour: <method> — <title>  (components/<class>.md)
             └── test_<name>  (components/<class>.md)
 

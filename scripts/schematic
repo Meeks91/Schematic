@@ -139,7 +139,7 @@ def parse_feature_acs(objective_md: Path) -> list[str]:
         return []
     text = objective_md.read_text()
     section_match = re.search(
-        r"## Feature Change List.*?(?=^## |\Z)",
+        r"## (?:Functional ACs|Feature Change List).*?(?=^## |\Z)",
         text,
         re.MULTILINE | re.DOTALL,
     )
@@ -149,19 +149,24 @@ def parse_feature_acs(objective_md: Path) -> list[str]:
 
 
 def parse_component_names(objective_md: Path) -> list[str]:
-    if not objective_md.exists():
-        return []
-    text = objective_md.read_text()
-    section_match = re.search(
-        r"## Component Summary.*?(?=^## |\Z)",
-        text,
-        re.MULTILINE | re.DOTALL,
-    )
-    if not section_match:
-        return []
-    table_names = re.findall(r"\|\s*\d+\.\d+\s*\|\s*(\w+)\s*\|", section_match.group(0))
-    block_names = re.findall(r"^###\s+\d+\.\d+\s+(\w+)", section_match.group(0), re.MULTILINE)
-    return table_names + block_names
+    # Component Summary lives in components/_overview.md; older bundles kept it in objective.md.
+    overview_md = objective_md.parent / "components" / "_overview.md"
+    for source in (overview_md, objective_md):
+        if not source.exists():
+            continue
+        section_match = re.search(
+            r"## Component Summary.*?(?=^## |\Z)",
+            source.read_text(),
+            re.MULTILINE | re.DOTALL,
+        )
+        if not section_match:
+            continue
+        table_names = re.findall(r"\|\s*\d+\.\d+\s*\|\s*(\w+)\s*\|", section_match.group(0))
+        block_names = re.findall(r"^###\s+\d+\.\d+\s+(\w+)", section_match.group(0), re.MULTILINE)
+        names = table_names + block_names
+        if names:
+            return names
+    return []
 
 
 def update_task_status_in_file(tasks_md: Path, tag: str, new_status: str) -> None:
@@ -212,13 +217,16 @@ Context:
 Objective:
   -
 
-## Feature Change List + Feature ACs
+## Purpose
+
+## Core Summary
+
+## Functional ACs
 Part of change set:
 
-## Component Summary
+## Key Findings
 
-| # | Class | Type | Class AC (responsibility) | Necessitated by |
-|---|---|---|---|---|
+## Decision Log
 
 ## Directory Structure
 ```
@@ -229,6 +237,11 @@ tests/
 
 _OVERVIEW_STUB = """\
 # Components Overview
+
+## Component Summary
+
+| # | Class | Type | Class AC (responsibility) | Necessitated by |
+|---|---|---|---|---|
 
 ## Injection DAG
 > Authoritative: ../dag.mmd (when >8 nodes)
@@ -364,7 +377,7 @@ def _validate_schematic(schematic_dir: Path) -> list[str]:
 
     objective_md = schematic_dir / "objective.md"
     if objective_md.exists() and not parse_feature_acs(objective_md):
-        findings.append("objective.md — no Feature ACs found in Feature Change List section")
+        findings.append("objective.md — no Feature ACs found in Functional ACs section")
 
     for task in tasks:
         state_task = state.get("tasks", {}).get(task["tag"])

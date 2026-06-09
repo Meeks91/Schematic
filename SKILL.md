@@ -71,7 +71,7 @@ The output of this skill is a **multi-file engineering blueprint** — a design 
 **Bundle directory layout:**
 ```
 docs/schematics/<feature_name>/
-├── objective.md                    ← human-readable frame (context, Feature ACs, component summary, directory)
+├── objective.md                    ← human frame (context, objective, purpose, core summary, functional ACs, key findings, decision log, directory)
 ├── research/
 │   ├── <investigation>.md          ← analysis artifacts (field mappings, comparisons, gap analysis)
 │   └── traces/
@@ -91,11 +91,11 @@ docs/schematics/<feature_name>/
 
 | File | Purpose | Audience |
 |---|---|---|
-| `objective.md` | Scope, intent, Feature ACs, component summary table, directory structure | Human — "what and why" in 2 minutes |
+| `objective.md` | Context, objective, purpose, core summary, functional ACs, key findings, decision log, directory structure | Human — "what and why" in 2 minutes |
 | `research/<name>.md` | Investigation artifacts — field mappings, schema comparisons, gap analysis | Human — "what we learned" |
 | `research/traces/<name>/` | End-to-end flow trace through existing code (see `track_subskill.md`) | Human + Agent — "how the existing system works" |
 | `components/<class>.md` | Full contract per class — self-contained, no cross-file dependency needed | Human + Agent — "how, exactly" |
-| `components/_overview.md` | Cross-cutting views: DAG text, sequence ASCII, traceability matrix, integration | Human + Agent — "how it all wires together" |
+| `components/_overview.md` | Component summary table + cross-cutting views: DAG text, sequence ASCII, traceability matrix, integration | Human + Agent — "how it all wires together" |
 | `tasks.md` | One task per class, references component files by name | Agent — "do this" |
 | `dag.mmd` | Mermaid injection DAG (authoritative when >8 nodes) | Visual tool rendering |
 | `sequence.mmd` | Mermaid sequence diagram | Visual tool rendering |
@@ -104,9 +104,10 @@ docs/schematics/<feature_name>/
 
 | Phase | Writes to |
 |---|---|
-| 1: Context, Objective, Feature ACs | `objective.md` + `research/*.md` (investigations) |
+| 1: Context, Objective, Purpose, Core Summary, Functional ACs | `objective.md` + `research/*.md` (investigations) |
+| 1: Key Findings (from research/session) + Decision Log | `objective.md` |
 | 1: Traces (optional, on request) | `research/traces/<name>/` |
-| 2: Topology (class summary + Class ACs) | `objective.md` (summary table) |
+| 2: Topology (class summary + Class ACs) | `components/_overview.md` (summary table) |
 | 3: Directory structure | `objective.md` |
 | 4: Contracts, models, Function ACs, tests | `components/<class>.md` (one per class) |
 | 4 end: Traceability matrix | `components/_overview.md` |
@@ -265,7 +266,7 @@ schematic phase complete --schematic <name> <N>
 > **The smaller cap wins.** If 3 classes blow past 120 lines, present fewer — one or two — and split. If 3 items fit in 60 lines, that's fine, present them.
 >
 > Applies to **every** list the user is asked to confirm:
-> - Phase 1b Feature Change List entries
+> - Phase 1b Functional ACs entries
 > - Phase 2 topology blocks (classes)
 > - Phase 4 contract blocks (classes)
 > - Phase 7 **task graph** overview (the grouped dependency tables — gated once). The detailed task blocks beneath it are NOT gated: they are auto-written in one pass because every AC/contract/test they cite was already locked in Phases 1–6 (see `phase_7_tasks.md`).
@@ -381,43 +382,42 @@ Necessitated by: 4.A — selector picks top-K reels for an enrichment run
 
 ### objective.md
 
+The clean human-facing doc — a reader understands **what is being done and why** without opening another file. Component-level detail (per-class contracts, DAG, sequence) lives in `components/<class>.md` and `components/_overview.md`.
+
 ```markdown
 # <Feature Name>
 
 ## Context & Objective                                [Phase 1]
 Context:
-  - bullet list of existing system state, smells, downstream consumers
+  - existing system state, smells, downstream consumers
 Objective:
   - one-line session deliverable
 
-## Feature Change List + Feature ACs                  [Phase 1]
+## Purpose                                            [Phase 1]
+Why this change exists — the problem solved and the value delivered, in 2-4
+lines of plain English. No component detail.
+
+## Core Summary                                       [Phase 1, refined]
+The whole change in one read: what is being built and why, the solution shape
+at a glance. Component-level detail lives in components/<class>.md and
+components/_overview.md — link, don't restate.
+
+## Functional ACs                                     [Phase 1]
 Part of change set: <2-line umbrella description>
 
 ### N. <Feature heading>
     Class: <ClassName(s)>
     - N.A — <Title>. <What>. *Why:* <reason>
 
-## Component Summary                                  [Phase 2]
-For ≤6 classes, use a table (one-line bullet collapsed for compactness):
+## Key Findings                                       [Phase 1 · research]
+What investigation surfaced that shaped the design — from research/*.md,
+traces, and session exploration. One bullet per finding, with its source.
+  - <finding> (see research/<name>.md)
 
-| # | Class | Type | Class AC (responsibility) | Necessitated by |
-|---|---|---|---|---|
-| 3.1 | EffectsLinker | NounVerber | Links raw effects to brinson containers | 1.A — conviction-aware rollup, 1.B — followed/notFollowed split |
-
-For >6 classes, OR when bullet-format ACs run multi-line, use the block form below
-(same as the Phase 2 gate format — preserve the bullets, do not collapse them):
-
-```
-### 3.1  EffectsLinker  (NEW)
-    Type: NounVerber
-    Necessitated by:
-      - 1.A — provides the linkage step required by the conviction-aware brinson rollup
-      - 1.B — populates the followed/notFollowed split that downstream reports consume
-    Responsibility (Class AC):
-      - Links raw effects to followed/notFollowed brinson containers
-      - Resolves conviction-split allocation values per partition
-      - Never: produces new effect models — read-only transformation
-```
+## Decision Log                                       [Phase 1 → all phases]
+Strategic, functional-level decisions taken during planning — the forks we
+chose and why. Appended as decisions are made.
+  - <decision>. *Why:* <rationale>. *Alternatives:* <what was rejected>
 
 ## Directory Structure                                [Phase 3]
 src/ file tree with per-file annotation (NEW | MODIFIED | DELETED)
@@ -432,6 +432,14 @@ See Contract Block Format in `phase_4_contracts_and_tests.md` for the full templ
 
 ```markdown
 # Components Overview
+
+## Component Summary                                  [Phase 2]
+For ≤6 classes use a table; for >6 (or multi-line ACs) use the Phase 2 block
+form (preserve the bullets, don't collapse — see `phase_2_topology.md`).
+
+| # | Class | Type | Class AC (responsibility) | Necessitated by |
+|---|---|---|---|---|
+| 3.1 | EffectsLinker | NounVerber | Links raw effects to brinson containers | 1.A — conviction-aware rollup, 1.B — followed/notFollowed split |
 
 ## Injection DAG                                      [Phase 5]
 > Authoritative: ../dag.mmd (when >8 nodes)
@@ -487,7 +495,7 @@ When a design change occurs mid-session (user feedback, discovered constraint, r
 │                                 │ components/_overview.md (traceability matrix)    │
 │                                 │ tasks.md (Feature AC refs on affected tasks)     │
 ├─────────────────────────────────┼──────────────────────────────────────────────────┤
-│ Class added/removed/renamed     │ objective.md (component summary table + dir)     │
+│ Class added/removed/renamed     │ _overview.md (summary table); objective.md (dir) │
 │                                 │ components/<class>.md (create/delete/rename)      │
 │                                 │ components/_overview.md (DAG, sequence, matrix)  │
 │                                 │ tasks.md (add/remove/rename task)                │

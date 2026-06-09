@@ -12,7 +12,7 @@ Write all tasks to `<schematic_dir>/tasks.md`.
 Each task must be self-contained enough for a cold-start agent. Each task includes:
 
 - **Feature ACs** it satisfies (by number from `objective.md`)
-- **Class AC** (from `objective.md` component summary)
+- **Class AC** (from `components/_overview.md` component summary)
 - **Function ACs** (from `components/<class>.md`)
 - **Constructor dependencies** (from `components/<class>.md`)
 - **Integration point** (from `components/_overview.md`)

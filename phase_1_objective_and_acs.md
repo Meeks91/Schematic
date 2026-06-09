@@ -8,7 +8,7 @@
 
 The goal of this phase is to reach a **shared, precise understanding of what is being built and why** — producing Feature ACs.
 
-This phase writes to `<schematic_dir>/objective.md` §1 (Context, Objective) and §1b (Feature Change List + Feature ACs).
+This phase writes the human frame of `<schematic_dir>/objective.md`: Context & Objective, Purpose, Core Summary, Functional ACs (the Feature Change List below), Key Findings, and Decision Log. Component-level detail is NOT written here — it lands in `components/` from Phase 2 on.
 
 ## Phase 1 entry — branch by session state
 
@@ -80,6 +80,19 @@ Rules:
 2. Record: `schematic phase audit --schematic <name> 1 "clean" | "<findings>"`
 
 **Confirm: y/comment**
+
+---
+
+## Phase 1c — Human frame (Purpose · Core Summary · Key Findings · Decision Log)
+
+Alongside the change list, populate the remaining human-facing sections of `objective.md` so a reader understands the change without opening another file:
+
+- **Purpose** — why this change exists: the problem solved and value delivered, 2-4 lines, plain English, no component detail.
+- **Core Summary** — the whole change in one read: what is being built and why, the solution shape at a glance. Link to `components/` for detail; never restate it here.
+- **Key Findings** — what investigation surfaced that shaped the design, drawn from `research/*.md`, traces, and session exploration. One bullet per finding, each citing its source.
+- **Decision Log** — strategic, functional-level decisions taken during planning (the forks chosen and why, with alternatives rejected). Seed it here and append in later phases as decisions are made.
+
+Written on the same Phase 1 lock as the change list. The Decision Log stays live across all phases.
 
 ---
 

@@ -116,11 +116,20 @@ class OverviewHandler(BaseHTTPRequestHandler):
             bridge_script = Path(__file__).parent.parent / "reference" / "mermaid_edit" / "bridge.py"
             proc = subprocess.Popen(
                 ["python3", str(bridge_script), str(diagram_path), "--no-browser"],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             )
             _time.sleep(2)
             line = (proc.stdout.readline().decode().strip() if proc.stdout else "")
             url = line.split(": ", 1)[1] if ": " in line else ""
+
+            def _drain_stdout(pipe):
+                try:
+                    for _ in pipe:
+                        pass
+                except (BrokenPipeError, OSError):
+                    pass
+
+            threading.Thread(target=_drain_stdout, args=(proc.stdout,), daemon=True).start()
             self._respond(json.dumps({"url": url, "pid": proc.pid}), "application/json")
             return
 

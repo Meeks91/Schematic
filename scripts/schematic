@@ -20,6 +20,8 @@ TASK_STATUS_REVIEW = "review"
 TASK_STATUS_COMPLETE = "complete"
 VALID_TASK_STATUSES = {TASK_STATUS_PENDING, TASK_STATUS_IN_PROGRESS, TASK_STATUS_REVIEW, TASK_STATUS_COMPLETE}
 
+REVIEW_MODEL = "sonnet"  # task reviews run on Sonnet — scoped + cheap, not the session's planning model
+
 VALID_PHASES = set(range(1, 8))
 PHASES_REQUIRING_AUDIT = {1, 2, 4, 6, 7}
 PHASE_STATUS_LOCKED = "locked"
@@ -722,27 +724,35 @@ def _task_status(args: argparse.Namespace) -> None:
 
 
 def _dispatch_review_agent(schematic_dir: Path, tag: str, task: dict) -> None:
-    """Dispatch the code-review-agent to review task files and report back."""
+    """Dispatch a Sonnet review of the task's files against CLAUDE.md, scoped to avoid token blow-up."""
     import shutil
 
     claude_bin = shutil.which("claude")
-    if not claude_bin:
-        print("  ⚠ claude CLI not found on PATH — review must be run manually.")
-        print("  Run: claude '/code-review'\n")
-        return
-
     target = task.get("target", "unknown")
+    component_spec = task.get("component_file") or "the task's component spec"
 
     review_prompt = (
-        f"/code-review\n\n"
-        f"Focus on files related to task '{tag}' (target: {target}).\n"
-        f"After writing the review report, summarize findings as a note:\n"
-        f"  schematic task note {tag} \"<one-line summary of findings>\" --schematic {schematic_dir.name}\n"
-        f"If all lenses PASS, mark the task complete:\n"
-        f"  schematic task status {tag} complete --schematic {schematic_dir.name}\n"
+        f"Review ONLY the code written for task '{tag}' (target: {target}).\n"
+        f"Scope strictly to the source + test files implementing this target —\n"
+        f"read the component spec at {component_spec} to identify exactly which\n"
+        f"files those are. Do NOT review the whole repo or unrelated diffs; the\n"
+        f"scope is this one task, to keep the review token-bounded.\n\n"
+        f"PRIMARY lens: verify those files against the project's CLAUDE.md\n"
+        f"conventions (the ground-truth code standard — naming, suffixes, file\n"
+        f"layout, model placement, class size, typing, tests, cascading).\n"
+        f"If a /code-review skill is available in this project, also run it\n"
+        f"scoped to those same files and fold its findings in.\n"
+        f"Record findings as a note (do NOT complete the task — completion stays\n"
+        f"with the implementing agent via schematic-task-done):\n"
+        f"  schematic task note {tag} \"<one-line summary: PASS, or the findings>\" --schematic {schematic_dir.name}\n"
     )
 
-    review_cmd = [claude_bin, "-p", review_prompt]
+    if not claude_bin:
+        print("  ⚠ claude CLI not found on PATH — run the review manually:")
+        print(f"  claude -p --model {REVIEW_MODEL} '<scoped CLAUDE.md review of {target}>'\n")
+        return
+
+    review_cmd = [claude_bin, "-p", review_prompt, "--model", REVIEW_MODEL]
 
     try:
         proc = subprocess.Popen(
@@ -751,10 +761,9 @@ def _dispatch_review_agent(schematic_dir: Path, tag: str, task: dict) -> None:
             stderr=subprocess.PIPE,
             cwd=str(find_project_root()),
         )
-        print(f"  ✓ Code review agent dispatched (PID {proc.pid})")
-        print(f"  Agent runs 4 lenses: pristine code, architecture, test coverage, bugs")
-        print(f"  Report will be written to docs/reviews/code_review.md")
-        print(f"  Notes will be added to task {tag} on completion.\n")
+        print(f"  ✓ Review dispatched on {REVIEW_MODEL} (PID {proc.pid})")
+        print(f"  Scope: files implementing {target} (CLAUDE.md conventions + /code-review if available)")
+        print(f"  Findings will be recorded as a note on task {tag}.\n")
     except OSError as e:
         print(f"  ⚠ Failed to dispatch review agent: {e}")
 

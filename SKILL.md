@@ -35,6 +35,18 @@ description: Multi-phase feature planning skill. Grills the user to produce a fe
 
 > [!CAUTION]
 > ## CLAUDE.md is the GROUND TRUTH for code style. NON-NEGOTIABLE.
+>
+> Before any phase, proposal, directory tree, class name, file path, or "where should X live?" question:
+>
+> 1. **READ** the project's `CLAUDE.md` (root + nested) and the user's global `~/.claude/CLAUDE.md`.
+> 2. **APPLY** its coding conventions verbatim — naming, suffix vocabulary, file layout, model placement, service organisation, class size, comment policy, test conventions, cascading style.
+> 3. **QUOTE** the rule you are applying when you present the result. Cite it; do not paraphrase, do not "interpret".
+>
+> **These conventions OVERRIDE the schematic's own templates and examples when they conflict.** The skill shows you HOW to plan; CLAUDE.md tells you WHAT shape the plan must take.
+>
+> **Forbidden:** drawing a tree, naming a class, choosing a suffix, or asking "where should X go?" before reading CLAUDE.md. The answer is in there — quote the rule that applies.
+>
+> Applies to **every phase** — class names (P2), method signatures (P4), test naming (P4), task wording (P7).
 
 ## Purpose of this skill (binding — re-read at every phase boundary)
 
@@ -49,18 +61,6 @@ Every artifact carries its own reason for existing:
 - **Visual-first.** ASCII boxes, tables, diagrams over prose paragraphs. Prose hides drift; structure exposes it.
 
 If you find yourself writing a proposal without naming the AC it implements, STOP. The user has lost context — re-anchor before continuing.
->
-> Before any phase. Before any proposal. Before any directory tree, class name, file path, or "where should X live?" question:
->
-> 1. **READ** the project's `CLAUDE.md` (root + nested) and the user's global `~/.claude/CLAUDE.md`.
-> 2. **APPLY** its coding conventions verbatim — naming, suffix vocabulary, file layout, model placement, service organisation, class size, comment policy, test conventions, cascading style.
-> 3. **QUOTE** the rule you are applying when you present the result. If the rule is in CLAUDE.md, cite it. Do not paraphrase. Do not "interpret".
->
-> **These conventions OVERRIDE the schematic's own templates and examples when they conflict.** The skill shows you HOW to plan; CLAUDE.md tells you WHAT shape the plan must take.
->
-> **Forbidden:** drawing a tree, naming a class, choosing a suffix, or asking "where should X go?" before reading CLAUDE.md. The answer is in there — quote the rule that applies.
->
-> This applies to **every phase** — class names (P2), method signatures (P4), test naming (P4), task wording (P7) — all bound by CLAUDE.md.
 
 ---
 
@@ -244,10 +244,6 @@ Written this phase:
 Confirm: y/comment
 ```
 
-**Two distinct gates:** "Proceed?" `y` starts work. `Confirm: y/comment` `y` advances the phase. Never conflate them.
-
-Write to disk freely — for large artifacts (DAGs, diagrams), writing first lets the user review on disk. Hard rule: **never advance without `Confirm: y/comment` + matching reply**.
-
 **On the user's `y` reply, immediately record both sign-off and completion via the CLI before starting the next phase:**
 
 ```
@@ -275,9 +271,7 @@ schematic phase complete --schematic <name> <N>
 > - Phase 7 **task graph** overview (the grouped dependency tables — gated once). The detailed task blocks beneath it are NOT gated: they are auto-written in one pass because every AC/contract/test they cite was already locked in Phases 1–6 (see `phase_7_tasks.md`).
 > - Any other gated list
 >
-> **Disk is separate.** The 120-line cap is for the chat message. Files on disk (`objective.md`, `components/<class>.md`) are as long as they need to be. For **contract cards**, the chat render IS the full card, identical to disk — fit the cap by presenting fewer cards, not by shrinking the card. For **large non-card artifacts** (DAGs, sequence diagrams, `objective.md` prose), summarise + link to the file rather than dumping it.
->
-> **The in-chat card is ALWAYS the full locked Contract Card Format — never a degraded/summarised/prose variant.** There is exactly one chat presentation: the same card written to disk. If full cards would exceed 120 lines, **present fewer cards per gate — down to one** — and split across gates. NEVER invent a shrunken form (signature-only lists, prose bullets, "summary + link"). One card too dense to fit 120 lines on its own is rendered alone, in full. Reducing the item count is the ONLY lever; the card's fidelity is fixed.
+> **Disk is separate.** The 120-line cap is for the chat message; files on disk (`objective.md`, `components/<class>.md`) are as long as needed. For **contract cards**, the chat render IS the full card, identical to disk — fit the cap by presenting fewer cards (down to one, split across gates), NEVER by shrinking into a summary / signature-list / prose variant. Reducing item count is the only lever; card fidelity is fixed. For **large non-card artifacts** (DAGs, sequence diagrams, `objective.md` prose), summarise + link to the file rather than dumping it.
 
 Why: 3 items = a frame the user can hold; 120 lines = one reviewable screen. Sub-items (1.A, 1.B, 1.C) count toward their parent — but if a single parent has >5 sub-items, split it.
 

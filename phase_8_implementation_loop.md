@@ -3,14 +3,18 @@
 Phase 7 produces `tasks.md`. Phase 8 is the loop that executes each task.
 
 The schematic is the contract; the sketch loop in `~/.claude/CLAUDE.md`
-(Plan→Sketch→Confirm→Implement) is the delivery mechanism. The two clauses
-in this phase exist to keep that delivery honest:
+(Plan→Sketch→Confirm→Implement) is the delivery mechanism. Three clauses
+in this phase keep that delivery honest:
 
 1. **Cross-cutting concerns must be read before implementing.** Component
    files are self-contained for shape but reference `_overview.md` for the
    *why* behind atomicity, FK invariants, security boundaries, and other
    cross-cutting concerns. Read it before touching code.
-2. **Completion is reported through the CLI, not narrated free-text.** The
+2. **Implemented code passes a standards review before it can complete.**
+   Moving a task to `review` dispatches a code-standards review of the
+   written code against CLAUDE.md (see "Review gate" below). Findings are
+   resolved before completion — no task goes straight from code to done.
+3. **Completion is reported through the CLI, not narrated free-text.** The
    CLI forces an explicit answer on whether implementation matched the
    schematic and (if not) whether the schematic was patched to reflect
    reality. No silent "done" allowed.
@@ -36,13 +40,54 @@ For each task in `tasks.md`, in order:
    NO AUTO-IMPLEMENTATION. The sketch gate is mandatory regardless of how
    small or mechanical the task appears.
 4. Run tests (the new tests for this class AND the full suite at milestones)
-5. Mark task complete via the CLI:
+5. Move the task to REVIEW — this dispatches the code-standards review:
+       schematic task status <tag> review --schematic <name>
+   See "Review gate" below. The task CANNOT complete until the review is clean.
+6. Resolve review findings: address every note the review agent leaves, then
+   re-run tests. Re-trigger step 5 if you changed code.
+7. Mark task complete via the CLI (drift report) once the review is clean:
        schematic-task-done <tag> --matched [y|n] --updated [y|n]
-6. Move to next task
+8. Move to next task
 ```
 
-Step 5 is binding. Marking a task complete by any other mechanism (editing
-tasks.md directly, narrating "✓ done" without running the CLI) is forbidden.
+Steps 5 and 7 are binding. Completing a task that never passed through `review`,
+or by any mechanism other than the CLI (editing tasks.md directly, narrating
+"✓ done"), is forbidden.
+
+---
+
+## Review gate (Step 5 — standards verification)
+
+Moving a task to `review` is the gate between "code written" and "task done".
+It exists to verify the **written code adheres to CLAUDE.md** before it locks.
+
+```
+schematic task status <tag> review --schematic <name>
+```
+
+On that transition the CLI dispatches a review (`claude -p --model sonnet`)
+**scoped strictly to the files implementing this one task** — derived from the
+task's component spec — so the review never re-reads the whole repo and stays
+token-bounded. Its **primary lens is the project's CLAUDE.md conventions**; if a
+`/code-review` skill is present, it runs that too and folds the findings in. The
+review runs on Sonnet (scoped + cheap), not the session's planning model.
+
+Protocol:
+
+1. **Dispatch** — `task status <tag> review` records a `review_request` and
+   spawns the review agent. If `claude` is not on PATH, the CLI prints the
+   review prompt for manual execution — run it yourself, do not skip it.
+2. **Findings land as notes** — the review agent records each finding via
+   `schematic task note <tag> "<finding>"`. The agent does **not** self-complete
+   the task; completion stays with the implementing agent + drift report.
+3. **Resolve** — fix every finding through the normal sketch loop, re-run
+   tests, and re-dispatch `task status <tag> review` if code changed.
+4. **Complete** — only once the review is clean, run `schematic-task-done`
+   (below). A `review` task legally transitions to `complete`; it may also
+   return to `in_progress` if findings require substantial rework.
+
+The review gate verifies standards; `schematic-task-done` records schematic
+drift. Both run — neither replaces the other.
 
 ---
 

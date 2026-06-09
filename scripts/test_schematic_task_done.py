@@ -61,6 +61,15 @@ _TASKS_FIXTURE_NO_STATUS = """# Tasks
 Feature ACs: 5.A
 """
 
+_TASKS_FIXTURE_IN_REVIEW = """# Tasks
+
+## f.2 | Create | ReviewedService
+Status: review
+
+Feature ACs: 6.A
+Class AC: passes standards review before completion
+"""
+
 
 def _write_tasks_file(tmp_path: Path, content: str) -> Path:
     tasks_file = tmp_path / "tasks.md"
@@ -187,6 +196,34 @@ class TestSchematicTaskDoneAppendsDivergenceOnNotMatched:
         updated_content = tasks_file.read_text()
         assert "Status: complete" in updated_content
         assert "Divergence: bridged-not-patched" in updated_content
+
+
+class TestSchematicTaskDoneCompletesReviewStatusTask:
+
+    def test_marks_complete_when_task_in_review_status(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # Given
+        tasks_file = _write_tasks_file(
+            tmp_path=tmp_path,
+            content=_TASKS_FIXTURE_IN_REVIEW,
+        )
+
+        # When
+        result = _run_cli(
+            args=[
+                "f.2",
+                "--matched", "y",
+                "--updated", "y",
+                "--tasks-file", str(tasks_file),
+            ],
+        )
+
+        # Then
+        assert result.returncode == 0
+        updated_content = tasks_file.read_text()
+        assert "## f.2 | Create | ReviewedService\nStatus: complete" in updated_content
 
 
 class TestSchematicTaskDonePreservesFormatting:

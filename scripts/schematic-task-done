@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 
-_STATUS_PENDING_PATTERN = re.compile(r"^Status:[ \t]*(pending|in_progress|complete)[ \t]*$", re.MULTILINE)
+_STATUS_PENDING_PATTERN = re.compile(r"^Status:[ \t]*(pending|in_progress|review|complete)[ \t]*$", re.MULTILINE)
 _DIVERGENCE_LINE_PATTERN = re.compile(r"^Divergence:\s*.+$\n?", re.MULTILINE)
 
 _DIVERGENCE_PATCHED = "Divergence: patched-in-component-file"

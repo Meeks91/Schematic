@@ -6,7 +6,6 @@ the full schematic (objective, components, diagrams, tasks, trace).
 """
 
 import json
-import subprocess
 import threading
 import time
 import webbrowser
@@ -127,7 +126,9 @@ class OverviewHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/open":
             req = json.loads(raw)
-            result = open_in_ide(ide=req.get("ide", "code"), file_path=req.get("path", ""))
+            relative_path = req.get("path", "")
+            absolute_path = str((self.schematic_dir / relative_path).resolve()) if relative_path else ""
+            result = open_in_ide(ide=req.get("ide", "code"), file_path=absolute_path)
             if result == "access denied":
                 self._respond_error(403, "access denied")
             else:
@@ -248,19 +249,25 @@ class OverviewHandler(BaseHTTPRequestHandler):
 
     def _respond(self, content: str, content_type: str) -> None:
         body = content.encode(ENCODING)
-        self.send_response(200)
-        self.send_header("Content-Type", f"{content_type}; charset={ENCODING}")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", f"{content_type}; charset={ENCODING}")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except BrokenPipeError:
+            pass
 
     def _respond_error(self, code: int, msg: str) -> None:
         body = msg.encode(ENCODING)
-        self.send_response(code)
-        self.send_header("Content-Type", "text/plain")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except BrokenPipeError:
+            pass
 
     def log_message(self, format: str, *args: object) -> None:
         del format, args

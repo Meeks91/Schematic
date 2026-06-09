@@ -4,7 +4,7 @@ Every audit prompt MUST read this file first. The findings below have been raise
 
 ## Hard "do NOT flag" list
 
-1. **Missing `*,` in signatures.** Project CLAUDE.md explicitly bans `*,` because call sites already use kwargs. Schematic signatures show `def f(param: Type, ...) -> R` without the keyword-only marker.
+1. **Missing `*,` in signatures.** The styling standards explicitly ban `*,` because call sites already use kwargs. Schematic signatures show `def f(param: Type, ...) -> R` without the keyword-only marker.
 
 2. **Missing `self` in method signatures.** Schematic signatures show the caller-facing API. Implicit `self` is correct. Do NOT flag.
 

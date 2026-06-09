@@ -6,13 +6,13 @@ Quality gate for Phase 2. Read the freshly-locked classes from this gate (and th
 
 - `<schematic_dir>/objective.md` §2 (Topology — the locked-so-far class blocks)
 - `<schematic_dir>/components/*.md` (if any exist — for cross-reference orphan checks)
-- `/Users/micahsimmons/.claude/CLAUDE.md` (sections: Naming → **Class suffixes table**, Architecture, Service-Oriented)
+- The resolved `types` + `architecture` standards modules (see `../standards_resolution.md`; defaults: `~/.claude/skills/component-types/SKILL.md`, `~/.claude/skills/architecture-standards/SKILL.md`; bundled fallback: `../reference/component_types.md`)
 - `/Users/micahsimmons/.claude/skills/schematic/SKILL.md` (Phase 2 + Architecture Principles + Component Types)
 
 ## Checks (in order)
 
 ### 1. Class suffix vocabulary
-For every class in the gate, the suffix MUST be from CLAUDE.md's fixed vocabulary:
+For every class in the gate, the suffix MUST be from the resolved component-types vocabulary:
 - Allowed: `Service`, `PipelineService`, `RequestPipelineService`, `Controller`, `Router`, `Factory`, `Repository` (or `Repo`), `Validator`, `Resolver`, `Client`, `Manager`, `<Noun><Verb>er` (e.g. `Ranker`, `Parser`).
 - **Banned: `Loader`, `Reader`, `Writer`, `Helper`, `Handler`.**
 - Flag every banned suffix with the offending class name and propose a vocabulary-compliant alternative (often `Resolver` for what's labelled `Loader`).

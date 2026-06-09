@@ -1,6 +1,6 @@
 # Component Types
 
-When designing new components in Phase 2 (Topology), classify each class as one of these types. The class suffix MUST come from the CLAUDE.md fixed vocabulary.
+When designing new components in Phase 2 (Topology), classify each class as one of these types. The class suffix MUST come from the resolved `types` standards module (see `../standards_resolution.md` — e.g. a user's `component-types` skill); **this file is the bundled fallback vocabulary** used when no manifest resolves a `types` slot.
 
 ## Canonical types
 
@@ -21,7 +21,7 @@ When designing new components in Phase 2 (Topology), classify each class as one 
 
 ## Banned suffixes
 
-These suffixes are explicitly **forbidden** per CLAUDE.md:
+These suffixes are explicitly **forbidden** per the standards vocabulary:
 
 - `Loader` — use `Resolver` (a class that resolves a name to data) or absorb into a `Service`
 - `Reader` — same

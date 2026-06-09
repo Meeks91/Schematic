@@ -12,8 +12,9 @@ in this phase keep that delivery honest:
    cross-cutting concerns. Read it before touching code.
 2. **Implemented code passes a standards review before it can complete.**
    Moving a task to `review` dispatches a code-standards review of the
-   written code against CLAUDE.md (see "Review gate" below). Findings are
-   resolved before completion — no task goes straight from code to done.
+   written code against the resolved standards modules (see "Review gate"
+   below). Findings are resolved before completion — no task goes straight
+   from code to done.
 3. **Completion is reported through the CLI, not narrated free-text.** The
    CLI forces an explicit answer on whether implementation matched the
    schematic and (if not) whether the schematic was patched to reflect
@@ -59,7 +60,7 @@ or by any mechanism other than the CLI (editing tasks.md directly, narrating
 ## Review gate (Step 5 — standards verification)
 
 Moving a task to `review` is the gate between "code written" and "task done".
-It exists to verify the **written code adheres to CLAUDE.md** before it locks.
+It exists to verify the **written code adheres to the resolved standards** before it locks.
 
 ```
 schematic task status <tag> review --schematic <name>
@@ -68,7 +69,8 @@ schematic task status <tag> review --schematic <name>
 On that transition the CLI dispatches a review (`claude -p --model sonnet`)
 **scoped strictly to the files implementing this one task** — derived from the
 task's component spec — so the review never re-reads the whole repo and stays
-token-bounded. Its **primary lens is the project's CLAUDE.md conventions**; if a
+token-bounded. Its **primary lens is the resolved standards modules** (styling + testing for the
+task's language, plus the project's CLAUDE.md); if a
 `/code-review` skill is present, it runs that too and folds the findings in. The
 review runs on Sonnet (scoped + cheap), not the session's planning model.
 

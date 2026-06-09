@@ -5,7 +5,7 @@ You are a quality gate for the schematic skill. Read the freshly-locked Phase 1 
 ## Files to read
 
 - `<schematic_dir>/objective.md` §1 + §1b (Context, Objective, Feature Change List, Feature ACs)
-- `/Users/micahsimmons/.claude/CLAUDE.md` (sections: Workflow, Naming, Comments)
+- `~/.claude/CLAUDE.md` (Workflow, Universal Code Absolutes) + the resolved `styling` standards module for naming (see `../standards_resolution.md`)
 - `/Users/micahsimmons/.claude/skills/schematic/SKILL.md` (Phase 1 + Phase 1b sections)
 
 ## Checks (in order)

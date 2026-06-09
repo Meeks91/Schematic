@@ -1,6 +1,6 @@
 # Audit Hooks
 
-Audit hooks are background Sonnet agents dispatched at gate-end checkpoints. Their job is to catch violations of CLAUDE.md and the schematic skill's rules **before** the user locks the gate — when corrections are still cheap.
+Audit hooks are background Sonnet agents dispatched at gate-end checkpoints. Their job is to catch violations of the resolved standards modules (see `../standards_resolution.md`; project CLAUDE.md as legacy fallback) and the schematic skill's rules **before** the user locks the gate — when corrections are still cheap.
 
 > **Every audit prompt MUST instruct the agent to read these two shared files first:**
 > - `_precedence.md` — DO NOT FLAG list (confirmed non-issues)

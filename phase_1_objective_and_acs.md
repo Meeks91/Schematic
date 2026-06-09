@@ -105,7 +105,7 @@ After Feature ACs are signed off, explore the codebase and verify:
 - **Return conventions**: Are return types consistent with existing patterns?
 - **Integration fit**: Are the ACs compatible with how existing components actually work?
 
-Read CLAUDE.md and explore relevant existing code. If mismatches are found, flag them to the user before proceeding to Phase 2.
+Read the resolved standards modules (see `standards_resolution.md`) and explore relevant existing code. If mismatches are found, flag them to the user before proceeding to Phase 2.
 
 This is a consistency check, not a gate. The user may choose to deviate intentionally.
 

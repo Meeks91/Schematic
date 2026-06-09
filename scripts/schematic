@@ -11,6 +11,7 @@ from pathlib import Path
 # ── constants ──────────────────────────────────────────────────────────────────
 
 SCHEMATICS_BASE = "docs/schematics"
+STANDARDS_MANIFEST_RELPATH = ".claude/standards.json"
 ARCHIVE_SUBDIR = "_archive"
 STATE_FILENAME = ".schematic-state.json"
 
@@ -264,6 +265,17 @@ _DAG_STUB = "flowchart TD\n"
 _SEQUENCE_STUB = "sequenceDiagram\n"
 
 
+def _report_standards_manifest(project_root: Path) -> None:
+    repo_manifest = project_root / STANDARDS_MANIFEST_RELPATH
+    global_manifest = Path.home() / STANDARDS_MANIFEST_RELPATH
+    if repo_manifest.exists():
+        print(f"standards: {repo_manifest.relative_to(project_root)} (repo manifest)")
+    elif global_manifest.exists():
+        print(f"standards: {global_manifest} (global default — Phase 0 confirms + copies it to {STANDARDS_MANIFEST_RELPATH})")
+    else:
+        print("standards: NONE — run Phase 0 (standards_resolution.md) before Phase 1")
+
+
 def cmd_init(args: argparse.Namespace) -> None:
     root = find_project_root()
     schematic_dir = root / SCHEMATICS_BASE / args.name
@@ -286,6 +298,7 @@ def cmd_init(args: argparse.Namespace) -> None:
     for name in ["objective.md", "tasks.md", "dag.mmd", "sequence.mmd",
                  "components/_overview.md", "research/", STATE_FILENAME]:
         print(f"  {name}")
+    _report_standards_manifest(project_root=root)
 
 # ── status command ─────────────────────────────────────────────────────────────
 

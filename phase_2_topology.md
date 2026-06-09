@@ -80,7 +80,7 @@ Before locking any class as an internal helper (`utils/`, `repos/`, `resolvers/`
 | Question | Pass condition |
 |---|---|
 | Does this class own a coherent, nameable capability domain on its own (idempotency, taxonomy, scheduling, notifications, …)? | No → may be internal. **Yes → strong signal it is a Service.** |
-| Does any other existing or foreseeable Service need this class directly? | No → may be internal today. **Yes → promote now** (CLAUDE.md: "if needed by another service, promote"). |
+| Does any other existing or foreseeable Service need this class directly? | No → may be internal today. **Yes → promote now** (architecture standards: "if needed by another service, promote"). |
 
 **A class that answers Yes to either question is a Service candidate — flag it and get user sign-off.**
 

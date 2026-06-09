@@ -34,17 +34,18 @@ description: Multi-phase feature planning skill. Grills the user to produce a fe
 > CLI is the state of record.
 
 > [!CAUTION]
-> ## CLAUDE.md is the GROUND TRUTH for code style. NON-NEGOTIABLE.
+> ## RESOLVED STANDARDS are the GROUND TRUTH for code style. NON-NEGOTIABLE.
 >
 > Before any phase, proposal, directory tree, class name, file path, or "where should X live?" question:
 >
-> 1. **READ** the project's `CLAUDE.md` (root + nested) and the user's global `~/.claude/CLAUDE.md`.
-> 2. **APPLY** its coding conventions verbatim — naming, suffix vocabulary, file layout, model placement, service organisation, class size, comment policy, test conventions, cascading style.
-> 3. **QUOTE** the rule you are applying when you present the result. Cite it; do not paraphrase, do not "interpret".
+> 1. **RESOLVE** the standards manifest — repo `.claude/standards.json`, else `~/.claude/standards.json`, else the Phase 0 discovery/learn flow. Full protocol: `standards_resolution.md` (run at `schematic init`). Legacy fallback when no manifest exists: the project's `CLAUDE.md` (root + nested) + the user's `~/.claude/CLAUDE.md` ARE the standards.
+> 2. **READ** every resolved module the phase consumes (architecture / types / styling.<language> / testing — consumption table in `standards_resolution.md`), plus the project's `CLAUDE.md` (always — it overrides modules on conflict).
+> 3. **APPLY** the conventions verbatim — naming, suffix vocabulary, file layout, model placement, service organisation, class size, comment policy, test conventions, cascading style.
+> 4. **QUOTE** the rule you are applying — and its source module — when you present the result (`python-standards: "NEVER default parameters"`). Cite it; do not paraphrase, do not "interpret".
 >
-> **These conventions OVERRIDE the schematic's own templates and examples when they conflict.** The skill shows you HOW to plan; CLAUDE.md tells you WHAT shape the plan must take.
+> **These conventions OVERRIDE the schematic's own templates and examples when they conflict.** The skill shows you HOW to plan; the resolved standards tell you WHAT shape the plan must take.
 >
-> **Forbidden:** drawing a tree, naming a class, choosing a suffix, or asking "where should X go?" before reading CLAUDE.md. The answer is in there — quote the rule that applies.
+> **Forbidden:** drawing a tree, naming a class, choosing a suffix, or asking "where should X go?" before resolution has run. The answer is in the resolved modules — quote the rule that applies.
 >
 > Applies to **every phase** — class names (P2), method signatures (P4), test naming (P4), task wording (P7).
 
@@ -154,6 +155,7 @@ The traceability check at end of Phase 4 validates this pyramid is complete — 
 
 | Phase | File to Read at phase start |
 |---|---|
+| 0: Standards Resolution (at `schematic init`) | `standards_resolution.md` |
 | 1: Feature Spec + Feature ACs | `phase_1_objective_and_acs.md` |
 | 2: Topology (class responsibilities = Class ACs) | `phase_2_topology.md` |
 | 3: Directory Structure | `phase_3_directory.md` |

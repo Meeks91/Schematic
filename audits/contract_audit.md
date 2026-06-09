@@ -6,7 +6,7 @@ Quality gate for Phase 4. Read the freshly-locked component contract files from 
 
 - `<schematic_dir>/components/<class>.md` (one or more — the gate's locked contracts)
 - `<schematic_dir>/objective.md` (for Class AC cross-ref + Feature AC traceability)
-- `/Users/micahsimmons/.claude/CLAUDE.md` (sections: Code Standards, Typing STRICT, Naming, Python rules, Testing, Object-to-Object Comparison)
+- The resolved `styling.<language>` + `testing` standards modules (see `../standards_resolution.md`; defaults: `~/.claude/skills/python-standards/SKILL.md`, `~/.claude/skills/writing-tests/SKILL.md`)
 - `/Users/micahsimmons/.claude/skills/schematic/SKILL.md` (Phase 4 Contract Block Format, Function AC Definition, AC Hierarchy)
 
 ## Checks (in order)
@@ -23,10 +23,10 @@ Flag any Function AC with empty `Functionality:` or copy-pasted boilerplate.
 ### 2. Signature rigor
 - All param types fully specified — no bare `Any`.
 - Return types declared explicitly — no implicit `None` returns where a value flows.
-- Flag any default parameter values (CLAUDE.md: "NEVER default parameters — force callers to be explicit"). The ONLY exception: `conn: sa.Connection | None = None` for the transactional pass-through pattern.
+- Flag any default parameter values (styling standards: "NEVER default parameters — force callers to be explicit"). The ONLY exception: `conn: sa.Connection | None = None` for the transactional pass-through pattern.
 
 ### 3. Optional / Nullable return — flagged for sign-off
-Per CLAUDE.md "Optional fields on a dataclass are a smell" and the skill's Rules section: ANY `X | None` return type or model field MUST have an inline justification (one sentence). Flag any unjustified Optional.
+Per the styling standards' "Optional fields on a dataclass are a smell" and the skill's Rules section: ANY `X | None` return type or model field MUST have an inline justification (one sentence). Flag any unjustified Optional.
 
 ### 4. Swallowed exceptions — flagged for sign-off
 Any Function AC that mentions:
@@ -39,9 +39,9 @@ Any Function AC that mentions:
 MUST be flagged in the contract with `⚠️ USER SIGN-OFF REQUIRED` per the skill's Rules. Flag any swallowed exception without the sign-off marker.
 
 ### 5. AC Test naming + coverage
-- Test names follow `test_<method>_<outcome>_when/for/on_<condition>` (underscore-separated, lowercase; method prefix required; condition omitted only when unconditional). Flag CamelCase, missing method prefix, or vague names.
+- Test names follow `test_<outcome>_when/for/on_<condition>` (underscore-separated, lowercase; outcome-focused verb phrase, NO method-name prefix — the test class/file says what's under test; condition omitted only when unconditional). Flag CamelCase, method-name prefixes, or vague names.
 - Every Function AC has ≥1 AC Test. Flag uncovered ACs.
-- Each test name is unambiguous about method, outcome AND condition. Flag "test_method_works" or similar.
+- Each test name is unambiguous about outcome AND condition. Flag "test_works" or similar.
 
 ### 6. Model location
 - Public models live in `models.py` next to the consuming class.

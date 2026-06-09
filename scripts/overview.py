@@ -313,7 +313,9 @@ def launch_overview(schematic_dir: Path) -> None:
                     if len(questions) > seen_count:
                         for i in range(seen_count, len(questions)):
                             q = questions[i]
-                            text = q.get("text", "")
+                            thread = q.get("thread", [])
+                            user_msgs = [m["text"] for m in thread if m.get("role") == "user"]
+                            text = user_msgs[-1] if user_msgs else q.get("text", "")
                             if not text:
                                 continue
                             server_idx = q.get("idx", i)
@@ -328,6 +330,7 @@ def launch_overview(schematic_dir: Path) -> None:
                                     server_idx=server_idx,
                                     context=context,
                                     answers_path=answers_path,
+                                    history=thread,
                                 )
                         seen_count = len(questions)
             except (json.JSONDecodeError, KeyError):

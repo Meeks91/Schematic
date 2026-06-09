@@ -767,10 +767,10 @@ function openTaskModal(tag) {
     const taskBubble = new QABubble(bubbleContainer, {
       context: `task:${tag} — ${task.action} ${task.target}`,
       position: { x: 0, y: 0 },
-      onQuestion: async (text, ctx) => {
+      onQuestion: async (text, ctx, thread) => {
         const res = await fetch('/api/question', {
           method: 'POST',
-          body: JSON.stringify({ text, context: ctx, ts: new Date().toISOString(), type: 'question' }),
+          body: JSON.stringify({ text, context: ctx, thread, ts: new Date().toISOString(), type: 'question' }),
           headers: { 'Content-Type': 'application/json' }
         });
         const { idx: serverIdx } = await res.json();
@@ -853,8 +853,8 @@ gCtx.addEventListener('click', e => {
     new QABubble(document.body, {
       context: currentView,
       position: { x: gPos.x, y: gPos.y },
-      onQuestion: async (questionText, ctx) => {
-        const res = await fetch('/api/question', {method:'POST', body:JSON.stringify({text:questionText, context:ctx, ts:new Date().toISOString(), type:'question'}), headers:{'Content-Type':'application/json'}});
+      onQuestion: async (questionText, ctx, thread) => {
+        const res = await fetch('/api/question', {method:'POST', body:JSON.stringify({text:questionText, context:ctx, thread, ts:new Date().toISOString(), type:'question'}), headers:{'Content-Type':'application/json'}});
         const { idx: serverIdx } = await res.json();
         return { serverIdx };
       },
@@ -908,8 +908,8 @@ async function submitGlobalNote() {
   const qaBubble = new QABubble(document.body, {
     context: currentView,
     position: { x: window.innerWidth - 360, y: window.innerHeight - 300 - (bubbleIdx * 220) },
-    onQuestion: async (questionText, ctx) => {
-      const res = await fetch('/api/question', {method:'POST', body:JSON.stringify({text:questionText, context:ctx, ts:new Date().toISOString(), type:'question'}), headers:{'Content-Type':'application/json'}});
+    onQuestion: async (questionText, ctx, thread) => {
+      const res = await fetch('/api/question', {method:'POST', body:JSON.stringify({text:questionText, context:ctx, thread, ts:new Date().toISOString(), type:'question'}), headers:{'Content-Type':'application/json'}});
       return { serverIdx: Date.now() };
     },
     pollAnswers: async (serverIdx) => {

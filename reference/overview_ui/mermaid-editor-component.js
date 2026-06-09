@@ -9,6 +9,8 @@
  * draggable sticky notes and Q&A bubbles, multi-turn Q&A thread.
  */
 
+const ME_INPUT_MAX_PX = 90;  // reply box grows with content up to this height, then scrolls
+
 const MERMAID_EDITOR_CSS = `
 .me-container{display:flex;height:100%;background:#1e1e2e;border-radius:6px;overflow:hidden;border:1px solid #3a3a5e;position:relative}
 .me-container.me-fullscreen{position:fixed!important;inset:0;z-index:900;border-radius:0;border:none;height:100vh!important}
@@ -70,9 +72,9 @@ const MERMAID_EDITOR_CSS = `
 .me-qa .msg.agent{color:#a6e3a1}
 .me-qa .msg.pending{color:#f9e2af;font-style:italic}
 .me-qa .msg .role{font-weight:600;font-size:8px;text-transform:uppercase;letter-spacing:.4px;margin-bottom:1px;display:block}
-.me-qa .reply-bar{display:flex;gap:3px;margin-top:4px;cursor:default}
-.me-qa .reply-bar input{flex:1;background:#2a2a3e;border:1px solid #3a3a5e;border-radius:3px;padding:3px 5px;font:10px/1.2 'JetBrains Mono',monospace;color:#cdd6f4;outline:none}
-.me-qa .reply-bar input:focus{border-color:#89b4fa}
+.me-qa .reply-bar{display:flex;gap:3px;margin-top:4px;cursor:default;align-items:flex-end}
+.me-qa .reply-bar textarea{flex:1;box-sizing:border-box;min-height:42px;max-height:${ME_INPUT_MAX_PX}px;overflow-y:auto;resize:none;background:#2a2a3e;border:1px solid #3a3a5e;border-radius:3px;padding:3px 5px;font:10px/1.2 'JetBrains Mono',monospace;color:#cdd6f4;outline:none}
+.me-qa .reply-bar textarea:focus{border-color:#89b4fa}
 .me-qa .reply-bar button{padding:2px 6px;font-size:9px}
 `;
 
@@ -265,8 +267,15 @@ class MermaidEditor {
     });
 
     this.preview.addEventListener('keydown', e => {
-      if (e.target.matches('.reply-bar input') && e.key === 'Enter') {
+      if (e.target.matches('.reply-bar textarea') && e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault(); self._handleReply(e.target.parentElement.querySelector('.me-reply-btn'));
+      }
+    });
+
+    this.preview.addEventListener('input', e => {
+      if (e.target.matches('.reply-bar textarea')) {
+        e.target.style.height = 'auto';
+        e.target.style.height = Math.min(e.target.scrollHeight, ME_INPUT_MAX_PX) + 'px';
       }
     });
   }
@@ -306,6 +315,7 @@ class MermaidEditor {
     const text = input.value.trim();
     if (!text) return;
     input.value = '';
+    input.style.height = 'auto';
     this.notes[idx].data.thread.push({role:'user', text});
     this._appendThread(idx, {role:'user', text});
     this._appendThread(idx, {role:'pending', text:'⏳ waiting...'});
@@ -326,7 +336,7 @@ class MermaidEditor {
     el.className = 'me-qa'; el.style.left = q.x+'px'; el.style.top = q.y+'px'; el.dataset.idx = idx;
     el.innerHTML = `<span class="close">✕</span>
       <div class="thread" id="me-thread-${idx}">${q.thread.map(m=>this._msgHtml(m)).join('')}</div>
-      <div class="reply-bar"><input id="me-reply-${idx}" placeholder="Follow up..."/><button class="me-reply-btn" data-idx="${idx}">→</button></div>`;
+      <div class="reply-bar"><textarea id="me-reply-${idx}" rows="3" placeholder="Follow up..."></textarea><button class="me-reply-btn" data-idx="${idx}">→</button></div>`;
     this.preview.appendChild(el);
   }
 

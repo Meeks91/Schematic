@@ -15,14 +15,17 @@ def answer_question(
     answers_path: Path,
     diagram_path: Path | None = None,
     file_lock: threading.Lock | None = None,
+    history: list[dict[str, str]] | None = None,
 ) -> None:
+    conversation = _format_history(history)
     if diagram_path and diagram_path.exists():
         diagram_content = diagram_path.read_text(encoding=ENCODING)
         prompt = (
             f"You are helping a user edit a Mermaid diagram. "
             f"The current diagram content is:\n```mermaid\n{diagram_content}\n```\n\n"
             f"Context: {context}\n"
-            f"User request: {question_text}\n\n"
+            f"{conversation or f'User request: {question_text}'}\n\n"
+            f"Respond to the user's latest message. "
             f"If they ask you to change the diagram, output ONLY the full updated mermaid content "
             f"between ```mermaid and ``` markers — no explanation, no partial snippets. "
             f"If it's a general question, answer concisely in 1-2 sentences."
@@ -31,8 +34,8 @@ def answer_question(
         prompt = (
             f"You are a helpful assistant for a software schematic planning tool. "
             f"Context: {context}\n"
-            f"User question: {question_text}\n\n"
-            f"Answer concisely in 1-3 sentences."
+            f"{conversation or f'User question: {question_text}'}\n\n"
+            f"Answer the user's latest message concisely in 1-3 sentences."
         )
 
     try:
@@ -62,6 +65,21 @@ def answer_question(
         _write_answer(answers_path, server_idx, f"Error: {e}", file_lock)
 
 
+def _format_history(history: list[dict[str, str]] | None) -> str:
+    """Render the Q&A thread as a labelled transcript so the agent sees prior turns."""
+    if not history:
+        return ""
+    role_to_speaker = {"user": "User", "agent": "Assistant"}
+    lines = [
+        f"{role_to_speaker[m['role']]}: {m.get('text', '')}"
+        for m in history
+        if m.get("role") in role_to_speaker and m.get("text")
+    ]
+    if not lines:
+        return ""
+    return "Conversation so far:\n" + "\n".join(lines)
+
+
 def spawn_answer(
     question_text: str,
     server_idx: int,
@@ -69,10 +87,11 @@ def spawn_answer(
     answers_path: Path,
     diagram_path: Path | None = None,
     file_lock: threading.Lock | None = None,
+    history: list[dict[str, str]] | None = None,
 ) -> None:
     threading.Thread(
         target=answer_question,
-        args=(question_text, server_idx, context, answers_path, diagram_path, file_lock),
+        args=(question_text, server_idx, context, answers_path, diagram_path, file_lock, history),
         daemon=True,
     ).start()
 

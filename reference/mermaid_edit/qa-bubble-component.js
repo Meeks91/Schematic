@@ -13,6 +13,8 @@
  *   bubble.destroy();
  */
 
+const QA_INPUT_MAX_PX = 120;  // reply box grows with content up to this height, then scrolls
+
 const QA_BUBBLE_CSS = `
 .qa-bubble{position:absolute;background:var(--bg, #1e1e2e);border:1px solid var(--accent, #89b4fa);border-radius:8px;padding:0;font-size:11px;color:var(--text, #cdd6f4);max-width:350px;min-width:220px;word-wrap:break-word;box-shadow:0 2px 12px rgba(0,0,0,.4);z-index:50;user-select:none;resize:both;overflow:hidden;backdrop-filter:blur(8px)}
 .qa-bubble .qa-drag{padding:6px 10px 4px;cursor:grab;background:rgba(137,180,250,0.08);border-bottom:1px solid var(--border, #3a3a5e);font-size:9px;color:var(--text-dim, #7f849c);letter-spacing:0.5px;display:flex;align-items:center;gap:6px}
@@ -32,9 +34,9 @@ const QA_BUBBLE_CSS = `
 .qa-bubble .qa-msg.pending .typing-dots span:nth-child(2){animation-delay:0.2s}
 .qa-bubble .qa-msg.pending .typing-dots span:nth-child(3){animation-delay:0.4s}
 @keyframes typing-wave{0%,100%{opacity:0.4}50%{opacity:1}}
-.qa-bubble .qa-reply-bar{display:flex;gap:4px;margin-top:6px;cursor:default}
-.qa-bubble .qa-reply-bar input{flex:1;background:var(--surface, #2a2a3e);border:1px solid var(--border, #3a3a5e);border-radius:3px;padding:4px 6px;font:11px/1.3 'JetBrains Mono',ui-monospace,monospace;color:var(--text, #cdd6f4);outline:none}
-.qa-bubble .qa-reply-bar input:focus{border-color:var(--accent, #89b4fa)}
+.qa-bubble .qa-reply-bar{display:flex;gap:4px;margin-top:6px;cursor:default;align-items:flex-end}
+.qa-bubble .qa-reply-bar textarea{flex:1;box-sizing:border-box;min-height:52px;max-height:${QA_INPUT_MAX_PX}px;overflow-y:auto;resize:none;background:var(--surface, #2a2a3e);border:1px solid var(--border, #3a3a5e);border-radius:3px;padding:4px 6px;font:11px/1.3 'JetBrains Mono',ui-monospace,monospace;color:var(--text, #cdd6f4);outline:none}
+.qa-bubble .qa-reply-bar textarea:focus{border-color:var(--accent, #89b4fa)}
 .qa-bubble .qa-reply-bar button{padding:3px 8px;font-size:10px;cursor:pointer;border:1px solid var(--border, #3a3a5e);border-radius:3px;background:var(--accent, #89b4fa);color:var(--bg, #1e1e2e);font-weight:600}
 `;
 
@@ -74,7 +76,7 @@ class QABubble {
       <div class="qa-content">
         <div class="qa-thread"></div>
         <div class="qa-reply-bar">
-          <input type="text" placeholder="Ask or follow up..." />
+          <textarea rows="3" placeholder="Ask or follow up..."></textarea>
           <button>→</button>
         </div>
       </div>
@@ -82,12 +84,22 @@ class QABubble {
     this.container.appendChild(this.el);
 
     this.threadEl = this.el.querySelector('.qa-thread');
-    this.input = this.el.querySelector('.qa-reply-bar input');
+    this.input = this.el.querySelector('.qa-reply-bar textarea');
     this.sendBtn = this.el.querySelector('.qa-reply-bar button');
 
     this.el.querySelector('.qa-close').onclick = () => this.destroy();
     this.sendBtn.onclick = () => this._send();
-    this.input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); this._send(); } };
+    this.input.oninput = () => this._autosize();
+    this.input.onkeydown = (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this._send(); }
+    };
+    this._autosize();
+  }
+
+  _autosize() {
+    const ta = this.input;
+    ta.style.height = 'auto';
+    ta.style.height = Math.min(ta.scrollHeight, QA_INPUT_MAX_PX) + 'px';
   }
 
   _bindDrag() {
@@ -112,6 +124,7 @@ class QABubble {
     const text = this.input.value.trim();
     if (!text) return;
     this.input.value = '';
+    this._autosize();
 
     this.appendUserMessage(text);
     this._appendPending();
@@ -120,7 +133,7 @@ class QABubble {
     this.sendBtn.disabled = true;
 
     try {
-      const result = await this.onQuestion(text, this.context);
+      const result = await this.onQuestion(text, this.context, this.thread);
       this.sendBtn.textContent = '✓';
       setTimeout(() => { this.sendBtn.textContent = '→'; this.sendBtn.disabled = false; }, 1000);
       if (result && result.serverIdx !== undefined) {

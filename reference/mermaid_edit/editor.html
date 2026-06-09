@@ -678,8 +678,8 @@ document.getElementById("ctx-ask-question").addEventListener("click", () => {
   new QABubble(preview, {
     context: "diagram:" + document.title,
     position: { x: noteCtx.previewX, y: noteCtx.previewY },
-    onQuestion: async (text, ctx) => {
-      const q = { thread:[{role:"user",text},{role:"pending",text:""}], x:noteCtx.previewX, y:noteCtx.previewY, ts:new Date().toISOString(), idx:notes.length, context:ctx };
+    onQuestion: async (text, ctx, thread) => {
+      const q = { thread:thread, x:noteCtx.previewX, y:noteCtx.previewY, ts:new Date().toISOString(), idx:notes.length, context:ctx };
       const res = await fetch("/question", { method:"POST", body:JSON.stringify(q), headers:{"Content-Type":"application/json"} });
       const { idx: serverIdx } = await res.json();
       return { serverIdx };
@@ -930,7 +930,7 @@ function undoDeleteNote() {
 
 // Keyboard shortcuts
 document.addEventListener("keydown", (e) => {
-  if (e.target.matches(".qa-reply-bar input") || e.target === noteInput || e.target === src) {
+  if (e.target.matches(".qa-reply-bar input, .qa-reply-bar textarea") || e.target === noteInput || e.target === src) {
     if (e.key === "Escape") { notepanel.style.display = "none"; }
     if (e.target === noteInput && e.key === "Enter" && !e.shiftKey) { e.preventDefault(); document.getElementById("note-submit").click(); }
     if (e.ctrlKey && e.key === "s") { e.preventDefault(); saveAndClose(); }
@@ -1260,8 +1260,8 @@ const diagramChatContainer = document.getElementById("diagram-chat-container");
 const diagramChatBubble = new QABubble(diagramChatContainer, {
   context: "diagram-edit:" + document.title,
   position: { x: 0, y: 0 },
-  onQuestion: async (text, ctx) => {
-    const q = { thread:[{role:"user",text},{role:"pending",text:""}], x:0, y:0, ts:new Date().toISOString(), context:"diagram-edit" };
+  onQuestion: async (text, ctx, thread) => {
+    const q = { thread:thread, x:0, y:0, ts:new Date().toISOString(), context:"diagram-edit" };
     const res = await fetch("/question", { method:"POST", body:JSON.stringify(q), headers:{"Content-Type":"application/json"} });
     const { idx: serverIdx } = await res.json();
     return { serverIdx };

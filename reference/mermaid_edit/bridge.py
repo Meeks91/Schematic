@@ -306,6 +306,7 @@ def launch_editor(diagram_path: Path) -> None:
                                     answers_path=answers_path,
                                     diagram_path=diagram_path,
                                     file_lock=_file_lock,
+                                    history=q.get("thread"),
                                 )
                         seen_count = len(questions)
             except (json.JSONDecodeError, KeyError):

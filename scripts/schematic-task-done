@@ -1,0 +1,184 @@
+#!/usr/bin/env python3
+"""schematic-task-done — mark a schematic task complete with honest divergence reporting.
+
+Usage:
+    schematic-task-done <tag> --matched [y|n] --updated [y|n] [--tasks-file PATH] [--force]
+
+Behaviour matrix (matched, updated):
+    y, y  → Status: complete. No divergence line.
+    y, n  → Status: complete. (Nothing to update.)
+    n, y  → Status: complete. Divergence: patched-in-component-file
+    n, n  → Status: complete. Divergence: bridged-not-patched
+
+Exits non-zero on: tag not found, missing flags, task already complete (unless --force).
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+from pathlib import Path
+
+
+_STATUS_PENDING_PATTERN = re.compile(r"^Status:[ \t]*(pending|in_progress|complete)[ \t]*$", re.MULTILINE)
+_DIVERGENCE_LINE_PATTERN = re.compile(r"^Divergence:\s*.+$\n?", re.MULTILINE)
+
+_DIVERGENCE_PATCHED = "Divergence: patched-in-component-file"
+_DIVERGENCE_BRIDGED = "Divergence: bridged-not-patched"
+
+
+class TaskNotFoundError(Exception):
+    pass
+
+
+class TaskAlreadyCompleteError(Exception):
+    pass
+
+
+class MalformedTaskEntryError(Exception):
+    pass
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="schematic-task-done",
+        description="Mark a schematic task complete with honest divergence reporting.",
+    )
+    parser.add_argument("tag", help="Canonical task tag (e.g. b.6, c.3, a.2)")
+    parser.add_argument(
+        "--matched",
+        required=True,
+        choices=["y", "n"],
+        help="Did implementation match the component file exactly?",
+    )
+    parser.add_argument(
+        "--updated",
+        required=True,
+        choices=["y", "n"],
+        help="If matched=n, was the component file patched to reflect reality?",
+    )
+    parser.add_argument(
+        "--tasks-file",
+        default="tasks.md",
+        help="Path to tasks.md (default: ./tasks.md)",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Allow re-marking an already-complete task",
+    )
+    return parser.parse_args(argv)
+
+
+def find_task_block(content: str, tag: str) -> tuple[int, int]:
+    heading_pattern = re.compile(
+        rf"^(#{{2,3}})\s*{re.escape(tag)}\s*(\|.*)?$",
+        re.MULTILINE,
+    )
+    match = heading_pattern.search(content)
+    if match is None:
+        raise TaskNotFoundError(f"Task tag {tag!r} not found in tasks.md")
+    block_start = match.start()
+    heading_level = match.group(1)
+    next_heading = re.search(rf"^#{{2,{len(heading_level)}}}\s+", content[match.end():], re.MULTILINE)
+    block_end = match.end() + next_heading.start() if next_heading else len(content)
+    return block_start, block_end
+
+
+def resolve_divergence_line(matched: str, updated: str) -> str | None:
+    if matched == "y":
+        return None
+    if updated == "y":
+        return _DIVERGENCE_PATCHED
+    return _DIVERGENCE_BRIDGED
+
+
+def update_task_block(
+    block_text: str,
+    divergence_line: str | None,
+    force: bool,
+) -> str:
+    status_match = _STATUS_PENDING_PATTERN.search(block_text)
+    if status_match is None:
+        raise MalformedTaskEntryError(
+            "Task block has no `Status:` line — cannot mark complete safely.",
+        )
+    if status_match.group(1) == "complete" and not force:
+        raise TaskAlreadyCompleteError(
+            "Task already complete. Pass --force to re-mark.",
+        )
+
+    block_with_status_set = (
+        block_text[: status_match.start()]
+        + "Status: complete"
+        + block_text[status_match.end():]
+    )
+    block_without_old_divergence = _DIVERGENCE_LINE_PATTERN.sub(
+        "",
+        block_with_status_set,
+    )
+    if divergence_line is None:
+        return block_without_old_divergence
+    trimmed_block = block_without_old_divergence.rstrip()
+    return f"{trimmed_block}\n{divergence_line}\n"
+
+
+def apply_completion(
+    tasks_file_path: Path,
+    tag: str,
+    matched: str,
+    updated: str,
+    force: bool,
+) -> None:
+    original_content = tasks_file_path.read_text()
+    block_start, block_end = find_task_block(content=original_content, tag=tag)
+    updated_block = update_task_block(
+        block_text=original_content[block_start:block_end],
+        divergence_line=resolve_divergence_line(matched=matched, updated=updated),
+        force=force,
+    )
+    updated_content = (
+        original_content[:block_start]
+        + updated_block
+        + original_content[block_end:]
+    )
+    tasks_file_path.write_text(updated_content)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv=argv if argv is not None else sys.argv[1:])
+    tasks_file_path = Path(args.tasks_file).resolve()
+    if not tasks_file_path.exists():
+        print(f"error: tasks file not found: {tasks_file_path}", file=sys.stderr)
+        return 2
+    try:
+        apply_completion(
+            tasks_file_path=tasks_file_path,
+            tag=args.tag,
+            matched=args.matched,
+            updated=args.updated,
+            force=args.force,
+        )
+    except TaskNotFoundError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 3
+    except TaskAlreadyCompleteError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 4
+    except MalformedTaskEntryError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 5
+
+    divergence_summary = resolve_divergence_line(
+        matched=args.matched,
+        updated=args.updated,
+    )
+    print(f"✓ Task {args.tag} marked complete in {tasks_file_path}")
+    if divergence_summary is not None:
+        print(f"  {divergence_summary}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

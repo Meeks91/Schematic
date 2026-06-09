@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" /><title>Mermaid Editor</title>
+<style>
+  body { margin:0; font-family: ui-monospace, monospace; display:flex; height:100vh; }
+  #editor { width:40%; display:flex; flex-direction:column; border-right:1px solid #ccc; }
+  textarea { flex:1; border:0; padding:12px; font:13px/1.5 ui-monospace, monospace; resize:none; outline:none; }
+  #bar { padding:8px; border-top:1px solid #ccc; display:flex; gap:6px; align-items:center; }
+  #preview { flex:1; overflow:auto; padding:16px; }
+  #out { transform-origin: 0 0; }
+  button { padding:8px 12px; cursor:pointer; }
+  #status { color:#888; font-size:12px; margin-left:auto; white-space:nowrap; }
+  .err { color:#c00; white-space:pre-wrap; font-size:12px; }
+</style>
+</head>
+<body>
+  <div id="editor">
+    <textarea id="src" spellcheck="false"></textarea>
+    <div id="bar">
+      <button id="save">Save &amp; Close</button>
+      <button id="zoomout">&minus;</button><button id="zoomin">+</button><button id="zoomreset">fit</button>
+      <span id="status"></span>
+    </div>
+  </div>
+  <div id="preview"><div id="out"></div><div id="err" class="err"></div></div>
+<script type="module">
+import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+mermaid.initialize({ startOnLoad:false, maxTextSize: 5_000_000, maxEdges: 100_000 });
+const src = document.getElementById("src");
+const out = document.getElementById("out");
+const err = document.getElementById("err");
+const status = document.getElementById("status");
+let scale = 1;
+const applyScale = () => { out.style.transform = `scale(${scale})`; };
+const setStatus = (note) => {
+  const lineCount = src.value.split("\n").length;
+  status.textContent = `${lineCount} lines · ${src.value.length} chars${note ? " · " + note : ""}`;
+};
+let renderTimer;
+async function render() {
+  err.textContent = "";
+  try { const { svg } = await mermaid.render("g", src.value); out.innerHTML = svg; applyScale(); }
+  catch (e) { err.textContent = String(e.message || e); }
+  setStatus("");
+}
+src.addEventListener("input", () => {
+  setStatus("editing…");
+  clearTimeout(renderTimer);
+  renderTimer = setTimeout(render, 300);
+});
+document.getElementById("zoomin").onclick = () => { scale = Math.min(scale * 1.25, 8); applyScale(); };
+document.getElementById("zoomout").onclick = () => { scale = Math.max(scale / 1.25, 0.05); applyScale(); };
+document.getElementById("zoomreset").onclick = () => { scale = 1; applyScale(); };
+document.getElementById("save").addEventListener("click", async () => {
+  await fetch("/save", { method:"POST", body: src.value });
+  setStatus("saved — you can close this tab");
+});
+src.value = await (await fetch("/content")).text();
+render();
+</script>
+</body>
+</html>

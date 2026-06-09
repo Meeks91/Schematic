@@ -1,0 +1,839 @@
+#!/usr/bin/env python3
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+# ── constants ──────────────────────────────────────────────────────────────────
+
+SCHEMATICS_BASE = "docs/schematics"
+ARCHIVE_SUBDIR = "_archive"
+STATE_FILENAME = ".schematic-state.json"
+
+TASK_STATUS_PENDING = "pending"
+TASK_STATUS_IN_PROGRESS = "in_progress"
+TASK_STATUS_COMPLETE = "complete"
+VALID_TASK_STATUSES = {TASK_STATUS_PENDING, TASK_STATUS_IN_PROGRESS, TASK_STATUS_COMPLETE}
+
+VALID_PHASES = set(range(1, 8))
+PHASES_REQUIRING_AUDIT = {1, 2, 4, 6, 7}
+PHASE_STATUS_LOCKED = "locked"
+PHASE_AUDIT_CLEAN = "clean"
+
+TASK_HEADER_RE = re.compile(r"^## ([a-z]\.\d+) \| (\w+) \| (.+)$")
+FEATURE_AC_RE = re.compile(r"(\d+\.[A-Z])\b")
+BLOCKED_BY_TAG_RE = re.compile(r"\b([a-z]\.\d+)\b")
+
+LEGAL_TASK_TRANSITIONS: dict[str, set[str]] = {
+    TASK_STATUS_PENDING: {TASK_STATUS_IN_PROGRESS},
+    TASK_STATUS_IN_PROGRESS: {TASK_STATUS_COMPLETE},
+    TASK_STATUS_COMPLETE: set(),
+}
+
+SEQUENCE_OPENERS = {"loop", "alt", "opt", "par", "critical", "break", "rect"}
+VALID_NOTE_PREFIXES = ("Note over ", "Note left of ", "Note right of ")
+FLOWCHART_SKIP_KEYWORDS = {"subgraph", "style", "classDef", "linkStyle", "end", "direction", "click"}
+MERMAID_UNCHECKED_TYPES_RE = re.compile(
+    r"^(classDiagram|erDiagram|gantt|pie|gitGraph|mindmap|timeline|xychart|block)"
+)
+
+# ── file discovery ─────────────────────────────────────────────────────────────
+
+def find_project_root() -> Path:
+    current = Path.cwd()
+    while current != current.parent:
+        if (current / SCHEMATICS_BASE).exists() or (current / ".git").exists():
+            return current
+        current = current.parent
+    return Path.cwd()
+
+
+def resolve_schematic_dir(name: str) -> Path:
+    path = find_project_root() / SCHEMATICS_BASE / name
+    if not path.exists():
+        _exit_error(f"schematic '{name}' not found at {path}")
+    return path
+
+
+def list_schematic_dirs() -> list[Path]:
+    base = find_project_root() / SCHEMATICS_BASE
+    if not base.exists():
+        return []
+    return sorted(
+        p for p in base.iterdir()
+        if p.is_dir() and p.name != ARCHIVE_SUBDIR
+    )
+
+# ── state I/O ──────────────────────────────────────────────────────────────────
+
+def load_state(schematic_dir: Path) -> dict:
+    state_path = schematic_dir / STATE_FILENAME
+    if not state_path.exists():
+        return {"phases": {}, "tasks": {}, "overrides": []}
+    return json.loads(state_path.read_text())
+
+
+def save_state(schematic_dir: Path, state: dict) -> None:
+    (schematic_dir / STATE_FILENAME).write_text(json.dumps(state, indent=2) + "\n")
+
+
+def record_override(state: dict, context: str, reason: str) -> None:
+    state["overrides"].append({
+        "context": context,
+        "reason": reason,
+        "at": datetime.now(tz=timezone.utc).isoformat(),
+    })
+
+# ── markdown parsers ───────────────────────────────────────────────────────────
+
+def parse_tasks(tasks_md: Path) -> list[dict]:
+    if not tasks_md.exists():
+        return []
+
+    tasks: list[dict] = []
+    current: dict | None = None
+
+    for line in tasks_md.read_text().splitlines():
+        header_match = TASK_HEADER_RE.match(line)
+        if header_match:
+            if current:
+                tasks.append(current)
+            current = {
+                "tag": header_match.group(1),
+                "action": header_match.group(2),
+                "target": header_match.group(3),
+                "status": TASK_STATUS_PENDING,
+                "component_file": None,
+                "blocked_by": [],
+                "raw_lines": [line],
+            }
+        elif current is not None:
+            current["raw_lines"].append(line)
+            stripped = line.strip()
+            if stripped.startswith("Status:"):
+                status_value = stripped.split(":", 1)[1].strip()
+                if status_value in VALID_TASK_STATUSES:
+                    current["status"] = status_value
+            elif stripped.startswith("Component file:"):
+                current["component_file"] = stripped.split(":", 1)[1].strip()
+            elif stripped.startswith("Blocked by:"):
+                blocked_text = stripped.split(":", 1)[1]
+                current["blocked_by"].extend(BLOCKED_BY_TAG_RE.findall(blocked_text))
+
+    if current:
+        tasks.append(current)
+
+    return tasks
+
+
+def parse_feature_acs(objective_md: Path) -> list[str]:
+    if not objective_md.exists():
+        return []
+    text = objective_md.read_text()
+    section_match = re.search(
+        r"## Feature Change List.*?(?=^## |\Z)",
+        text,
+        re.MULTILINE | re.DOTALL,
+    )
+    if not section_match:
+        return []
+    return FEATURE_AC_RE.findall(section_match.group(0))
+
+
+def parse_component_names(objective_md: Path) -> list[str]:
+    if not objective_md.exists():
+        return []
+    text = objective_md.read_text()
+    section_match = re.search(
+        r"## Component Summary.*?(?=^## |\Z)",
+        text,
+        re.MULTILINE | re.DOTALL,
+    )
+    if not section_match:
+        return []
+    table_names = re.findall(r"\|\s*\d+\.\d+\s*\|\s*(\w+)\s*\|", section_match.group(0))
+    block_names = re.findall(r"^###\s+\d+\.\d+\s+(\w+)", section_match.group(0), re.MULTILINE)
+    return table_names + block_names
+
+
+def update_task_status_in_file(tasks_md: Path, tag: str, new_status: str) -> None:
+    lines = tasks_md.read_text().splitlines(keepends=True)
+    in_target_task = False
+    updated = False
+    result: list[str] = []
+
+    for line in lines:
+        stripped = line.rstrip()
+        header_match = TASK_HEADER_RE.match(stripped)
+        if header_match:
+            in_target_task = header_match.group(1) == tag
+        if in_target_task and re.match(r"^Status:\s*\w+", stripped) and not updated:
+            result.append(f"Status: {new_status}\n")
+            updated = True
+        else:
+            result.append(line)
+
+    if not updated:
+        _exit_error(f"Status: line not found for task '{tag}' in {tasks_md}")
+
+    tasks_md.write_text("".join(result))
+
+# ── helpers ────────────────────────────────────────────────────────────────────
+
+def _exit_error(message: str) -> None:
+    print(f"error: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def _resolve_single_or_all(name: str | None) -> list[Path]:
+    if name:
+        return [resolve_schematic_dir(name)]
+    dirs = list_schematic_dirs()
+    if not dirs:
+        _exit_error("no schematics found under docs/schematics/")
+    return dirs
+
+# ── init command ──────────────────────────────────────────────────────────────
+
+_OBJECTIVE_STUB = """\
+# {name}
+
+## Context & Objective
+Context:
+  -
+Objective:
+  -
+
+## Feature Change List + Feature ACs
+Part of change set:
+
+## Component Summary
+
+| # | Class | Type | Class AC (responsibility) | Necessitated by |
+|---|---|---|---|---|
+
+## Directory Structure
+```
+src/
+tests/
+```
+"""
+
+_OVERVIEW_STUB = """\
+# Components Overview
+
+## Injection DAG
+> Authoritative: ../dag.mmd (when >8 nodes)
+
+Edge inventory (by layer):
+
+## App Integration
+
+## Sequence Diagram
+> Mermaid: ../sequence.mmd
+
+## AC Traceability Matrix
+
+| Feature AC | Class AC | Function AC | AC Test |
+|---|---|---|---|
+"""
+
+_TASKS_STUB = "# Tasks\n"
+_DAG_STUB = "flowchart TD\n"
+_SEQUENCE_STUB = "sequenceDiagram\n"
+
+
+def cmd_init(args: argparse.Namespace) -> None:
+    root = find_project_root()
+    schematic_dir = root / SCHEMATICS_BASE / args.name
+    if schematic_dir.exists():
+        _exit_error(f"schematic '{args.name}' already exists at {schematic_dir}")
+
+    components_dir = schematic_dir / "components"
+    components_dir.mkdir(parents=True)
+
+    (schematic_dir / "objective.md").write_text(_OBJECTIVE_STUB.format(name=args.name))
+    (schematic_dir / "tasks.md").write_text(_TASKS_STUB)
+    (schematic_dir / "dag.mmd").write_text(_DAG_STUB)
+    (schematic_dir / "sequence.mmd").write_text(_SEQUENCE_STUB)
+    (components_dir / "_overview.md").write_text(_OVERVIEW_STUB)
+    save_state(schematic_dir, {"feature": args.name, "phases": {}, "tasks": {}, "overrides": []})
+
+    print(f"created: {schematic_dir.relative_to(root)}")
+    for name in ["objective.md", "tasks.md", "dag.mmd", "sequence.mmd",
+                 "components/_overview.md", STATE_FILENAME]:
+        print(f"  {name}")
+
+# ── status command ─────────────────────────────────────────────────────────────
+
+def cmd_status(args: argparse.Namespace) -> None:
+    for schematic_dir in _resolve_single_or_all(args.name):
+        _print_status(schematic_dir)
+        print()
+
+
+def _print_status(schematic_dir: Path) -> None:
+    state = load_state(schematic_dir)
+    tasks = parse_tasks(schematic_dir / "tasks.md")
+
+    locked_phases = [int(k) for k, v in state["phases"].items() if v.get("status") == PHASE_STATUS_LOCKED]
+    all_phases_locked = max(locked_phases, default=0) >= 7
+    current_phase = 7 if all_phases_locked else max(locked_phases, default=0) + 1
+    phase_label = "complete" if all_phases_locked else f"{current_phase}/7"
+
+    by_status: dict[str, list[str]] = {
+        TASK_STATUS_COMPLETE: [],
+        TASK_STATUS_IN_PROGRESS: [],
+        TASK_STATUS_PENDING: [],
+    }
+    complete_tags = {t["tag"] for t in tasks if t["status"] == TASK_STATUS_COMPLETE}
+    blocked_summaries: list[str] = []
+
+    for task in tasks:
+        bucket = by_status.get(task["status"], by_status[TASK_STATUS_PENDING])
+        bucket.append(task["tag"])
+        if task["status"] == TASK_STATUS_PENDING and task["blocked_by"]:
+            active_blockers = [b for b in task["blocked_by"] if b not in complete_tags]
+            if active_blockers:
+                blocked_summaries.append(f"{task['tag']} ← {', '.join(active_blockers)}")
+
+    print(f"schematic: {schematic_dir.name}")
+    print(f"phase:     {phase_label}")
+    if state.get("overrides"):
+        print(f"overrides: {len(state['overrides'])} (run validate to review)")
+
+    total = len(tasks)
+    print(f"\ntasks: {total} total")
+    for status_key in [TASK_STATUS_COMPLETE, TASK_STATUS_IN_PROGRESS, TASK_STATUS_PENDING]:
+        tags = by_status[status_key]
+        if tags:
+            print(f"  {status_key:<12} {len(tags):>2}  [{', '.join(tags)}]")
+
+    if blocked_summaries:
+        print("\nblocked:")
+        for entry in blocked_summaries:
+            print(f"  {entry}")
+
+# ── validate command ───────────────────────────────────────────────────────────
+
+def cmd_validate(args: argparse.Namespace) -> None:
+    findings: list[str] = []
+    for schematic_dir in _resolve_single_or_all(args.name):
+        scoped = _validate_schematic(schematic_dir)
+        findings.extend(f"[{schematic_dir.name}] {f}" for f in scoped)
+
+    if findings:
+        print(f"⚠️  {len(findings)} finding(s):\n")
+        for i, finding in enumerate(findings, 1):
+            print(f"  {i}. {finding}")
+        sys.exit(1)
+    else:
+        print("✓ validate: clean")
+
+
+def _validate_schematic(schematic_dir: Path) -> list[str]:
+    findings: list[str] = []
+    tasks = parse_tasks(schematic_dir / "tasks.md")
+    all_task_tags = {t["tag"] for t in tasks}
+    state = load_state(schematic_dir)
+
+    for task in tasks:
+        for blocker_tag in task["blocked_by"]:
+            if blocker_tag not in all_task_tags:
+                findings.append(
+                    f"tasks.md #{task['tag']} — Blocked by: '{blocker_tag}' not found in task list"
+                )
+
+    for task in tasks:
+        if task["component_file"]:
+            component_path = schematic_dir / task["component_file"].lstrip("./")
+            if not component_path.exists():
+                findings.append(
+                    f"tasks.md #{task['tag']} — Component file '{task['component_file']}' not found"
+                )
+
+    objective_md = schematic_dir / "objective.md"
+    if objective_md.exists() and not parse_feature_acs(objective_md):
+        findings.append("objective.md — no Feature ACs found in Feature Change List section")
+
+    for task in tasks:
+        state_task = state.get("tasks", {}).get(task["tag"])
+        if state_task is not None:
+            state_status = state_task.get("status", TASK_STATUS_PENDING)
+            if state_status != task["status"]:
+                findings.append(
+                    f"state drift: task {task['tag']} is '{task['status']}' in tasks.md "
+                    f"but '{state_status}' in {STATE_FILENAME}"
+                )
+
+    for override in state.get("overrides", []):
+        findings.append(
+            f"override recorded — {override['context']}: \"{override['reason']}\""
+        )
+
+    for mmd_file in sorted(schematic_dir.glob("*.mmd")):
+        for mmd_finding in _validate_mermaid_file(mmd_file):
+            findings.append(f"{mmd_file.name}: {mmd_finding}")
+
+    return findings
+
+# ── mermaid command ────────────────────────────────────────────────────────────
+
+def cmd_mermaid(args: argparse.Namespace) -> None:
+    if args.file and args.name:
+        _exit_error("specify either name or --file, not both")
+
+    if args.file:
+        files = [args.file]
+    elif args.name:
+        schematic_dir = resolve_schematic_dir(args.name)
+        files = sorted(schematic_dir.glob("*.mmd"))
+    else:
+        files = [f for d in list_schematic_dirs() for f in sorted(d.glob("*.mmd"))]
+
+    if not files:
+        print("no .mmd files found")
+        return
+
+    all_clean = True
+    for mmd_file in files:
+        file_findings = _validate_mermaid_file(mmd_file)
+        if file_findings:
+            all_clean = False
+            print(f"⚠️  {mmd_file}")
+            for finding in file_findings:
+                print(f"   {finding}")
+        else:
+            print(f"✓  {mmd_file.name}")
+
+    if not all_clean:
+        sys.exit(1)
+
+
+def _validate_mermaid_file(path: Path) -> list[str]:
+    mmdc_result = _try_mmdc(path)
+    if mmdc_result is not None:
+        return mmdc_result
+    return _heuristic_mermaid_check(path)
+
+
+def _try_mmdc(path: Path) -> list[str] | None:
+    try:
+        result = subprocess.run(
+            ["mmdc", "-i", str(path), "-o", "/dev/null"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return [] if result.returncode == 0 else [f"mmdc: {result.stderr.strip()}"]
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _heuristic_mermaid_check(path: Path) -> list[str]:
+    content_lines = [
+        line for line in path.read_text().splitlines()
+        if line.strip() and not line.strip().startswith("%%")
+    ]
+    if not content_lines:
+        return ["empty file"]
+
+    first_line = content_lines[0].strip()
+
+    if first_line == "sequenceDiagram":
+        return _check_sequence_diagram(content_lines[1:])
+    if re.match(r"^(flowchart|graph)\s+[TDLRBT]{1,2}$", first_line):
+        return _check_flowchart(content_lines[1:])
+    if MERMAID_UNCHECKED_TYPES_RE.match(first_line):
+        return []
+    return [
+        f"unrecognised diagram type on line 1: '{first_line}' "
+        "(expected 'sequenceDiagram' or 'flowchart TD')"
+    ]
+
+
+def _check_sequence_diagram(body_lines: list[str]) -> list[str]:
+    findings: list[str] = []
+    block_stack: list[tuple[str, int]] = []
+
+    for lineno, raw_line in enumerate(body_lines, start=2):
+        line = raw_line.strip()
+        if not line or line.startswith("%%"):
+            continue
+
+        first_word = line.split()[0].lower()
+
+        if first_word in SEQUENCE_OPENERS:
+            block_stack.append((first_word, lineno))
+            continue
+
+        if first_word == "end":
+            if not block_stack:
+                findings.append(f"line {lineno}: 'end' with no open block")
+            else:
+                block_stack.pop()
+            continue
+
+        if first_word in ("participant", "actor", "activate", "deactivate", "autonumber"):
+            continue
+
+        if line.startswith("Note"):
+            if not any(line.startswith(p) for p in VALID_NOTE_PREFIXES):
+                findings.append(
+                    f"line {lineno}: invalid Note syntax '{line[:50]}' "
+                    "(use: Note over X: / Note left of X: / Note right of X:)"
+                )
+
+    for opener, open_lineno in block_stack:
+        findings.append(f"unclosed '{opener}' block opened at line {open_lineno} — missing 'end'")
+
+    return findings
+
+
+def _check_flowchart(body_lines: list[str]) -> list[str]:
+    findings: list[str] = []
+    for lineno, raw_line in enumerate(body_lines, start=2):
+        line = raw_line.strip()
+        if not line or line.startswith("%%"):
+            continue
+        first_word = line.split()[0].lower()
+        if first_word in FLOWCHART_SKIP_KEYWORDS:
+            continue
+        if re.match(r"^\w+\s+\w+\s*[\[\(\{]", line):
+            findings.append(
+                f"line {lineno}: node ID appears to contain spaces — quote it or use a single-word ID: '{line[:60]}'"
+            )
+    return findings
+
+# ── setup command ─────────────────────────────────────────────────────────────
+
+_HOOK_MARKER = "schematic-validate-hook"
+_HOOK_COMMAND = (
+    "python3 -c \""
+    "import json,os,subprocess,pathlib;"
+    "p=json.loads(os.environ.get('CLAUDE_TOOL_INPUT','{}')).get('file_path','');"
+    "subprocess.run([str(pathlib.Path.home()/'.claude'/'scripts'/'schematic'),'validate'])"
+    " if 'docs/schematics' in p else None"
+    "\""
+)
+_SETTINGS_RELATIVE = Path(".claude") / "settings.json"
+
+
+def cmd_setup(args: argparse.Namespace) -> None:
+    project_root = find_project_root()
+    settings_path = project_root / _SETTINGS_RELATIVE
+
+    if _hook_already_installed(settings_path):
+        print("schematic validate hook already installed ✓")
+        return
+
+    if not args.install:
+        print("dry run — would write PostToolUse hook to:")
+        print(f"  {settings_path}")
+        print(f"\nhook triggers: schematic validate on any write to docs/schematics/")
+        print("\nrun with --install to apply")
+        return
+
+    _write_hook(settings_path)
+    print(f"installed: PostToolUse hook → {settings_path.relative_to(project_root)}")
+    print("  triggers: schematic validate on any write to docs/schematics/")
+
+
+def _hook_already_installed(settings_path: Path) -> bool:
+    if not settings_path.exists():
+        return False
+    settings = json.loads(settings_path.read_text())
+    for hook_group in settings.get("hooks", {}).get("PostToolUse", []):
+        for hook in hook_group.get("hooks", []):
+            if _HOOK_MARKER in hook.get("command", ""):
+                return True
+    return False
+
+
+def _write_hook(settings_path: Path) -> None:
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings = json.loads(settings_path.read_text()) if settings_path.exists() else {}
+    hook_entry = {
+        "matcher": "Write|Edit",
+        "hooks": [{"type": "command", "command": f"# {_HOOK_MARKER}\n{_HOOK_COMMAND}"}],
+    }
+    settings.setdefault("hooks", {}).setdefault("PostToolUse", []).append(hook_entry)
+    settings_path.write_text(json.dumps(settings, indent=2) + "\n")
+
+# ── phase commands ─────────────────────────────────────────────────────────────
+
+def cmd_phase(args: argparse.Namespace) -> None:
+    phase_handlers = {
+        "audit": _phase_audit,
+        "sign-off": _phase_signoff,
+        "complete": _phase_complete,
+    }
+    phase_handlers[args.phase_command](args)
+
+
+def _phase_audit(args: argparse.Namespace) -> None:
+    if args.num not in PHASES_REQUIRING_AUDIT:
+        _exit_error(
+            f"phase {args.num} does not require an audit "
+            f"(audit-required phases: {sorted(PHASES_REQUIRING_AUDIT)})"
+        )
+    schematic_dir = resolve_schematic_dir(args.schematic)
+    state = load_state(schematic_dir)
+    phase_entry = state["phases"].setdefault(str(args.num), {})
+    is_clean = args.result.strip().lower() == PHASE_AUDIT_CLEAN
+    phase_entry["audit_result"] = PHASE_AUDIT_CLEAN if is_clean else "findings"
+    phase_entry["audit_findings"] = None if is_clean else args.result
+    save_state(schematic_dir, state)
+    label = "clean ✓" if is_clean else "findings recorded"
+    print(f"phase {args.num} audit: {label}")
+    print(f"next: schematic phase sign-off {args.num} --schematic {args.schematic}")
+
+
+def _phase_signoff(args: argparse.Namespace) -> None:
+    schematic_dir = resolve_schematic_dir(args.schematic)
+    state = load_state(schematic_dir)
+    state["phases"].setdefault(str(args.num), {})["signed_off"] = True
+    save_state(schematic_dir, state)
+    print(f"phase {args.num} signed off ✓")
+    print(f"next: schematic phase complete {args.num} --schematic {args.schematic}")
+
+
+def _phase_complete(args: argparse.Namespace) -> None:
+    schematic_dir = resolve_schematic_dir(args.schematic)
+    state = load_state(schematic_dir)
+    phase_entry = state["phases"].setdefault(str(args.num), {})
+    context = f"phase complete {args.num}"
+
+    if args.num in PHASES_REQUIRING_AUDIT and not phase_entry.get("audit_result"):
+        if args.override:
+            record_override(state, context, args.override)
+        else:
+            _exit_error(
+                f"phase {args.num} requires an audit result before locking.\n"
+                f"  run: schematic phase audit {args.num} clean --schematic {args.schematic}\n"
+                f"  or:  schematic phase complete {args.num} --schematic {args.schematic} "
+                f"--override \"<reason>\""
+            )
+
+    if not phase_entry.get("signed_off"):
+        if args.override:
+            record_override(state, context, args.override)
+        else:
+            _exit_error(
+                f"phase {args.num} requires user sign-off before locking.\n"
+                f"  run: schematic phase sign-off {args.num} --schematic {args.schematic}\n"
+                f"  or:  schematic phase complete {args.num} --schematic {args.schematic} "
+                f"--override \"<reason>\""
+            )
+
+    state["phases"].setdefault(str(args.num), {})["status"] = PHASE_STATUS_LOCKED
+    save_state(schematic_dir, state)
+    print(f"phase {args.num} locked ✓")
+    next_phase = args.num + 1
+    if next_phase <= 7:
+        print(f"next phase: {next_phase}")
+
+# ── task commands ──────────────────────────────────────────────────────────────
+
+def cmd_task(args: argparse.Namespace) -> None:
+    task_handlers = {
+        "show": _task_show,
+        "status": _task_status,
+        "complete": _task_complete,
+        "next": _task_next,
+    }
+    task_handlers[args.task_command](args)
+
+
+def _task_show(args: argparse.Namespace) -> None:
+    schematic_dir = resolve_schematic_dir(args.schematic)
+    tasks = parse_tasks(schematic_dir / "tasks.md")
+    task = next((t for t in tasks if t["tag"] == args.tag), None)
+    if not task:
+        _exit_error(f"task '{args.tag}' not found in {schematic_dir / 'tasks.md'}")
+
+    print("\n".join(task["raw_lines"]))
+
+    if task["component_file"]:
+        component_path = schematic_dir / task["component_file"].lstrip("./")
+        if component_path.exists():
+            print(f"\n--- {component_path.name} ---\n")
+            print(component_path.read_text())
+        else:
+            print(f"\nwarning: component file not found: {component_path}", file=sys.stderr)
+
+
+def _task_status(args: argparse.Namespace) -> None:
+    schematic_dir = resolve_schematic_dir(args.schematic)
+    tasks_md = schematic_dir / "tasks.md"
+    tasks = parse_tasks(tasks_md)
+    task = next((t for t in tasks if t["tag"] == args.tag), None)
+    if not task:
+        _exit_error(f"task '{args.tag}' not found in tasks.md")
+
+    current_status = task["status"]
+    new_status = args.status
+    legal_targets = LEGAL_TASK_TRANSITIONS.get(current_status, set())
+
+    if new_status not in legal_targets:
+        if args.override:
+            state = load_state(schematic_dir)
+            record_override(
+                state,
+                f"task status {args.tag}: {current_status} → {new_status}",
+                args.override,
+            )
+            save_state(schematic_dir, state)
+        else:
+            _exit_error(
+                f"illegal transition: '{current_status}' → '{new_status}' for task {args.tag}\n"
+                f"  legal from '{current_status}': {sorted(legal_targets) or 'none'}\n"
+                f"  use --override \"<reason>\" to bypass"
+            )
+
+    update_task_status_in_file(tasks_md, args.tag, new_status)
+    state = load_state(schematic_dir)
+    state["tasks"].setdefault(args.tag, {})["status"] = new_status
+    save_state(schematic_dir, state)
+    print(f"task {args.tag}: {current_status} → {new_status}")
+
+
+def _task_complete(args: argparse.Namespace) -> None:
+    schematic_dir = resolve_schematic_dir(args.schematic)
+    tasks_md = schematic_dir / "tasks.md"
+    tasks = parse_tasks(tasks_md)
+    task = next((t for t in tasks if t["tag"] == args.tag), None)
+    if not task:
+        _exit_error(f"task '{args.tag}' not found in tasks.md")
+
+    if task["status"] != TASK_STATUS_IN_PROGRESS:
+        if args.override:
+            state = load_state(schematic_dir)
+            record_override(
+                state,
+                f"task complete {args.tag} (was '{task['status']}')",
+                args.override,
+            )
+            save_state(schematic_dir, state)
+        else:
+            _exit_error(
+                f"task {args.tag} must be in_progress to complete "
+                f"(currently: '{task['status']}')\n"
+                f"  run: schematic task status {args.tag} in_progress --schematic {args.schematic}\n"
+                f"  or:  schematic task complete {args.tag} --schematic {args.schematic} "
+                f"--override \"<reason>\""
+            )
+
+    update_task_status_in_file(tasks_md, args.tag, TASK_STATUS_COMPLETE)
+    state = load_state(schematic_dir)
+    state["tasks"].setdefault(args.tag, {})["status"] = TASK_STATUS_COMPLETE
+    save_state(schematic_dir, state)
+    print(f"task {args.tag}: complete ✓")
+
+
+def _task_next(args: argparse.Namespace) -> None:
+    name = getattr(args, "name", None)
+    schematic_dirs = _resolve_single_or_all(name)
+
+    for schematic_dir in schematic_dirs:
+        tasks = parse_tasks(schematic_dir / "tasks.md")
+        complete_tags = {t["tag"] for t in tasks if t["status"] == TASK_STATUS_COMPLETE}
+
+        for task in tasks:
+            if task["status"] != TASK_STATUS_PENDING:
+                continue
+            active_blockers = [b for b in task["blocked_by"] if b not in complete_tags]
+            if active_blockers:
+                continue
+            print(f"schematic: {schematic_dir.name}")
+            print("\n".join(task["raw_lines"]))
+            return
+
+    print("no pending unblocked tasks found")
+
+# ── argparse + dispatch ────────────────────────────────────────────────────────
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="schematic", description="Schematic planning workflow CLI")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_init = sub.add_parser("init", help="Scaffold a new schematic directory")
+    p_init.add_argument("name", help="Feature name (kebab-case)")
+
+    p_status = sub.add_parser("status", help="Show task progress")
+    p_status.add_argument("name", nargs="?", help="Schematic name (omit for all)")
+
+    p_validate = sub.add_parser("validate", help="AC pyramid + cross-ref integrity check")
+    p_validate.add_argument("name", nargs="?", help="Schematic name (omit for all)")
+
+    p_mermaid = sub.add_parser("mermaid", help="Validate .mmd diagram files")
+    p_mermaid.add_argument("name", nargs="?", help="Schematic name")
+    p_mermaid.add_argument("--file", type=Path, help="Specific .mmd file path")
+
+    p_phase = sub.add_parser("phase", help="Phase lifecycle commands")
+    phase_sub = p_phase.add_subparsers(dest="phase_command", required=True)
+
+    p_pa = phase_sub.add_parser("audit", help="Record audit result for a phase")
+    p_pa.add_argument("num", type=int, choices=sorted(PHASES_REQUIRING_AUDIT))
+    p_pa.add_argument("result", help="'clean' or findings description")
+    p_pa.add_argument("--schematic", required=True, metavar="NAME")
+
+    p_ps = phase_sub.add_parser("sign-off", help="Record user sign-off for a phase")
+    p_ps.add_argument("num", type=int, choices=sorted(VALID_PHASES))
+    p_ps.add_argument("--schematic", required=True, metavar="NAME")
+
+    p_pc = phase_sub.add_parser("complete", help="Lock a phase (enforces audit + sign-off)")
+    p_pc.add_argument("num", type=int, choices=sorted(VALID_PHASES))
+    p_pc.add_argument("--schematic", required=True, metavar="NAME")
+    p_pc.add_argument("--override", metavar="REASON", help="Bypass enforcement with reason")
+
+    p_task = sub.add_parser("task", help="Task lifecycle commands")
+    task_sub = p_task.add_subparsers(dest="task_command", required=True)
+
+    p_tshow = task_sub.add_parser("show", help="Flatten task + component context for agent handoff")
+    p_tshow.add_argument("tag", help="Task tag e.g. b.1")
+    p_tshow.add_argument("--schematic", required=True, metavar="NAME")
+
+    p_tstat = task_sub.add_parser("status", help="Update task status")
+    p_tstat.add_argument("tag")
+    p_tstat.add_argument("status", choices=sorted(VALID_TASK_STATUSES))
+    p_tstat.add_argument("--schematic", required=True, metavar="NAME")
+    p_tstat.add_argument("--override", metavar="REASON", help="Bypass legal transition check")
+
+    p_tcomp = task_sub.add_parser("complete", help="Mark task complete (requires in_progress)")
+    p_tcomp.add_argument("tag")
+    p_tcomp.add_argument("--schematic", required=True, metavar="NAME")
+    p_tcomp.add_argument("--override", metavar="REASON", help="Bypass in_progress check")
+
+    p_tnext = task_sub.add_parser("next", help="Show next unblocked pending task")
+    p_tnext.add_argument("name", nargs="?", help="Schematic name (omit for all)")
+
+    p_setup = sub.add_parser("setup", help="Wire PostToolUse validation hook into .claude/settings.json")
+    p_setup.add_argument("--install", action="store_true", help="Write hook (omit for dry run)")
+
+    return parser
+
+
+def dispatch(args: argparse.Namespace) -> None:
+    handlers = {
+        "init": cmd_init,
+        "setup": cmd_setup,
+        "status": cmd_status,
+        "validate": cmd_validate,
+        "mermaid": cmd_mermaid,
+        "phase": cmd_phase,
+        "task": cmd_task,
+    }
+    handlers[args.command](args)  # type: ignore[operator]
+
+
+def main() -> None:
+    dispatch(_build_parser().parse_args())
+
+
+if __name__ == "__main__":
+    main()

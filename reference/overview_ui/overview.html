@@ -12,6 +12,13 @@
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Inter','SF Pro',-apple-system,sans-serif;background:var(--bg);color:var(--text);height:100vh;display:flex;overflow:hidden;transition:background-color 0.2s,color 0.2s}
 
+/* Scrollbar — dark in Chrome/Edge */
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
+::-webkit-scrollbar-thumb:hover{background:var(--text-dim)}
+*{scrollbar-color:var(--border) var(--bg);scrollbar-width:thin}
+
 /* Sidebar */
 #sidebar{width:var(--sidebar-w);min-width:var(--sidebar-w);background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
 #sidebar-header{padding:16px;border-bottom:1px solid var(--border)}

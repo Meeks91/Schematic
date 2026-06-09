@@ -18,6 +18,12 @@
     --note-bg: #3a3a5e;
     --note-border: #89b4fa;
     --highlight: rgba(137, 180, 250, 0.15);
+}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
+::-webkit-scrollbar-thumb:hover{background:var(--text-dim)}
+*{scrollbar-color:var(--border) var(--bg);scrollbar-width:thin}
     --highlight-border: var(--accent);
   }
   * { box-sizing: border-box; }

@@ -222,15 +222,12 @@ class MermaidBridgeHandler(BaseHTTPRequestHandler):
 
     def _respond(self, content: str, content_type: str) -> None:
         body = content.encode(ENCODING)
-        try:
-            self.send_response(200)
-            self.send_header("Content-Type", f"{content_type}; charset={ENCODING}")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
-            self.end_headers()
-            self.wfile.write(body)
-        except BrokenPipeError:
-            pass
+        self.send_response(200)
+        self.send_header("Content-Type", f"{content_type}; charset={ENCODING}")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        self.end_headers()
+        self.wfile.write(body)
 
     def log_message(self, format: str, *args: object) -> None:
         del format, args

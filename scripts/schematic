@@ -16,8 +16,9 @@ STATE_FILENAME = ".schematic-state.json"
 
 TASK_STATUS_PENDING = "pending"
 TASK_STATUS_IN_PROGRESS = "in_progress"
+TASK_STATUS_REVIEW = "review"
 TASK_STATUS_COMPLETE = "complete"
-VALID_TASK_STATUSES = {TASK_STATUS_PENDING, TASK_STATUS_IN_PROGRESS, TASK_STATUS_COMPLETE}
+VALID_TASK_STATUSES = {TASK_STATUS_PENDING, TASK_STATUS_IN_PROGRESS, TASK_STATUS_REVIEW, TASK_STATUS_COMPLETE}
 
 VALID_PHASES = set(range(1, 8))
 PHASES_REQUIRING_AUDIT = {1, 2, 4, 6, 7}
@@ -30,7 +31,8 @@ BLOCKED_BY_TAG_RE = re.compile(r"\b([a-z]\.\d+)\b")
 
 LEGAL_TASK_TRANSITIONS: dict[str, set[str]] = {
     TASK_STATUS_PENDING: {TASK_STATUS_IN_PROGRESS},
-    TASK_STATUS_IN_PROGRESS: {TASK_STATUS_COMPLETE},
+    TASK_STATUS_IN_PROGRESS: {TASK_STATUS_REVIEW, TASK_STATUS_COMPLETE},
+    TASK_STATUS_REVIEW: {TASK_STATUS_COMPLETE, TASK_STATUS_IN_PROGRESS},
     TASK_STATUS_COMPLETE: set(),
 }
 
@@ -255,6 +257,8 @@ def cmd_init(args: argparse.Namespace) -> None:
 
     components_dir = schematic_dir / "components"
     components_dir.mkdir(parents=True)
+    research_dir = schematic_dir / "research"
+    research_dir.mkdir(parents=True)
 
     (schematic_dir / "objective.md").write_text(_OBJECTIVE_STUB.format(name=args.name))
     (schematic_dir / "tasks.md").write_text(_TASKS_STUB)
@@ -265,7 +269,7 @@ def cmd_init(args: argparse.Namespace) -> None:
 
     print(f"created: {schematic_dir.relative_to(root)}")
     for name in ["objective.md", "tasks.md", "dag.mmd", "sequence.mmd",
-                 "components/_overview.md", STATE_FILENAME]:
+                 "components/_overview.md", "research/", STATE_FILENAME]:
         print(f"  {name}")
 
 # ── status command ─────────────────────────────────────────────────────────────
@@ -645,6 +649,7 @@ def cmd_task(args: argparse.Namespace) -> None:
         "status": _task_status,
         "complete": _task_complete,
         "next": _task_next,
+        "note": _task_note,
     }
     task_handlers[args.task_command](args)
 
@@ -701,6 +706,58 @@ def _task_status(args: argparse.Namespace) -> None:
     save_state(schematic_dir, state)
     print(f"task {args.tag}: {current_status} → {new_status}")
 
+    if new_status == TASK_STATUS_REVIEW:
+        review_request = {
+            "tag": args.tag,
+            "target": task.get("target", "unknown"),
+            "component_file": task.get("component_file"),
+            "requested_at": datetime.now(tz=timezone.utc).isoformat(),
+            "status": "pending",
+        }
+        state["tasks"].setdefault(args.tag, {})["review_request"] = review_request
+        save_state(schematic_dir, state)
+        print(f"\n⚡ REVIEW DISPATCHED for {args.tag}")
+        print(f"  Target: {task.get('target', 'unknown')}")
+        _dispatch_review_agent(schematic_dir, args.tag, task)
+
+
+def _dispatch_review_agent(schematic_dir: Path, tag: str, task: dict) -> None:
+    """Dispatch the code-review-agent to review task files and report back."""
+    import shutil
+
+    claude_bin = shutil.which("claude")
+    if not claude_bin:
+        print("  ⚠ claude CLI not found on PATH — review must be run manually.")
+        print("  Run: claude '/code-review'\n")
+        return
+
+    target = task.get("target", "unknown")
+
+    review_prompt = (
+        f"/code-review\n\n"
+        f"Focus on files related to task '{tag}' (target: {target}).\n"
+        f"After writing the review report, summarize findings as a note:\n"
+        f"  schematic task note {tag} \"<one-line summary of findings>\" --schematic {schematic_dir.name}\n"
+        f"If all lenses PASS, mark the task complete:\n"
+        f"  schematic task status {tag} complete --schematic {schematic_dir.name}\n"
+    )
+
+    review_cmd = [claude_bin, "-p", review_prompt]
+
+    try:
+        proc = subprocess.Popen(
+            review_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=str(find_project_root()),
+        )
+        print(f"  ✓ Code review agent dispatched (PID {proc.pid})")
+        print(f"  Agent runs 4 lenses: pristine code, architecture, test coverage, bugs")
+        print(f"  Report will be written to docs/reviews/code_review.md")
+        print(f"  Notes will be added to task {tag} on completion.\n")
+    except OSError as e:
+        print(f"  ⚠ Failed to dispatch review agent: {e}")
+
 
 def _task_complete(args: argparse.Namespace) -> None:
     schematic_dir = resolve_schematic_dir(args.schematic)
@@ -755,7 +812,69 @@ def _task_next(args: argparse.Namespace) -> None:
 
     print("no pending unblocked tasks found")
 
-# ── argparse + dispatch ────────────────────────────────────────────────────────
+
+def _task_note(args: argparse.Namespace) -> None:
+    schematic_dir = resolve_schematic_dir(args.schematic)
+    state = load_state(schematic_dir)
+    task_state = state["tasks"].setdefault(args.tag, {})
+    notes = task_state.setdefault("notes", [])
+    notes.append({"text": args.text, "ts": datetime.now(tz=timezone.utc).isoformat()})
+    save_state(schematic_dir, state)
+    print(f"note added to {args.tag}: {args.text}")
+
+
+# ── track (lazy-loaded) ───────────────────────────────────────────────────────
+
+def cmd_track(args: argparse.Namespace) -> None:
+    import importlib.util
+    script_dir = Path(__file__).resolve().parent
+    spec = importlib.util.spec_from_file_location("track", script_dir / "track.py")
+    if spec is None or spec.loader is None:
+        _exit_error("track.py not found — skill may be corrupted")
+    track_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(track_mod)
+
+    schematic_dir = resolve_schematic_dir(args.schematic)
+    if args.track_command == "init":
+        track_mod.cmd_track_init(
+            schematic_dir=schematic_dir,
+            entry=args.entry,
+            trace_name=args.trace,
+        )
+    elif args.track_command == "validate":
+        track_mod.cmd_track_validate(
+            schematic_dir=schematic_dir,
+            trace_name=getattr(args, "trace", None),
+        )
+    elif args.track_command == "show":
+        track_mod.cmd_track_show(
+            schematic_dir=schematic_dir,
+            trace_name=getattr(args, "trace", None),
+        )
+
+
+# ── overview (lazy-loaded) ────────────────────────────────────────────────────
+
+def cmd_overview(args: argparse.Namespace) -> None:
+    import importlib.util
+    script_dir = Path(__file__).resolve().parent
+    spec = importlib.util.spec_from_file_location("overview", script_dir / "overview.py")
+    if spec is None or spec.loader is None:
+        _exit_error("overview.py not found — skill may be corrupted")
+    overview_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(overview_mod)
+
+    if args.name:
+        schematic_dir = resolve_schematic_dir(args.name)
+    else:
+        dirs = list_schematic_dirs()
+        if not dirs:
+            _exit_error("no schematics found")
+        schematic_dir = dirs[-1]
+
+    overview_mod.launch_overview(schematic_dir)
+
+# ── argparse + dispatch ───────────────────────────────────────────────────────
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="schematic", description="Schematic planning workflow CLI")
@@ -812,6 +931,30 @@ def _build_parser() -> argparse.ArgumentParser:
     p_tnext = task_sub.add_parser("next", help="Show next unblocked pending task")
     p_tnext.add_argument("name", nargs="?", help="Schematic name (omit for all)")
 
+    p_tnote = task_sub.add_parser("note", help="Add agent note to a task")
+    p_tnote.add_argument("tag", help="Task tag (e.g. a.1)")
+    p_tnote.add_argument("text", help="Note text")
+    p_tnote.add_argument("--schematic", required=True, metavar="NAME")
+
+    p_track = sub.add_parser("track", help="Trace a feature flow E2E")
+    track_sub = p_track.add_subparsers(dest="track_command", required=True)
+
+    p_track_init = track_sub.add_parser("init", help="Scaffold trace directory for a flow")
+    p_track_init.add_argument("--schematic", required=True, metavar="NAME")
+    p_track_init.add_argument("--entry", required=True, help="Entry point (file:line, class, or route)")
+    p_track_init.add_argument("--trace", required=True, metavar="TRACE_NAME", help="Trace name (kebab-case)")
+
+    p_track_validate = track_sub.add_parser("validate", help="Validate trace output files")
+    p_track_validate.add_argument("--schematic", required=True, metavar="NAME")
+    p_track_validate.add_argument("--trace", metavar="TRACE_NAME", help="Validate a single trace (omit for all)")
+
+    p_track_show = track_sub.add_parser("show", help="Display trace summary")
+    p_track_show.add_argument("--schematic", required=True, metavar="NAME")
+    p_track_show.add_argument("--trace", metavar="TRACE_NAME", help="Show a single trace (omit for summary)")
+
+    p_overview = sub.add_parser("overview", help="Launch schematic overview browser")
+    p_overview.add_argument("name", nargs="?", help="Schematic name (omit for current)")
+
     p_setup = sub.add_parser("setup", help="Wire PostToolUse validation hook into .claude/settings.json")
     p_setup.add_argument("--install", action="store_true", help="Write hook (omit for dry run)")
 
@@ -827,6 +970,8 @@ def dispatch(args: argparse.Namespace) -> None:
         "mermaid": cmd_mermaid,
         "phase": cmd_phase,
         "task": cmd_task,
+        "track": cmd_track,
+        "overview": cmd_overview,
     }
     handlers[args.command](args)  # type: ignore[operator]
 

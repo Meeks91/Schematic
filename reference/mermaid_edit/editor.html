@@ -1,63 +1,1360 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8" /><title>Mermaid Editor</title>
+<meta charset="utf-8" /><title>Schematic: Editor</title>
 <style>
-  body { margin:0; font-family: ui-monospace, monospace; display:flex; height:100vh; }
-  #editor { width:40%; display:flex; flex-direction:column; border-right:1px solid #ccc; }
-  textarea { flex:1; border:0; padding:12px; font:13px/1.5 ui-monospace, monospace; resize:none; outline:none; }
-  #bar { padding:8px; border-top:1px solid #ccc; display:flex; gap:6px; align-items:center; }
-  #preview { flex:1; overflow:auto; padding:16px; }
-  #out { transform-origin: 0 0; }
-  button { padding:8px 12px; cursor:pointer; }
-  #status { color:#888; font-size:12px; margin-left:auto; white-space:nowrap; }
-  .err { color:#c00; white-space:pre-wrap; font-size:12px; }
+:root {
+    --bg: #1e1e2e;
+    --surface: #2a2a3e;
+    --border: #3a3a5e;
+    --text: #cdd6f4;
+    --text-dim: #7f849c;
+    --accent: #89b4fa;
+    --accent-hover: #b4d0fb;
+    --yellow: #f9e2af;
+    --red: #f38ba8;
+    --green: #a6e3a1;
+    --preview-bg: #181825;
+    --note-bg: #3a3a5e;
+    --note-border: #89b4fa;
+    --highlight: rgba(137, 180, 250, 0.15);
+    --highlight-border: var(--accent);
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: 'JetBrains Mono', ui-monospace, monospace; display:flex; height:100vh; background: var(--bg); color: var(--text); overflow: hidden; }
+  #editor { width:40%; min-width:200px; display:flex; flex-direction:column; background: var(--surface); }
+  #resizer { width:4px; cursor:col-resize; background: var(--border); flex-shrink:0; transition: background .15s; }
+  #resizer:hover { background: var(--accent); }
+  #src-wrap { flex:1; position:relative; overflow:hidden; }
+  #src-highlight { position:absolute; left:48px; top:0; right:0; height:100%; pointer-events:none; overflow:hidden; padding:14px; font:13px/1.6 'JetBrains Mono', ui-monospace, monospace; white-space:pre-wrap; word-wrap:break-word; color:transparent; }
+  #src-highlight .hl-line { background: var(--highlight); border-left:2px solid var(--highlight-border); margin-left:-14px; padding-left:12px; display:block; }
+  textarea { width:100%; height:100%; border:0; padding:14px 14px 14px 48px; font:13px/1.6 'JetBrains Mono', ui-monospace, monospace; resize:none; outline:none; background:transparent; color:var(--text); tab-size:2; position:relative; z-index:2; }
+  #line-nums { position:absolute; left:0; top:0; width:38px; height:100%; overflow:hidden; padding:14px 6px 14px 0; text-align:right; font:13px/1.6 'JetBrains Mono', ui-monospace, monospace; color:var(--text-dim); pointer-events:none; user-select:none; border-right:1px solid var(--border); z-index:3; }
+  #bar { padding:8px 12px; border-top:1px solid var(--border); display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+
+  /* Diagram chat panel */
+  #diagram-chat-container { border-top:none; min-height:60px; max-height:180px; overflow:hidden; }
+  #diagram-chat-container .qa-bubble { position:relative !important; left:0 !important; top:0 !important; max-width:100% !important; border-radius:0 !important; border:none !important; border-top:none !important; resize:none !important; overflow:visible !important; box-shadow:none !important; min-width:100% !important; }
+  #diagram-chat-container .qa-bubble .qa-drag { display:none !important; }
+  #diagram-chat-container .qa-bubble .qa-close { display:none !important; }
+  #diagram-chat-container .qa-bubble .qa-content { padding:8px 12px; }
+  #diagram-chat-container .qa-bubble .qa-thread { max-height:80px; }
+  #diagram-chat-container .qa-bubble .qa-reply-bar input { font-size:11px; border-color:var(--border); background:var(--bg); }
+  #diagram-chat-container .qa-bubble .qa-reply-bar input:focus { border-color:var(--accent); }
+  #diagram-chat-container .qa-bubble .qa-reply-bar button { border:none; }
+  #preview { flex:1; overflow:auto; padding:24px; position:relative; background: var(--preview-bg); }
+  #out { transform-origin: 0 0; transition: transform .1s ease; }
+
+  /* Mermaid diagram styling */
+  #out svg { filter: none; background: var(--preview-bg); }
+  #out.first-render svg { animation: diagram-entrance 0.6s ease-out; }
+  @keyframes diagram-entrance { from { opacity:0; transform:translateY(12px); } to { opacity:1; transform:translateY(0); } }
+  #out svg rect.basic { fill: #1e1e2e !important; stroke: #4a4a7a !important; stroke-width:1.5px; rx:8; ry:8; }
+  #out svg .cluster rect { fill: rgba(30,30,46,0.8) !important; stroke: #5a5a8a !important; stroke-width:2px; rx:10; ry:10; }
+  #out svg .node { cursor:pointer; transition: all .15s; }
+  #out svg .node:hover { filter: brightness(1.2); }
+  #out svg .node.highlighted rect,
+  #out svg .node.highlighted polygon { stroke: var(--accent) !important; stroke-width:3px !important; filter: drop-shadow(0 0 8px rgba(137,180,250,0.5)); }
+  #out svg text { fill: var(--text); }
+  #out svg .node .nodeLabel, #out svg .node text { font-family: 'SF Pro', -apple-system, BlinkMacSystemFont, sans-serif !important; }
+  #out svg .edgeLabel, #out svg .edgeLabel *, #out svg .edge-label, #out svg .edge-label * { font-family: Arial, Helvetica, sans-serif !important; font-feature-settings:'liga' 0, 'calt' 0 !important; font-variant-ligatures:none !important; -webkit-font-variant-ligatures:none !important; text-rendering:optimizeSpeed !important; }
+  #out svg .nodeLabel { font-size:12px !important; line-height:1.4 !important; text-align:left !important; color: #e0e0f0 !important; }
+  #out svg .node .nodeLabel p { text-align:left !important; margin:0; color: #e0e0f0 !important; }
+  #out svg .cluster-label text,
+  #out svg .cluster-label .nodeLabel,
+  #out svg .cluster-label .nodeLabel p { font-size:17px !important; font-weight:800 !important; fill: #b4d0fb !important; color: #b4d0fb !important; letter-spacing:0.3px; }
+  #out svg .nodeLabel b { font-size:15px !important; font-weight:700 !important; color: #a6e3a1 !important; display:block; margin-bottom:2px; }
+  #out svg .edgeLabel { font-size:12px !important; font-weight:600; font-family: Arial, Helvetica, sans-serif !important; }
+  #out svg .edgeLabel span { color: #f9e2af !important; background: rgba(30,30,46,0.9) !important; padding:2px 6px; border-radius:3px; font-family: Arial, Helvetica, sans-serif !important; text-transform:none !important; letter-spacing:normal !important; font-variant:normal !important; font-feature-settings:'liga' 0, 'calt' 0, 'dlig' 0 !important; font-variant-ligatures:none !important; }
+  #out svg .edgeLabel p { font-family: Arial, Helvetica, sans-serif !important; font-feature-settings:'liga' 0, 'calt' 0, 'dlig' 0 !important; font-variant-ligatures:none !important; }
+  #out svg .edgePath path { stroke: #6a6a9a !important; stroke-width:1.5px; }
+  #out svg .arrowheadPath { fill: #6a6a9a !important; stroke: #6a6a9a !important; }
+  #out svg polygon { fill: #2a2a4e !important; stroke: #5a5a8a !important; }
+  #out svg .flowchart-link { stroke: #6a6a9a !important; }
+  #out svg .marker { fill: #6a6a9a !important; }
+  #out svg .node foreignObject div { font-family: 'SF Pro', -apple-system, sans-serif !important; color: #dde0f0 !important; }
+  #out svg .cluster-label foreignObject div { font-family: 'SF Pro', -apple-system, sans-serif !important; color: #dde0f0 !important; overflow:visible !important; white-space:nowrap !important; }
+
+  button { padding:6px 12px; cursor:pointer; border:1px solid var(--border); border-radius:4px; background:var(--surface); color:var(--text); font-size:12px; font-family:inherit; transition: all .15s; }
+  button:hover { background:var(--accent); color:var(--bg); border-color:var(--accent); }
+  button.primary { background:var(--accent); color:var(--bg); border-color:var(--accent); font-weight:600; }
+  button.primary:hover { background:var(--accent-hover); }
+  button.sm { padding:3px 8px; font-size:10px; }
+  #status { color:var(--text-dim); font-size:11px; margin-left:auto; white-space:nowrap; }
+  #conn-indicator { color:var(--green); font-size:8px; opacity:0; transition:opacity 0.3s; }
+  #conn-indicator.active { opacity:1; animation:heartbeat 1.5s ease-in-out infinite; }
+  @keyframes heartbeat { 0%,100% { opacity:0.6; } 50% { opacity:1; } }
+  .err { color:var(--red); white-space:pre-wrap; font-size:12px; padding:8px; }
+  .badge { display:inline-block; padding:2px 6px; border-radius:3px; font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.5px; }
+  .badge-ok { background:var(--green); color:var(--bg); }
+  .badge-err { background:var(--red); color:var(--bg); }
+
+  /* Context menu */
+  #ctxmenu { display:none; position:fixed; background:rgba(42,42,62,0.85); backdrop-filter:blur(12px); border:1px solid var(--border); border-radius:6px; box-shadow:0 4px 20px rgba(0,0,0,.4); padding:4px 0; z-index:999; min-width:160px; transform-origin:top left; animation:ctx-enter 0.12s ease-out; }
+  @keyframes ctx-enter { from { opacity:0; transform:scale(0.95); } to { opacity:1; transform:scale(1); } }
+  #ctxmenu div { padding:8px 16px; cursor:pointer; font-size:12px; display:flex; align-items:center; gap:8px; }
+  #ctxmenu div:hover { background:var(--accent); color:var(--bg); }
+  #ctxmenu .shortcut { margin-left:auto; color:var(--text-dim); font-size:10px; }
+
+  /* Note input panel */
+  #notepanel { display:none; position:fixed; background:rgba(42,42,62,0.9); backdrop-filter:blur(12px); border:1px solid var(--note-border); border-radius:8px; box-shadow:0 8px 32px rgba(0,0,0,.5); padding:12px; z-index:1000; width:300px; transform-origin:top left; animation:ctx-enter 0.12s ease-out; }
+  #notepanel textarea { width:100%; height:70px; font:12px/1.4 'JetBrains Mono', ui-monospace, monospace; border:1px solid var(--border); border-radius:4px; padding:8px; background:var(--bg); color:var(--text); resize:vertical; outline:none; }
+  #notepanel textarea:focus { border-color:var(--accent); }
+  #notepanel .np-bar { display:flex; gap:6px; margin-top:8px; align-items:center; }
+  #notepanel .np-hint { font-size:10px; color:var(--text-dim); margin-left:auto; }
+
+  /* Sticky notes */
+  .sticky-note { position:absolute; background:rgba(58,58,94,0.85); backdrop-filter:blur(8px); border:1px solid var(--note-border); border-radius:6px; padding:6px 10px; font-size:11px; color:var(--text); max-width:200px; word-wrap:break-word; box-shadow:0 2px 8px rgba(0,0,0,.3); pointer-events:auto; cursor:grab; user-select:none; z-index:50; transition:transform 0.15s cubic-bezier(0.34,1.56,0.64,1), box-shadow 0.15s; }
+  .sticky-note:hover { transform:scale(1.02); box-shadow:0 4px 16px rgba(137,180,250,0.2); }
+  .sticky-note.dragging { cursor:grabbing; opacity:0.9; box-shadow:0 6px 20px rgba(0,0,0,.5); }
+  .sticky-note.pulse { animation: note-pulse 0.6s ease-out; }
+  @keyframes note-pulse { 0% { transform:scale(1); box-shadow:0 2px 8px rgba(0,0,0,.3); } 50% { transform:scale(1.08); box-shadow:0 4px 20px rgba(137,180,250,0.5); } 100% { transform:scale(1); box-shadow:0 2px 8px rgba(0,0,0,.3); } }
+  .sticky-note::before { content:''; position:absolute; top:-5px; left:12px; width:8px; height:8px; background:var(--note-border); border-radius:50%; }
+  .sticky-note .note-close { position:absolute; top:2px; right:4px; cursor:pointer; color:var(--text-dim); font-size:10px; z-index:5; width:16px; height:16px; display:flex; align-items:center; justify-content:center; border-radius:50%; background:var(--surface); border:1px solid var(--border); transition:all 0.15s; }
+  .sticky-note .note-close:hover { color:var(--red); background:rgba(243,139,168,0.15); border-color:var(--red); }
+
+  /* Notes list fallback */
+  #notes-fallback { position:absolute; top:8px; right:8px; max-width:220px; max-height:180px; overflow-y:auto; z-index:40; }
+  #notes-fallback .nf-item { background:var(--note-bg); border:1px solid var(--border); border-radius:4px; padding:4px 8px; margin-bottom:4px; font-size:10px; color:var(--text-dim); }
+
+  /* Keyboard shortcuts */
+  #shortcuts { display:none; position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:24px; z-index:2000; box-shadow:0 16px 64px rgba(0,0,0,.6); min-width:320px; }
+  #shortcuts h3 { margin:0 0 12px; color:var(--accent); font-size:14px; }
+  #shortcuts table { width:100%; font-size:12px; border-collapse:collapse; }
+  #shortcuts td { padding:4px 0; }
+  #shortcuts .key { background:var(--bg); border:1px solid var(--border); border-radius:3px; padding:2px 6px; font-size:11px; }
+  #shortcuts-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:1999; }
+
+  /* Q&A bubble */
+  .qa-bubble { position:absolute; background:var(--bg); border:1px solid var(--accent); border-radius:8px; padding:0; font-size:11px; color:var(--text); max-width:350px; min-width:220px; word-wrap:break-word; box-shadow:0 2px 12px rgba(0,0,0,.4); z-index:50; user-select:none; resize:both; overflow:hidden; backdrop-filter:blur(8px); }
+  .qa-bubble .qa-drag { padding:6px 10px 4px; cursor:grab; background:rgba(137,180,250,0.08); border-bottom:1px solid var(--border); font-size:9px; color:var(--text-dim); letter-spacing:0.5px; display:flex; align-items:center; gap:6px; }
+  .qa-bubble .qa-drag::before { content:'⋮⋮'; font-size:12px; }
+  .qa-bubble .qa-content { padding:8px 12px; }
+  .qa-bubble .qa-close { position:absolute; top:5px; right:8px; cursor:pointer; color:var(--text-dim); font-size:10px; z-index:5; width:18px; height:18px; display:flex; align-items:center; justify-content:center; border-radius:50%; background:var(--surface); border:1px solid var(--border); transition:all 0.15s; }
+  .qa-bubble .qa-close:hover { color:var(--red); background:rgba(243,139,168,0.15); border-color:var(--red); }
+  .qa-bubble .qa-thread { max-height:200px; overflow-y:auto; margin-bottom:6px; cursor:default; user-select:text; scroll-behavior:smooth; }
+  .qa-bubble .qa-msg { padding:4px 0; border-bottom:1px solid var(--border); }
+  .qa-bubble .qa-msg:last-child { border-bottom:none; }
+  .qa-bubble .qa-msg.user { color:var(--accent); }
+  .qa-bubble .qa-msg.agent { color:var(--green); }
+  .qa-bubble .qa-msg.pending { color:var(--yellow); font-style:italic; }
+  .qa-bubble .qa-msg.pending .typing-dots { display:inline-block; }
+  .qa-bubble .qa-msg.pending .typing-dots span { display:inline-block; width:4px; height:4px; border-radius:50%; background:var(--yellow); margin:0 1px; animation:typing-bounce 1.2s infinite; }
+  .qa-bubble .qa-msg.pending .typing-dots span:nth-child(2) { animation-delay:0.2s; }
+  .qa-bubble .qa-msg.pending .typing-dots span:nth-child(3) { animation-delay:0.4s; }
+  @keyframes typing-bounce { 0%,60%,100% { transform:translateY(0); } 30% { transform:translateY(-4px); } }
+  .qa-bubble .qa-msg .qa-role { font-weight:600; font-size:9px; text-transform:uppercase; letter-spacing:.5px; margin-bottom:2px; display:block; }
+  .qa-bubble .qa-reply-bar { display:flex; gap:4px; margin-top:6px; cursor:default; }
+  .qa-bubble .qa-reply-bar input { flex:1; background:var(--surface); border:1px solid var(--border); border-radius:3px; padding:4px 6px; font:11px/1.3 'JetBrains Mono', ui-monospace, monospace; color:var(--text); outline:none; }
+  .qa-bubble .qa-reply-bar input:focus { border-color:var(--accent); }
+
+  /* Fullscreen */
+  body.fullscreen #editor, body.fullscreen #resizer { display:none; }
+  body.fullscreen #right-panel { width:100%; }
+  body.fullscreen #tab-bar { display:none; }
+  #exit-fullscreen { display:none; position:fixed; top:12px; right:12px; z-index:100; }
+  body.fullscreen #exit-fullscreen { display:block; }
+
+  /* Toast notifications */
+  #toast-container { position:fixed; top:12px; right:12px; z-index:3000; display:flex; flex-direction:column; gap:6px; }
+  .toast { background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:8px 14px; font-size:11px; color:var(--text); box-shadow:0 4px 12px rgba(0,0,0,.4); animation: toast-in 0.2s ease-out; }
+  .toast.fade-out { animation: toast-out 0.3s ease-in forwards; }
+  @keyframes toast-in { from { opacity:0; transform:translateY(-8px); } to { opacity:1; transform:translateY(0); } }
+  @keyframes toast-out { from { opacity:1; } to { opacity:0; transform:translateY(-8px); } }
+
+  /* Wave animation — typing dots only (no bubble shake) */
+  .qa-bubble .qa-msg.pending .typing-dots span { animation:typing-wave 1.4s ease-in-out infinite; }
+  @keyframes typing-wave { 0%,100% { opacity:0.4; } 50% { opacity:1; } }
+
+  /* Fallback list delete button */
+  #notes-fallback .nf-item { position:relative; padding-right:20px; cursor:pointer; }
+  #notes-fallback .nf-item:hover { border-color:var(--accent); }
+  #notes-fallback .nf-delete { position:absolute; top:4px; right:4px; cursor:pointer; color:var(--text-dim); font-size:9px; display:none; }
+  #notes-fallback .nf-item:hover .nf-delete { display:block; }
+  #notes-fallback .nf-delete:hover { color:var(--red); }
+
+  /* Light theme */
+  body.light { --bg:#f6f8fa; --surface:#ffffff; --border:#d0d7de; --text:#1f2328; --text-dim:#656d76; --accent:#0969da; --accent-hover:#0550ae; --yellow:#9a6700; --red:#cf222e; --green:#1a7f37; --preview-bg:#f6f8fa; --note-bg:rgba(255,255,255,0.97); --note-border:#0969da; --highlight:rgba(9,105,218,0.1); --highlight-border:#0969da; }
+  body.light #out svg rect.basic { fill:#f6f8fa !important; stroke:#d0d7de !important; stroke-width:1.5px; }
+  body.light #out svg .cluster rect { fill:#eef1f5 !important; stroke:#afb8c1 !important; stroke-width:2px; }
+  body.light #out svg text { fill:#1f2328 !important; }
+  body.light #out svg .edgePath path { stroke:#6e7781 !important; }
+  body.light #out svg .arrowheadPath { fill:#6e7781 !important; stroke:#6e7781 !important; }
+  body.light #out svg polygon { fill:#eef1f5 !important; stroke:#afb8c1 !important; }
+  body.light #out svg .nodeLabel { color:#1f2328 !important; }
+  body.light #out svg .nodeLabel p { color:#1f2328 !important; }
+  body.light #out svg .nodeLabel b { color:#1a7f37 !important; }
+  body.light #out svg .node foreignObject div { color:#1f2328 !important; font-weight:400 !important; }
+  body.light #out svg .edgeLabel span { color:#9a6700 !important; background:rgba(255,255,255,0.95) !important; border:1px solid #d0d7de; }
+  body.light #out svg .cluster-label text,
+  body.light #out svg .cluster-label .nodeLabel,
+  body.light #out svg .cluster-label .nodeLabel p { fill:#0550ae !important; color:#0550ae !important; font-size:17px !important; font-weight:800 !important; letter-spacing:0.3px; }
+  body.light .sticky-note { background:rgba(255,255,255,0.97); border-color:#0969da; color:#1f2328; }
+  body.light .qa-bubble { background:#ffffff; border-color:#0969da; color:#1f2328; }
+  body.light .qa-bubble .qa-msg.user { color:#0969da; }
+  body.light .qa-bubble .qa-msg.agent { color:#1a7f37; }
+  body.light #ctxmenu { background:rgba(255,255,255,0.97); backdrop-filter:blur(12px); }
+  body.light #notepanel { background:rgba(255,255,255,0.97); }
+  body.light button { background:#f6f8fa; border-color:#d0d7de; color:#1f2328; }
+  body.light button:hover { background:#0969da; color:#ffffff; border-color:#0969da; }
+  body.light button.primary { background:#0969da; color:#ffffff; border-color:#0969da; }
+  body.light textarea { color:#1f2328; background:#ffffff; }
+  body.light #resizer { background:#d0d7de; }
+  body.light #resizer:hover { background:#0969da; }
+  body.light #line-nums { color:#656d76; border-right-color:#d0d7de; }
+  body.light .badge-ok { background:#1a7f37; }
+  body.light .badge-err { background:#cf222e; }
+
+  /* Minimap */
+  #minimap { position:fixed; bottom:12px; right:12px; width:150px; height:100px; background:var(--surface); border:1px solid var(--border); border-radius:6px; overflow:hidden; z-index:60; opacity:0.85; display:none; }
+  #minimap:hover { opacity:1; }
+  #minimap svg { width:100%; height:100%; }
+  #minimap .viewport-rect { position:absolute; border:2px solid var(--accent); background:rgba(137,180,250,0.1); pointer-events:none; }
+
+  /* Tab bar */
+  #tab-bar { display:flex; border-bottom:1px solid var(--border); background:var(--surface); flex-shrink:0; }
+  #tab-bar .tab { padding:8px 16px; font-size:12px; cursor:pointer; border-bottom:2px solid transparent; color:var(--text-dim); transition:all 0.15s; user-select:none; }
+  #tab-bar .tab:hover { color:var(--text); background:rgba(137,180,250,0.05); }
+  #tab-bar .tab.active { color:var(--accent); border-bottom-color:var(--accent); font-weight:600; }
+  #tab-bar .tab.hidden { display:none; }
+
+  /* Right panel (holds tab bar + panes) */
+  #right-panel { flex:1; display:flex; flex-direction:column; overflow:hidden; }
+
+  /* Reference pane */
+  #reference-pane { flex:1; overflow:auto; padding:24px 32px; background:var(--preview-bg); display:none; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size:14px; line-height:1.7; color:var(--text); }
+  #reference-pane h1 { font-size:22px; margin:0 0 16px; color:var(--accent); border-bottom:1px solid var(--border); padding-bottom:8px; }
+  #reference-pane h2 { font-size:17px; margin:20px 0 10px; color:var(--text); }
+  #reference-pane h3 { font-size:14px; margin:16px 0 8px; color:var(--text-dim); }
+  #reference-pane code { background:var(--surface); border:1px solid var(--border); border-radius:3px; padding:2px 5px; font-size:12px; font-family:'JetBrains Mono', monospace; }
+  #reference-pane pre { background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:12px 16px; overflow-x:auto; }
+  #reference-pane pre code { border:none; padding:0; background:none; }
+  #reference-pane ul, #reference-pane ol { padding-left:20px; }
+  #reference-pane li { margin-bottom:4px; }
+  #reference-pane table { border-collapse:collapse; width:100%; margin:12px 0; }
+  #reference-pane th, #reference-pane td { border:1px solid var(--border); padding:6px 10px; font-size:12px; text-align:left; }
+  #reference-pane th { background:var(--surface); font-weight:600; }
+  #reference-pane blockquote { border-left:3px solid var(--accent); margin:12px 0; padding:4px 12px; color:var(--text-dim); }
+  #reference-pane a { color:var(--accent); text-decoration:none; }
+  #reference-pane a:hover { text-decoration:underline; }
+
+  /* Search bar */
+  #search-bar { display:none; position:absolute; top:0; left:48px; right:0; height:32px; background:var(--surface); border-bottom:1px solid var(--border); z-index:10; padding:4px 8px; align-items:center; gap:6px; }
+  #search-bar.open { display:flex; }
+  #search-bar input { flex:1; background:var(--bg); border:1px solid var(--border); border-radius:3px; padding:4px 8px; font:11px/1.3 'JetBrains Mono', monospace; color:var(--text); outline:none; }
+  #search-bar input:focus { border-color:var(--accent); }
+  #search-bar .search-count { font-size:10px; color:var(--text-dim); min-width:40px; }
+  .search-match { background:rgba(249,226,175,0.3) !important; border-bottom:1px solid var(--yellow); }
+
+  /* Char counter */
+  .char-count { font-size:9px; color:var(--text-dim); }
+  .char-count.warn { color:var(--red); }
+
+  /* Tooltip */
+  .tooltip { position:absolute; background:var(--surface); border:1px solid var(--border); border-radius:4px; padding:6px 10px; font-size:10px; color:var(--text); max-width:200px; word-wrap:break-word; z-index:100; box-shadow:0 4px 12px rgba(0,0,0,.3); pointer-events:none; }
+
+  /* Resizer enhanced */
+  #resizer { position:relative; }
+  #resizer::after { content:'⋮⋮'; position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); color:var(--text-dim); font-size:10px; opacity:0; transition:opacity 0.15s; }
+  #resizer:hover::after { opacity:1; }
+  #resizer:hover { width:8px; }
+
+  /* Line number highlight */
+  .line-num-highlighted { color:var(--accent) !important; font-weight:600; }
+
+  /* Proximity glow */
+  #out svg .node { opacity: calc(0.85 + var(--proximity, 0) * 0.15); transition: opacity 0.15s, filter 0.25s ease-out; }
+  #out svg .node.highlighted { filter:drop-shadow(0 0 8px var(--accent)); }
+  body.light #out svg .node.highlighted { filter:drop-shadow(0 0 10px rgba(9,105,218,0.5)); }
 </style>
 </head>
 <body>
   <div id="editor">
-    <textarea id="src" spellcheck="false"></textarea>
+    <div id="src-wrap">
+      <div id="search-bar"><input id="search-input" placeholder="Search..." /><span class="search-count" id="search-count">0/0</span><button class="sm" id="search-close">✕</button></div>
+      <div id="line-nums"></div>
+      <div id="src-highlight"></div>
+      <textarea id="src" spellcheck="false"></textarea>
+    </div>
     <div id="bar">
-      <button id="save">Save &amp; Close</button>
+      <button class="primary" id="save">Save &amp; Close</button>
       <button id="zoomout">&minus;</button><button id="zoomin">+</button><button id="zoomreset">fit</button>
+      <button id="fullscreen-btn">expand</button>
+      <button id="theme-toggle" title="Toggle theme">🌙</button>
+      <button id="export-notes-btn" title="Export notes as markdown">📝</button>
+      <button id="shortcuts-btn">?</button>
+      <span id="conn-indicator" title="Poll active">●</span>
       <span id="status"></span>
     </div>
+    <div id="diagram-chat-container"></div>
   </div>
-  <div id="preview"><div id="out"></div><div id="err" class="err"></div></div>
+  <div id="resizer"></div>
+  <div id="right-panel">
+    <div id="tab-bar">
+      <div class="tab active" data-pane="preview">Diagram</div>
+      <div class="tab hidden" data-pane="reference-pane">Reference</div>
+    </div>
+    <div id="preview">
+      <div id="out"></div>
+      <div id="err" class="err"></div>
+      <div id="notes-fallback"></div>
+      <div id="minimap"></div>
+    </div>
+    <div id="reference-pane"></div>
+  </div>
+  <div id="ctxmenu" role="menu">
+    <div id="ctx-add-note" role="menuitem">&#x1f4cc; Add note<span class="shortcut">N</span></div>
+    <div id="ctx-ask-question" role="menuitem">&#x2753; Ask question<span class="shortcut">Q</span></div>
+    <div id="ctx-open-vscode" class="ctx-ide" style="display:none" role="menuitem">&#x270e; Open in VS Code</div>
+    <div id="ctx-open-idea" class="ctx-ide" style="display:none" role="menuitem">&#x2699; Open in IntelliJ</div>
+    <div id="ctx-copy-svg" role="menuitem">&#x1f4cb; Copy SVG<span class="shortcut">C</span></div>
+    <div id="ctx-download-svg" role="menuitem">&#x1f4be; Download SVG</div>
+  </div>
+  <div id="notepanel">
+    <textarea id="note-input" placeholder="Leave a note for the agent..."></textarea>
+    <div class="np-bar">
+      <button class="primary" id="note-submit">Send</button>
+      <button id="note-cancel">Cancel</button>
+      <span class="np-hint">Enter=send &middot; Shift+Enter=newline &middot; Esc=close</span>
+    </div>
+  </div>
+  <button id="exit-fullscreen">&#x2715; Exit Fullscreen</button>
+  <div id="toast-container"></div>
+  <div id="shortcuts-overlay"></div>
+  <div id="shortcuts">
+    <h3>Keyboard Shortcuts</h3>
+    <table>
+      <tr><td><span class="key">Ctrl</span>+<span class="key">S</span></td><td>Save &amp; Close</td></tr>
+      <tr><td><span class="key">Ctrl</span>+<span class="key">F</span></td><td>Search in source</td></tr>
+      <tr><td><span class="key">Ctrl</span>+<span class="key">Shift</span>+<span class="key">F</span></td><td>Toggle fullscreen preview</td></tr>
+      <tr><td><span class="key">Ctrl</span>+<span class="key">+</span>/<span class="key">-</span></td><td>Zoom in/out</td></tr>
+      <tr><td><span class="key">Ctrl</span>+<span class="key">0</span></td><td>Reset zoom</td></tr>
+      <tr><td><span class="key">Alt</span>+<span class="key">1</span>/<span class="key">2</span></td><td>Switch tab (Diagram/Reference)</td></tr>
+      <tr><td><span class="key">Esc</span></td><td>Close panel / exit fullscreen</td></tr>
+      <tr><td>Click node in diagram</td><td>Highlight source line</td></tr>
+      <tr><td><span class="key">?</span></td><td>Show shortcuts</td></tr>
+    </table>
+  </div>
+<script src="/mermaid.min.js"></script>
+<script src="/qa-bubble-component.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script type="module">
-import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
-mermaid.initialize({ startOnLoad:false, maxTextSize: 5_000_000, maxEdges: 100_000 });
+
+const mermaid = window.mermaid;
+mermaid.initialize({ startOnLoad:false, maxTextSize: 5_000_000, maxEdges: 100_000, theme: 'dark', flowchart: { htmlLabels: false } });
+
 const src = document.getElementById("src");
+const srcHighlight = document.getElementById("src-highlight");
 const out = document.getElementById("out");
 const err = document.getElementById("err");
 const status = document.getElementById("status");
+const editor = document.getElementById("editor");
+const resizer = document.getElementById("resizer");
+const preview = document.getElementById("preview");
+const ctxmenu = document.getElementById("ctxmenu");
+const notepanel = document.getElementById("notepanel");
+const noteInput = document.getElementById("note-input");
+const notesFallback = document.getElementById("notes-fallback");
+const lineNums = document.getElementById("line-nums");
+const shortcutsPanel = document.getElementById("shortcuts");
+const shortcutsOverlay = document.getElementById("shortcuts-overlay");
+
 let scale = 1;
+let notes = [];
+let noteCtx = { x: 0, y: 0, previewX: 0, previewY: 0 };
+let highlightedLines = new Set();
+let pollIntervals = {};
+let renderCount = 0;
+let nodePaths = {};
+let ctxNodeId = null;
+let deletedNotesStack = [];
+
 const applyScale = () => { out.style.transform = `scale(${scale})`; };
-const setStatus = (note) => {
+
+const setStatus = (msg) => {
   const lineCount = src.value.split("\n").length;
-  status.textContent = `${lineCount} lines · ${src.value.length} chars${note ? " · " + note : ""}`;
+  const zoomPct = Math.round(scale * 100) + "%";
+  status.textContent = `${lineCount}L · ${src.value.length}ch · ${zoomPct}${msg ? " · " + msg : ""}`;
 };
+
+// Line numbers
+function updateLineNums() {
+  const lines = src.value.split("\n").length;
+  lineNums.innerHTML = Array.from({length: lines}, (_, i) => `<div>${i+1}</div>`).join("");
+}
+
+// Source highlighting
+function updateHighlight() {
+  const lines = src.value.split("\n");
+  srcHighlight.innerHTML = lines.map((line, i) =>
+    highlightedLines.has(i) ? `<span class="hl-line">${escHtml(line)}\n</span>` : escHtml(line) + "\n"
+  ).join("");
+  srcHighlight.style.transform = `translateY(-${src.scrollTop}px)`;
+}
+function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+src.addEventListener("scroll", () => {
+  lineNums.style.transform = `translateY(-${src.scrollTop}px)`;
+  srcHighlight.style.transform = `translateY(-${src.scrollTop}px)`;
+});
+src.addEventListener("input", () => { updateLineNums(); updateHighlight(); });
+
+// Find node ID in source — strip SVG prefix + final -N suffix
+function highlightNodeInSource(nodeId) {
+  highlightedLines.clear();
+  const lines = src.value.split("\n");
+  // Mermaid v11 IDs: "<svgId>-flowchart-<nodeId>-<index>" e.g. "g5-flowchart-A-0"
+  const match = nodeId.match(/(?:flowchart|graph)-(.+)-\d+$/);
+  if (!match) return;
+  const cleanId = match[1];
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (trimmed.startsWith(cleanId + "[") || trimmed.startsWith(cleanId + "{") ||
+        trimmed.startsWith(cleanId + "(") || trimmed.startsWith(cleanId + '"') ||
+        trimmed.startsWith(cleanId + " ") || trimmed.startsWith(cleanId + "-") ||
+        trimmed === cleanId) {
+      highlightedLines.add(i);
+    }
+  }
+  if (highlightedLines.size > 0) {
+    const firstLine = [...highlightedLines][0];
+    const lineHeight = 20.8;
+    src.scrollTop = Math.max(0, firstLine * lineHeight - 100);
+  }
+  updateHighlight();
+}
+
+// Render
 let renderTimer;
+
+function snapshotOverlays() {
+  const overlays = [];
+  preview.querySelectorAll(".qa-bubble").forEach(el => {
+    overlays.push({ type: "bubble", left: el.style.left, top: el.style.top, idx: el.dataset.idx, html: el.innerHTML, width: el.style.width, height: el.style.height });
+  });
+  preview.querySelectorAll(".sticky-note").forEach(el => {
+    overlays.push({ type: "note", left: el.style.left, top: el.style.top, idx: el.dataset.idx, html: el.innerHTML });
+  });
+  return overlays;
+}
+
+function restoreOverlays(overlays) {
+  overlays.forEach(ov => {
+    if (ov.type === "bubble") {
+      const el = document.createElement("div");
+      el.className = "qa-bubble";
+      el.style.left = ov.left;
+      el.style.top = ov.top;
+      el.dataset.idx = ov.idx;
+      if (ov.width) el.style.width = ov.width;
+      if (ov.height) el.style.height = ov.height;
+      el.innerHTML = ov.html;
+      preview.appendChild(el);
+    } else if (ov.type === "note") {
+      const el = document.createElement("div");
+      el.className = "sticky-note";
+      el.style.left = ov.left;
+      el.style.top = ov.top;
+      el.dataset.idx = ov.idx;
+      el.innerHTML = ov.html;
+      preview.appendChild(el);
+    }
+  });
+}
+
 async function render() {
   err.textContent = "";
-  try { const { svg } = await mermaid.render("g", src.value); out.innerHTML = svg; applyScale(); }
-  catch (e) { err.textContent = String(e.message || e); }
-  setStatus("");
+  const savedOverlays = snapshotOverlays();
+  try {
+    renderCount++;
+    if (renderCount === 1) out.classList.add("first-render");
+    else out.classList.remove("first-render");
+    const { svg } = await mermaid.render("g" + renderCount, src.value);
+    out.innerHTML = svg;
+    // Fix truncation: override mermaid's tight inline width constraints
+    out.querySelectorAll(".node foreignObject").forEach(el => {
+      el.style.overflow = "visible";
+      const w = parseInt(el.getAttribute("width") || "0");
+      if (w < 300) el.setAttribute("width", "300");
+    });
+    out.querySelectorAll(".node foreignObject div").forEach(el => {
+      el.style.maxWidth = "none";
+    });
+    out.querySelectorAll(".cluster-label foreignObject").forEach(el => {
+      el.style.overflow = "visible";
+      const w = parseInt(el.getAttribute("width") || "0");
+      if (w < 200) el.setAttribute("width", "200");
+    });
+    out.querySelectorAll(".cluster-label foreignObject div").forEach(el => {
+      el.style.maxWidth = "none";
+    });
+    // Fix edge labels: NUCLEAR — inline !important on every element inside edgeLabel
+    out.querySelectorAll(".edgeLabel").forEach(label => {
+      label.querySelectorAll("*").forEach(el => {
+        el.style.setProperty("font-family", "Arial, Helvetica, sans-serif", "important");
+        el.style.setProperty("font-feature-settings", "'liga' 0, 'calt' 0", "important");
+        el.style.setProperty("font-variant-ligatures", "none", "important");
+      });
+      label.style.setProperty("font-family", "Arial, Helvetica, sans-serif", "important");
+      label.style.setProperty("font-feature-settings", "'liga' 0, 'calt' 0", "important");
+      label.style.setProperty("font-variant-ligatures", "none", "important");
+      // Color yes/no labels
+      const text = label.textContent.trim().toLowerCase();
+      const span = label.querySelector("span");
+      if (span) {
+        if (text === "yes") { span.style.setProperty("background", "rgba(34,134,58,0.25)", "important"); span.style.setProperty("color", "#a6e3a1", "important"); span.style.setProperty("border", "1px solid rgba(166,227,161,0.4)", "important"); }
+        else if (text === "no") { span.style.setProperty("background", "rgba(243,139,168,0.2)", "important"); span.style.setProperty("color", "#f38ba8", "important"); span.style.setProperty("border", "1px solid rgba(243,139,168,0.4)", "important"); }
+      }
+    });
+    applyScale();
+    attachNodeClickHandlers();
+    restoreOverlays(savedOverlays);
+    setStatus("");
+    status.innerHTML = `<span class="badge badge-ok">OK</span> ` + status.textContent;
+  } catch (e) {
+    err.textContent = String(e.message || e);
+    restoreOverlays(savedOverlays);
+    setStatus("");
+    status.innerHTML = `<span class="badge badge-err">ERR</span> ` + status.textContent;
+  }
 }
+
+function attachNodeClickHandlers() {
+  const nodes = out.querySelectorAll(".node");
+  nodes.forEach(node => {
+    node.addEventListener("click", (e) => {
+      e.stopPropagation();
+      out.querySelectorAll(".node.highlighted").forEach(n => n.classList.remove("highlighted"));
+      node.classList.add("highlighted");
+      highlightNodeInSource(node.id);
+    });
+  });
+}
+
 src.addEventListener("input", () => {
   setStatus("editing…");
   clearTimeout(renderTimer);
-  renderTimer = setTimeout(render, 300);
+  renderTimer = setTimeout(render, 400);
 });
-document.getElementById("zoomin").onclick = () => { scale = Math.min(scale * 1.25, 8); applyScale(); };
-document.getElementById("zoomout").onclick = () => { scale = Math.max(scale / 1.25, 0.05); applyScale(); };
-document.getElementById("zoomreset").onclick = () => { scale = 1; applyScale(); };
-document.getElementById("save").addEventListener("click", async () => {
+
+// Clear highlight on click elsewhere in preview
+preview.addEventListener("click", (e) => {
+  if (!e.target.closest(".node") && !e.target.closest(".sticky-note") && !e.target.closest(".qa-bubble")) {
+    out.querySelectorAll(".node.highlighted").forEach(n => n.classList.remove("highlighted"));
+    highlightedLines.clear();
+    updateHighlight();
+  }
+});
+
+// Zoom
+document.getElementById("zoomin").onclick = () => { scale = Math.min(scale * 1.25, 8); applyScale(); setStatus(""); };
+document.getElementById("zoomout").onclick = () => { scale = Math.max(scale / 1.25, 0.05); applyScale(); setStatus(""); };
+document.getElementById("zoomreset").onclick = () => { scale = 1; applyScale(); setStatus(""); };
+
+// Save
+async function saveAndClose() {
   await fetch("/save", { method:"POST", body: src.value });
-  setStatus("saved — you can close this tab");
+  setStatus("saved ✓");
+  showToast("Diagram saved ✓");
+}
+document.getElementById("save").addEventListener("click", () => saveAndClose());
+
+// Fullscreen
+document.getElementById("fullscreen-btn").addEventListener("click", () => { document.body.classList.toggle("fullscreen"); });
+document.getElementById("exit-fullscreen").addEventListener("click", () => { document.body.classList.remove("fullscreen"); });
+
+// Shortcuts panel
+function toggleShortcuts() {
+  const show = shortcutsPanel.style.display !== "block";
+  shortcutsPanel.style.display = show ? "block" : "none";
+  shortcutsOverlay.style.display = show ? "block" : "none";
+}
+document.getElementById("shortcuts-btn").addEventListener("click", toggleShortcuts);
+shortcutsOverlay.addEventListener("click", toggleShortcuts);
+
+// Resizable left panel
+let isResizing = false;
+resizer.addEventListener("mousedown", (e) => { isResizing = true; document.body.style.cursor = "col-resize"; e.preventDefault(); });
+document.addEventListener("mousemove", (e) => {
+  if (!isResizing && !dragTarget) return;
+  if (isResizing) {
+    const newWidth = e.clientX;
+    if (newWidth > 150 && newWidth < window.innerWidth - 200) {
+      editor.style.width = newWidth + "px";
+    }
+  }
+  if (dragTarget) {
+    const dx = e.clientX - dragStart.x;
+    const dy = e.clientY - dragStart.y;
+    dragTarget.style.left = (dragStartPos.x + dx) + "px";
+    dragTarget.style.top = (dragStartPos.y + dy) + "px";
+  }
 });
+document.addEventListener("mouseup", () => {
+  isResizing = false;
+  document.body.style.cursor = "";
+  if (dragTarget) {
+    dragTarget.classList.remove("dragging");
+    dragTarget = null;
+  }
+});
+
+// Drag support for QA bubbles and sticky notes
+let dragTarget = null;
+let dragStart = { x: 0, y: 0 };
+let dragStartPos = { x: 0, y: 0 };
+
+preview.addEventListener("mousedown", (e) => {
+  const dragHandle = e.target.closest(".qa-drag");
+  const stickyNote = e.target.closest(".sticky-note");
+  const bubble = dragHandle ? dragHandle.closest(".qa-bubble") : null;
+  const target = bubble || stickyNote;
+  if (!target) return;
+  if (e.target.closest(".qa-thread, .qa-reply-bar, .qa-close, .note-close, .qa-content")) return;
+  dragTarget = target;
+  dragTarget.classList.add("dragging");
+  dragStart = { x: e.clientX, y: e.clientY };
+  dragStartPos = { x: target.offsetLeft, y: target.offsetTop };
+  e.preventDefault();
+});
+
+// Right-click context menu
+preview.addEventListener("contextmenu", (e) => {
+  e.preventDefault();
+  const rect = preview.getBoundingClientRect();
+  noteCtx = { x: e.clientX, y: e.clientY, previewX: e.clientX - rect.left + preview.scrollLeft, previewY: e.clientY - rect.top + preview.scrollTop };
+
+  // Check if right-clicked on a node — show IDE options always
+  const nodeEl = e.target.closest(".node");
+  ctxNodeId = null;
+  const ideItems = document.querySelectorAll(".ctx-ide");
+  ideItems.forEach(el => el.style.display = "flex");
+  if (nodeEl) {
+    const match = nodeEl.id.match(/(?:flowchart|graph)-(.+)-\d+$/);
+    if (match && nodePaths[match[1]]) {
+      ctxNodeId = match[1];
+    }
+  }
+
+  ctxmenu.style.display = "block";
+  ctxmenu.style.left = e.clientX + "px";
+  ctxmenu.style.top = e.clientY + "px";
+});
+
+// Dismiss panels on mousedown outside
+document.addEventListener("mousedown", (e) => {
+  if (ctxmenu.contains(e.target)) return;
+  ctxmenu.style.display = "none";
+  if (notepanel.style.display === "block" && !notepanel.contains(e.target) && !e.target.closest(".qa-bubble") && !e.target.closest(".sticky-note")) {
+    if (Date.now() - panelOpenedAt < 200) return;
+    notepanel.style.display = "none";
+  }
+});
+
+// Add note
+document.getElementById("ctx-add-note").addEventListener("click", () => {
+  ctxmenu.style.display = "none";
+  new NoteBubble(preview, {
+    context: "diagram:" + document.title,
+    position: { x: noteCtx.previewX, y: noteCtx.previewY },
+    onSave: async (text, ctx) => {
+      const note = { text, x: noteCtx.previewX, y: noteCtx.previewY, ts: new Date().toISOString() };
+      notes.push({ type: "note", data: note });
+      renderNote(note, notes.length - 1);
+      await fetch("/note", { method:"POST", body:JSON.stringify(note), headers:{"Content-Type":"application/json"} });
+      showToast("Note saved ✓");
+    },
+  });
+});
+
+// Ask question
+document.getElementById("ctx-ask-question").addEventListener("click", () => {
+  ctxmenu.style.display = "none";
+  new QABubble(preview, {
+    context: "diagram:" + document.title,
+    position: { x: noteCtx.previewX, y: noteCtx.previewY },
+    onQuestion: async (text, ctx) => {
+      const q = { thread:[{role:"user",text},{role:"pending",text:""}], x:noteCtx.previewX, y:noteCtx.previewY, ts:new Date().toISOString(), idx:notes.length, context:ctx };
+      const res = await fetch("/question", { method:"POST", body:JSON.stringify(q), headers:{"Content-Type":"application/json"} });
+      const { idx: serverIdx } = await res.json();
+      return { serverIdx };
+    },
+    pollAnswers: async (serverIdx) => {
+      try {
+        const res = await fetch("/answers");
+        const answers = await res.json();
+        const matching = answers.filter(a => Number(a.idx) === Number(serverIdx));
+        if (matching.length > 0) return matching[matching.length - 1].answer;
+      } catch(e) {}
+      return null;
+    },
+  });
+});
+
+// Copy SVG
+document.getElementById("ctx-copy-svg").addEventListener("click", async () => {
+  ctxmenu.style.display = "none";
+  await navigator.clipboard.writeText(out.innerHTML);
+  setStatus("SVG copied ✓");
+  showToast("SVG copied to clipboard ✓");
+});
+
+// Download SVG
+document.getElementById("ctx-download-svg").addEventListener("click", () => {
+  ctxmenu.style.display = "none";
+  const blob = new Blob([out.innerHTML], { type: "image/svg+xml" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "diagram.svg"; a.click();
+  URL.revokeObjectURL(url);
+  setStatus("downloaded ✓");
+  showToast("SVG downloaded ✓");
+});
+
+// Open in IDE
+document.getElementById("ctx-open-vscode").addEventListener("click", () => {
+  ctxmenu.style.display = "none";
+  if (ctxNodeId && nodePaths[ctxNodeId]) {
+    fetch("/open", { method:"POST", body: JSON.stringify({ ide:"vscode", path: nodePaths[ctxNodeId] }), headers:{"Content-Type":"application/json"} });
+    setStatus("opening in VS Code...");
+  }
+});
+document.getElementById("ctx-open-idea").addEventListener("click", () => {
+  ctxmenu.style.display = "none";
+  if (ctxNodeId && nodePaths[ctxNodeId]) {
+    fetch("/open", { method:"POST", body: JSON.stringify({ ide:"idea", path: nodePaths[ctxNodeId] }), headers:{"Content-Type":"application/json"} });
+    setStatus("opening in IntelliJ...");
+  }
+});
+
+// Legacy note panel kept for keyboard shortcut note-submit (Enter in textarea)
+let panelOpenedAt = 0;
+document.getElementById("note-cancel").addEventListener("click", () => { notepanel.style.display = "none"; });
+document.getElementById("note-submit").addEventListener("click", async () => {
+  const text = noteInput.value.trim();
+  if (!text) return;
+  notepanel.style.display = "none";
+  const note = { text, x: noteCtx.previewX, y: noteCtx.previewY, ts: new Date().toISOString() };
+  notes.push({ type: "note", data: note });
+  renderNote(note, notes.length - 1);
+  await fetch("/note", { method: "POST", body: JSON.stringify(note), headers: { "Content-Type": "application/json" } });
+  showToast("Note saved ✓");
+});
+
+const ALLOWED_ROLES = new Set(["user", "agent", "pending"]);
+
+// Multi-turn reply + close buttons
+preview.addEventListener("click", async (e) => {
+  if (e.target.classList.contains("qa-close")) {
+    const idx = parseInt(e.target.dataset.idx);
+    if (pollIntervals[idx]) { clearTimeout(pollIntervals[idx]); delete pollIntervals[idx]; updateConnIndicator(); }
+    e.target.closest(".qa-bubble").remove();
+    return;
+  }
+  if (e.target.classList.contains("note-close")) {
+    const idx = parseInt(e.target.closest(".sticky-note").dataset.idx);
+    const noteData = notes[idx];
+    if (noteData) deletedNotesStack.push({ note: noteData.data, idx });
+    if (deletedNotesStack.length > 20) deletedNotesStack.shift();
+    e.target.closest(".sticky-note").remove();
+    const matchingNf = notesFallback.querySelector(`.nf-item[data-idx="${idx}"]`);
+    if (matchingNf) matchingNf.remove();
+    fetch("/note-delete", { method:"POST", body:JSON.stringify({idx}), headers:{"Content-Type":"application/json"} });
+    return;
+  }
+  if (e.target.closest(".nf-item")) {
+    const nfItem = e.target.closest(".nf-item");
+    if (e.target.classList.contains("nf-delete")) return;
+    const nfIdx = nfItem.dataset.idx;
+    const stickyEl = preview.querySelector(`.sticky-note[data-idx="${nfIdx}"]`);
+    if (stickyEl) {
+      stickyEl.scrollIntoView({ behavior: "smooth", block: "center" });
+      stickyEl.classList.add("pulse");
+      stickyEl.style.zIndex = "100";
+      stickyEl.style.transform = "scale(1.15)";
+      stickyEl.style.boxShadow = "0 6px 24px rgba(137,180,250,0.5)";
+      setTimeout(() => {
+        stickyEl.classList.remove("pulse");
+        stickyEl.style.transform = "";
+        stickyEl.style.boxShadow = "";
+        stickyEl.style.zIndex = "";
+        // Trigger dblclick to open for editing
+        stickyEl.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+      }, 800);
+    }
+    return;
+  }
+  if (e.target.classList.contains("qa-reply-btn")) {
+    return;
+  }
+});
+
+// Reply on Enter in input
+preview.addEventListener("keydown", (e) => {
+  if (e.target.matches(".qa-reply-bar input") && e.key === "Enter") {
+    e.preventDefault();
+    e.target.parentElement.querySelector(".qa-reply-btn")?.click();
+  }
+});
+
+// Polling with cleanup
+const connIndicator = document.getElementById("conn-indicator");
+const POLL_INTERVAL = 2000;
+
+function updateConnIndicator() {
+  const hasActive = Object.keys(pollIntervals).length > 0;
+  connIndicator.classList.toggle("active", hasActive);
+}
+function startPolling(localIdx, serverIdx) {
+  if (pollIntervals[localIdx]) clearTimeout(pollIntervals[localIdx]);
+  let lastAnswerCount = 0;
+  updateConnIndicator();
+
+  function schedulePoll() {
+    pollIntervals[localIdx] = setTimeout(async () => {
+      try {
+        const res = await fetch("/answers");
+        const answers = await res.json();
+        const matching = answers.filter(a => Number(a.idx) === Number(serverIdx));
+        if (matching.length > lastAnswerCount) {
+          const latest = matching[matching.length - 1];
+          appendToThread(localIdx, { role: "agent", text: latest.answer });
+          lastAnswerCount = matching.length;
+          delete pollIntervals[localIdx];
+          updateConnIndicator();
+          return;
+        }
+      } catch (e) {}
+      schedulePoll();
+    }, POLL_INTERVAL);
+  }
+  schedulePoll();
+}
+
+function renderNote(note, idx) {
+  const el = document.createElement("div");
+  el.className = "sticky-note";
+  el.style.left = note.x + "px";
+  el.style.top = note.y + "px";
+  el.innerHTML = `<span class="note-close">✕</span><span class="note-text">${escHtml(note.text)}</span>`;
+  el.dataset.idx = idx;
+  preview.appendChild(el);
+  rebuildFallbackList();
+}
+
+function rebuildFallbackList() {
+  notesFallback.innerHTML = '';
+  notes.forEach((entry, idx) => {
+    if (!entry || entry.type !== 'note') return;
+    const li = document.createElement("div");
+    li.className = "nf-item";
+    li.innerHTML = `${escHtml(entry.data.text)}<span class="nf-delete">✕</span>`;
+    li.dataset.idx = idx;
+    notesFallback.appendChild(li);
+  });
+}
+
+// Delegated double-click to edit sticky notes (survives re-render)
+preview.addEventListener("dblclick", (e) => {
+  const el = e.target.closest(".sticky-note");
+  if (!el) return;
+  e.stopPropagation();
+  const idx = parseInt(el.dataset.idx);
+  const noteData = notes[idx];
+  if (!noteData || noteData.type !== "note") return;
+  const textSpan = el.querySelector(".note-text");
+  if (!textSpan) return;
+  const ta = document.createElement("textarea");
+  ta.value = noteData.data.text;
+  ta.style.cssText = "width:100%;height:60px;font:11px/1.4 'JetBrains Mono',monospace;background:var(--bg);color:var(--text);border:1px solid var(--accent);border-radius:3px;padding:4px;resize:vertical;outline:none;";
+  textSpan.replaceWith(ta);
+  ta.focus();
+  const save = () => {
+    const newText = ta.value.trim();
+    if (newText && newText !== noteData.data.text) {
+      noteData.data.text = newText;
+      fetch("/note-update", { method:"POST", body:JSON.stringify({idx, text:newText}), headers:{"Content-Type":"application/json"} });
+      const matchingNf = notesFallback.querySelector(`.nf-item[data-idx="${idx}"]`);
+      if (matchingNf) matchingNf.textContent = newText;
+    }
+    const span = document.createElement("span");
+    span.className = "note-text";
+    span.textContent = noteData.data.text;
+    ta.replaceWith(span);
+  };
+  ta.addEventListener("blur", save);
+  ta.addEventListener("keydown", (ev) => { if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); ta.blur(); } });
+});
+
+// Toast utility
+function showToast(msg) {
+  const container = document.getElementById("toast-container");
+  const t = document.createElement("div");
+  t.className = "toast";
+  t.textContent = msg;
+  container.appendChild(t);
+  setTimeout(() => { t.classList.add("fade-out"); setTimeout(() => t.remove(), 300); }, 2000);
+}
+
+// Fallback list delete
+notesFallback.addEventListener("click", (e) => {
+  if (e.target.classList.contains("nf-delete")) {
+    e.stopPropagation();
+    const nfItem = e.target.closest(".nf-item");
+    const idx = parseInt(nfItem.dataset.idx);
+    const noteData = notes[idx];
+    if (noteData) deletedNotesStack.push({ note: noteData.data, idx });
+    if (deletedNotesStack.length > 20) deletedNotesStack.shift();
+    nfItem.remove();
+    const sticky = preview.querySelector(`.sticky-note[data-idx="${idx}"]`);
+    if (sticky) sticky.remove();
+    fetch("/note-delete", { method:"POST", body:JSON.stringify({idx}), headers:{"Content-Type":"application/json"} });
+    return;
+  }
+});
+
+// Undo deleted note (Ctrl+Z)
+function undoDeleteNote() {
+  if (deletedNotesStack.length === 0) return;
+  const { note, idx } = deletedNotesStack.pop();
+  notes[idx] = { type: "note", data: note };
+  renderNote(note, idx);
+  fetch("/note", { method: "POST", body: JSON.stringify(note), headers: { "Content-Type": "application/json" } });
+  showToast("Note restored");
+}
+
+// Keyboard shortcuts
+document.addEventListener("keydown", (e) => {
+  if (e.target.matches(".qa-reply-bar input") || e.target === noteInput || e.target === src) {
+    if (e.key === "Escape") { notepanel.style.display = "none"; }
+    if (e.target === noteInput && e.key === "Enter" && !e.shiftKey) { e.preventDefault(); document.getElementById("note-submit").click(); }
+    if (e.ctrlKey && e.key === "s") { e.preventDefault(); saveAndClose(); }
+    return;
+  }
+  if (e.key === "Escape") {
+    ctxmenu.style.display = "none";
+    notepanel.style.display = "none";
+    if (shortcutsPanel.style.display === "block") toggleShortcuts();
+    if (document.body.classList.contains("fullscreen")) document.body.classList.remove("fullscreen");
+    return;
+  }
+  if (e.key === "?") { toggleShortcuts(); return; }
+  if (e.ctrlKey && e.key === "z") { e.preventDefault(); undoDeleteNote(); return; }
+  if (e.ctrlKey && e.key === "s") { e.preventDefault(); saveAndClose(); }
+  if (e.ctrlKey && e.key === "f") { e.preventDefault(); openSearch(); }
+  if (e.ctrlKey && e.shiftKey && e.key === "F") { e.preventDefault(); document.body.classList.toggle("fullscreen"); }
+  if (e.ctrlKey && (e.key === "=" || e.key === "+")) { e.preventDefault(); scale = Math.min(scale * 1.25, 8); applyScale(); }
+  if (e.ctrlKey && e.key === "-") { e.preventDefault(); scale = Math.max(scale / 1.25, 0.05); applyScale(); }
+  if (e.ctrlKey && e.key === "0") { e.preventDefault(); scale = 1; applyScale(); }
+  if (e.altKey && e.key === "1") { e.preventDefault(); switchTab("preview"); }
+  if (e.altKey && e.key === "2") { e.preventDefault(); const refTab = tabBar.querySelector('[data-pane="reference-pane"]'); if (refTab && !refTab.classList.contains("hidden")) switchTab("reference-pane"); }
+});
+
+// Init
 src.value = await (await fetch("/content")).text();
+let lastKnownHash = "";
+try { const h = await (await fetch("/content-hash")).json(); lastKnownHash = h.hash; } catch(e) {}
+try { nodePaths = await (await fetch("/paths")).json(); } catch(e) { nodePaths = {}; }
+updateLineNums();
+updateHighlight();
 render();
+
+// Load persisted notes on init
+try {
+  const notesRes = await fetch("/notes");
+  const savedNotes = await notesRes.json();
+  savedNotes.forEach((note, idx) => {
+    notes.push({ type: "note", data: note });
+    renderNote(note, idx);
+  });
+} catch(e) {}
+
+// === ThemeSystem (c.4) ===
+function applyLightSvgOverrides() {
+  if (!document.body.classList.contains("light")) return;
+  // SVG and preview backgrounds
+  const svgEl = out.querySelector("svg");
+  if (svgEl) { svgEl.style.background = "#f6f8fa"; }
+  out.style.background = "#f6f8fa";
+  // Node boxes: light blue tint, strong border
+  out.querySelectorAll(".node rect, .node polygon").forEach(el => { el.setAttribute("fill", "#f0f7ff"); el.setAttribute("stroke", "#4a90d9"); el.setAttribute("stroke-width", "1.5"); });
+  // Cluster boxes: very light grey
+  out.querySelectorAll(".cluster rect").forEach(el => { el.setAttribute("fill", "#f8fafb"); el.setAttribute("stroke", "#b8c4ce"); el.setAttribute("stroke-width", "2"); });
+  // Decision diamonds — light blue
+  out.querySelectorAll(".node polygon").forEach(el => { el.setAttribute("fill", "#e8f2fd"); el.setAttribute("stroke", "#4a90d9"); });
+  // ALL text defaults to dark
+  out.querySelectorAll("text").forEach(el => { el.setAttribute("fill", "#1f2328"); });
+  // Cluster titles: bold blue (bigger than node text — CSS handles size)
+  out.querySelectorAll(".cluster-label text").forEach(el => { el.setAttribute("fill", "#0550ae"); });
+  // Edges
+  out.querySelectorAll(".edgePath path, .flowchart-link").forEach(el => { el.setAttribute("stroke", "#6e7781"); });
+  out.querySelectorAll(".arrowheadPath, .marker").forEach(el => { el.setAttribute("fill", "#6e7781"); el.setAttribute("stroke", "#6e7781"); });
+  // Edge labels
+  out.querySelectorAll(".edgeLabel span").forEach(el => { el.style.color = "#7c4d12"; el.style.background = "rgba(255,255,255,0.95)"; });
+  // Background rect
+  out.querySelectorAll("rect.background").forEach(el => { el.setAttribute("fill", "#f6f8fa"); });
+}
+function initTheme() {
+  const urlParams = new URLSearchParams(window.location.search);
+  const paramTheme = urlParams.get("theme");
+  const saved = paramTheme || localStorage.getItem("mermaid-editor-theme");
+  const prefersDark = !window.matchMedia("(prefers-color-scheme: light)").matches;
+  if (saved === "light" || (!saved && !prefersDark)) {
+    document.body.classList.add("light");
+    document.getElementById("theme-toggle").textContent = "☀️";
+  }
+}
+function toggleTheme() {
+  const isLight = document.body.classList.toggle("light");
+  localStorage.setItem("mermaid-editor-theme", isLight ? "light" : "dark");
+  document.getElementById("theme-toggle").textContent = isLight ? "☀️" : "🌙";
+  if (isLight) {
+    document.body.style.background = "#f6f8fa";
+    editor.style.background = "#ffffff";
+    preview.style.background = "#f6f8fa";
+    const svgEl = out.querySelector("svg");
+    if (svgEl) svgEl.style.background = "#f6f8fa";
+    applyLightSvgOverrides();
+  } else {
+    document.body.style.background = "";
+    editor.style.background = "";
+    preview.style.background = "";
+    const svgEl = out.querySelector("svg");
+    if (svgEl) svgEl.style.background = "";
+    render();
+  }
+}
+document.getElementById("theme-toggle").addEventListener("click", toggleTheme);
+initTheme();
+
+// === KeyboardAccessibilitySystem (c.2) ===
+function initContextMenuKeyboard() {
+  ctxmenu.addEventListener("keydown", (e) => {
+    const items = [...ctxmenu.querySelectorAll("div:not([style*='display:none'])")];
+    const focused = document.activeElement;
+    const idx = items.indexOf(focused);
+    if (e.key === "ArrowDown") { e.preventDefault(); items[(idx + 1) % items.length]?.focus(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); items[(idx - 1 + items.length) % items.length]?.focus(); }
+    else if (e.key === "Enter") { e.preventDefault(); focused?.click(); }
+    else if (e.key === "Escape") { ctxmenu.style.display = "none"; }
+  });
+  const observer = new MutationObserver(() => {
+    if (ctxmenu.style.display === "block") {
+      const items = ctxmenu.querySelectorAll("div:not([style*='display:none'])");
+      items.forEach(i => i.setAttribute("tabindex", "0"));
+      items[0]?.focus();
+    }
+  });
+  observer.observe(ctxmenu, { attributes: true, attributeFilter: ["style"] });
+}
+initContextMenuKeyboard();
+
+function initNotePanelFocusTrap() {
+  const focusables = () => [noteInput, document.getElementById("note-submit"), document.getElementById("note-cancel")];
+  notepanel.addEventListener("keydown", (e) => {
+    if (e.key !== "Tab") return;
+    const els = focusables();
+    const idx = els.indexOf(document.activeElement);
+    if (e.shiftKey) {
+      if (idx <= 0) { e.preventDefault(); els[els.length - 1].focus(); }
+    } else {
+      if (idx >= els.length - 1) { e.preventDefault(); els[0].focus(); }
+    }
+  });
+}
+initNotePanelFocusTrap();
+
+function addShortcutHints() {
+  document.getElementById("save").title = "Save & Close (Ctrl+S)";
+  document.getElementById("fullscreen-btn").title = "Toggle fullscreen (Ctrl+Shift+F)";
+  document.getElementById("zoomin").title = "Zoom in (Ctrl++)";
+  document.getElementById("zoomout").title = "Zoom out (Ctrl+-)";
+  document.getElementById("zoomreset").title = "Reset zoom (Ctrl+0)";
+  document.getElementById("shortcuts-btn").title = "Keyboard shortcuts (?)";
+  document.getElementById("theme-toggle").title = "Toggle theme";
+  document.getElementById("export-notes-btn").title = "Export notes as markdown";
+}
+addShortcutHints();
+
+// === StatusAndToastSystem extensions (c.5) ===
+
+function initCharCounter(inputEl, max) {
+  const counter = document.createElement("span");
+  counter.className = "char-count";
+  counter.textContent = `0/${max}`;
+  inputEl.parentElement.appendChild(counter);
+  inputEl.addEventListener("input", () => {
+    const len = inputEl.value.length;
+    counter.textContent = `${len}/${max}`;
+    counter.classList.toggle("warn", len >= max * 0.8);
+  });
+}
+
+function showTooltip(el, text) {
+  const tip = document.createElement("div");
+  tip.className = "tooltip";
+  tip.textContent = text;
+  const rect = el.getBoundingClientRect();
+  tip.style.left = (rect.left + rect.width / 2) + "px";
+  tip.style.top = (rect.bottom + 4) + "px";
+  document.body.appendChild(tip);
+  el._tooltip = tip;
+}
+function hideTooltip(el) {
+  if (el._tooltip) { el._tooltip.remove(); el._tooltip = null; }
+}
+
+notesFallback.addEventListener("mouseenter", (e) => {
+  const nfItem = e.target.closest(".nf-item");
+  if (nfItem) showTooltip(nfItem, nfItem.textContent.replace("✕", "").trim());
+}, true);
+notesFallback.addEventListener("mouseleave", (e) => {
+  const nfItem = e.target.closest(".nf-item");
+  if (nfItem) hideTooltip(nfItem);
+}, true);
+
+// === UXInteractionSystem (c.1) ===
+function initProximityGlow() {
+  let lastX = 0, lastY = 0;
+  preview.addEventListener("mousemove", (e) => {
+    if (Math.abs(e.clientX - lastX) < 5 && Math.abs(e.clientY - lastY) < 5) return;
+    lastX = e.clientX; lastY = e.clientY;
+    requestAnimationFrame(() => {
+      const nodes = out.querySelectorAll(".node");
+      nodes.forEach(node => {
+        const rect = node.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        const dist = Math.hypot(lastX - cx, lastY - cy);
+        const proximity = dist < 40 ? 1 : dist < 120 ? (120 - dist) / 80 : 0;
+        node.style.setProperty("--proximity", proximity.toFixed(2));
+      });
+    });
+  });
+}
+initProximityGlow();
+
+function highlightLineNumbers(lineSet) {
+  const numDivs = lineNums.querySelectorAll("div");
+  numDivs.forEach((div, i) => {
+    div.classList.toggle("line-num-highlighted", lineSet.has(i));
+  });
+}
+
+// Patch existing updateHighlight to also update line numbers
+const origUpdateHighlight = updateHighlight;
+updateHighlight = function() {
+  origUpdateHighlight();
+  highlightLineNumbers(highlightedLines);
+};
+
+// === MinimapAndSearchSystem (c.3) ===
+const minimapEl = document.getElementById("minimap");
+function initMinimap() {
+  minimapEl.style.display = "block";
+  minimapEl.addEventListener("click", (e) => {
+    const rect = minimapEl.getBoundingClientRect();
+    const ratioX = (e.clientX - rect.left) / rect.width;
+    const ratioY = (e.clientY - rect.top) / rect.height;
+    preview.scrollTo({ left: preview.scrollWidth * ratioX - preview.clientWidth / 2, top: preview.scrollHeight * ratioY - preview.clientHeight / 2, behavior: "smooth" });
+  });
+}
+function updateMinimap() {
+  const svgEl = out.querySelector("svg");
+  if (!svgEl) return;
+  minimapEl.innerHTML = svgEl.outerHTML;
+  const viewRect = document.createElement("div");
+  viewRect.className = "viewport-rect";
+  const scaleX = minimapEl.clientWidth / (preview.scrollWidth || 1);
+  const scaleY = minimapEl.clientHeight / (preview.scrollHeight || 1);
+  viewRect.style.left = (preview.scrollLeft * scaleX) + "px";
+  viewRect.style.top = (preview.scrollTop * scaleY) + "px";
+  viewRect.style.width = (preview.clientWidth * scaleX) + "px";
+  viewRect.style.height = (preview.clientHeight * scaleY) + "px";
+  minimapEl.appendChild(viewRect);
+}
+initMinimap();
+preview.addEventListener("scroll", updateMinimap);
+
+const searchBar = document.getElementById("search-bar");
+const searchInput = document.getElementById("search-input");
+const searchCount = document.getElementById("search-count");
+let searchMatches = [];
+let searchIdx = 0;
+
+function initSearch() {
+  searchInput.addEventListener("input", () => {
+    const count = highlightSearchMatches(searchInput.value);
+    searchIdx = count > 0 ? 0 : -1;
+    searchCount.textContent = count > 0 ? `1/${count}` : "0/0";
+  });
+  searchInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (searchMatches.length === 0) return;
+      searchIdx = e.shiftKey ? (searchIdx - 1 + searchMatches.length) % searchMatches.length : (searchIdx + 1) % searchMatches.length;
+      searchCount.textContent = `${searchIdx + 1}/${searchMatches.length}`;
+      const lineHeight = 20.8;
+      src.scrollTop = Math.max(0, searchMatches[searchIdx] * lineHeight - 100);
+    }
+    if (e.key === "Escape") { closeSearch(); }
+  });
+  document.getElementById("search-close").addEventListener("click", closeSearch);
+}
+function openSearch() {
+  searchBar.classList.add("open");
+  searchInput.focus();
+  searchInput.select();
+}
+function closeSearch() {
+  searchBar.classList.remove("open");
+  searchMatches = [];
+  highlightedLines.clear();
+  updateHighlight();
+  searchCount.textContent = "0/0";
+  searchInput.value = "";
+}
+function highlightSearchMatches(query) {
+  highlightedLines.clear();
+  searchMatches = [];
+  if (!query) { updateHighlight(); return 0; }
+  const lines = src.value.split("\n");
+  const lowerQ = query.toLowerCase();
+  lines.forEach((line, i) => {
+    if (line.toLowerCase().includes(lowerQ)) {
+      highlightedLines.add(i);
+      searchMatches.push(i);
+    }
+  });
+  updateHighlight();
+  return searchMatches.length;
+}
+initSearch();
+
+// === Export notes as markdown (b.3) ===
+function exportNotesAsMarkdown() {
+  const noteEntries = notes.filter(n => n && n.type === "note");
+  if (noteEntries.length === 0) { showToast("No notes to export"); return; }
+  let md = "# Notes\n\n";
+  noteEntries.forEach((entry, i) => {
+    md += `## Note ${i + 1}\n${entry.data.text}\n\n*Position: (${Math.round(entry.data.x)}, ${Math.round(entry.data.y)})*\n\n---\n\n`;
+  });
+  const blob = new Blob([md], { type: "text/markdown" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "notes-export.md"; a.click();
+  URL.revokeObjectURL(url);
+  showToast("Notes exported ✓");
+}
+document.getElementById("export-notes-btn").addEventListener("click", exportNotesAsMarkdown);
+
+// === TwoWayCommsSystem (d.1) ===
+
+// Diagram chat — uses shared QABubble component
+const diagramChatContainer = document.getElementById("diagram-chat-container");
+const diagramChatBubble = new QABubble(diagramChatContainer, {
+  context: "diagram-edit:" + document.title,
+  position: { x: 0, y: 0 },
+  onQuestion: async (text, ctx) => {
+    const q = { thread:[{role:"user",text},{role:"pending",text:""}], x:0, y:0, ts:new Date().toISOString(), context:"diagram-edit" };
+    const res = await fetch("/question", { method:"POST", body:JSON.stringify(q), headers:{"Content-Type":"application/json"} });
+    const { idx: serverIdx } = await res.json();
+    return { serverIdx };
+  },
+  pollAnswers: async (serverIdx) => {
+    try {
+      const res = await fetch("/answers");
+      const answers = await res.json();
+      const matching = answers.filter(a => Number(a.idx) === Number(serverIdx));
+      if (matching.length > 0) return matching[matching.length - 1].answer;
+    } catch(e) {}
+    return null;
+  },
+  onClose: () => {},
+});
+
+let contentPollPaused = false;
+let typingTimeout = null;
+src.addEventListener("input", () => {
+  contentPollPaused = true;
+  clearTimeout(typingTimeout);
+  typingTimeout = setTimeout(() => { contentPollPaused = false; }, 2000);
+});
+
+function initContentPolling() {
+  setInterval(async () => {
+    if (contentPollPaused) return;
+    try {
+      const res = await fetch("/content-hash");
+      const { hash } = await res.json();
+      if (hash && hash !== lastKnownHash) {
+        lastKnownHash = hash;
+        const newContent = await (await fetch("/content")).text();
+        src.value = newContent;
+        updateLineNums();
+        await render();
+        showToast("Diagram updated by agent");
+      }
+    } catch(e) {}
+  }, 3000);
+}
+initContentPolling();
+
+// Update lastKnownHash on save
+const origSaveAndClose = saveAndClose;
+saveAndClose = async function() {
+  await origSaveAndClose();
+  try { const h = await (await fetch("/content-hash")).json(); lastKnownHash = h.hash; } catch(e) {}
+};
+
+// Update minimap after render completes + reapply light theme overrides
+const origRender = render;
+render = async function() {
+  await origRender();
+  updateMinimap();
+  if (document.body.classList.contains('light')) applyLightSvgOverrides();
+};
+
+// === TabbedPane (tabs: Diagram | Reference) ===
+const tabBar = document.getElementById("tab-bar");
+const referencePane = document.getElementById("reference-pane");
+let companionLoaded = false;
+
+function switchTab(paneId) {
+  tabBar.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.dataset.pane === paneId));
+  const showPreview = paneId === "preview";
+  preview.style.display = showPreview ? "" : "none";
+  referencePane.style.display = showPreview ? "none" : "block";
+  if (paneId === "reference-pane" && !companionLoaded) loadCompanion();
+}
+
+tabBar.addEventListener("click", (e) => {
+  const tab = e.target.closest(".tab");
+  if (!tab || tab.classList.contains("hidden")) return;
+  switchTab(tab.dataset.pane);
+});
+
+async function loadCompanion() {
+  try {
+    const res = await fetch("/companion");
+    const md = await res.text();
+    if (!md) { referencePane.innerHTML = '<p style="color:var(--text-dim)">No companion document found.</p>'; return; }
+    referencePane.innerHTML = typeof marked !== "undefined" ? marked.parse(md) : `<pre>${escHtml(md)}</pre>`;
+    companionLoaded = true;
+  } catch(e) {
+    referencePane.innerHTML = '<p style="color:var(--red)">Failed to load companion.</p>';
+  }
+}
+
+async function initCompanionTab() {
+  try {
+    const res = await fetch("/companion-path");
+    const { path } = await res.json();
+    if (path) {
+      tabBar.querySelector('[data-pane="reference-pane"]').classList.remove("hidden");
+    }
+  } catch(e) {}
+}
+initCompanionTab();
 </script>
 </body>
 </html>

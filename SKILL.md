@@ -72,6 +72,11 @@ The output of this skill is a **multi-file engineering blueprint** — a design 
 ```
 docs/schematics/<feature_name>/
 ├── objective.md                    ← human-readable frame (context, Feature ACs, component summary, directory)
+├── research/
+│   ├── <investigation>.md          ← analysis artifacts (field mappings, comparisons, gap analysis)
+│   └── traces/
+│       ├── <trace-name>/           ← per-flow execution trace (trace.json, trace.mmd, trace.paths.json, trace.md)
+│       └── _index.json             ← registry of all traces
 ├── components/
 │   ├── _overview.md                ← cross-cutting: DAG edge inventory, sequence (ASCII), traceability matrix, app integration
 │   ├── effects_linker.md           ← self-contained: Class AC, contract, models, Function ACs, AC tests, branch tests
@@ -87,6 +92,8 @@ docs/schematics/<feature_name>/
 | File | Purpose | Audience |
 |---|---|---|
 | `objective.md` | Scope, intent, Feature ACs, component summary table, directory structure | Human — "what and why" in 2 minutes |
+| `research/<name>.md` | Investigation artifacts — field mappings, schema comparisons, gap analysis | Human — "what we learned" |
+| `research/traces/<name>/` | End-to-end flow trace through existing code (see `track_subskill.md`) | Human + Agent — "how the existing system works" |
 | `components/<class>.md` | Full contract per class — self-contained, no cross-file dependency needed | Human + Agent — "how, exactly" |
 | `components/_overview.md` | Cross-cutting views: DAG text, sequence ASCII, traceability matrix, integration | Human + Agent — "how it all wires together" |
 | `tasks.md` | One task per class, references component files by name | Agent — "do this" |
@@ -97,7 +104,8 @@ docs/schematics/<feature_name>/
 
 | Phase | Writes to |
 |---|---|
-| 1: Context, Objective, Feature ACs | `objective.md` |
+| 1: Context, Objective, Feature ACs | `objective.md` + `research/*.md` (investigations) |
+| 1: Traces (optional, on request) | `research/traces/<name>/` |
 | 2: Topology (class summary + Class ACs) | `objective.md` (summary table) |
 | 3: Directory structure | `objective.md` |
 | 4: Contracts, models, Function ACs, tests | `components/<class>.md` (one per class) |

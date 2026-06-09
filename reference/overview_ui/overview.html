@@ -1,0 +1,964 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/><title>Schematic: Dashboard</title>
+<style>
+:root {
+  --bg:#1e1e2e; --surface:#2a2a3e; --surface2:#313244; --border:#3a3a5e;
+  --text:#cdd6f4; --text-dim:#7f849c; --accent:#89b4fa; --accent-hover:#b4d0fb;
+  --green:#a6e3a1; --yellow:#f9e2af; --red:#f38ba8; --mauve:#cba6f7;
+  --sidebar-w:240px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter','SF Pro',-apple-system,sans-serif;background:var(--bg);color:var(--text);height:100vh;display:flex;overflow:hidden;transition:background-color 0.2s,color 0.2s}
+
+/* Sidebar */
+#sidebar{width:var(--sidebar-w);min-width:var(--sidebar-w);background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+#sidebar-header{padding:16px;border-bottom:1px solid var(--border)}
+#sidebar-header h1{font-size:13px;color:var(--accent);font-weight:700;letter-spacing:.5px;text-transform:uppercase;margin-bottom:4px}
+#sidebar-header .schematic-name{font-size:15px;color:var(--text);font-weight:600}
+#sidebar-nav{flex:1;overflow-y:auto;padding:8px 0}
+.nav-group{margin-bottom:4px}
+.nav-group-title{padding:6px 16px;font-size:10px;font-weight:700;color:var(--text-dim);text-transform:uppercase;letter-spacing:.8px;cursor:pointer;display:flex;align-items:center;gap:4px;user-select:none}
+.nav-group-title::before{content:'▾';font-size:8px;transition:transform 0.15s}
+.nav-group.collapsed .nav-group-title::before{transform:rotate(-90deg)}
+.nav-group.collapsed .nav-item{display:none}
+.nav-item{padding:7px 16px 7px 24px;font-size:12px;cursor:pointer;border-left:2px solid transparent;transition:all .1s;display:flex;align-items:center;gap:8px}
+.nav-item:hover{background:var(--surface2);color:var(--accent)}
+.nav-item.active{background:var(--surface2);border-left-color:var(--accent);color:var(--accent);font-weight:600}
+.nav-item .icon{font-size:14px;width:18px;text-align:center}
+#sidebar-footer{padding:12px 16px;border-top:1px solid var(--border);font-size:10px;color:var(--text-dim)}
+
+/* Main content */
+#main{flex:1;display:flex;flex-direction:column;overflow:hidden}
+#topbar{height:42px;border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 16px;gap:12px;background:var(--surface)}
+#breadcrumb{font-size:12px;color:var(--text-dim)}
+#breadcrumb span{color:var(--text)}
+#search-btn{margin-left:auto;padding:4px 10px;font-size:11px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text-dim);cursor:pointer;display:flex;align-items:center;gap:6px}
+#search-btn:hover{border-color:var(--accent);color:var(--text)}
+#search-btn kbd{background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:1px 4px;font-size:9px}
+#content{flex:1;overflow-y:auto;padding:24px 32px}
+
+/* Cards grid */
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px;margin-top:16px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px;cursor:pointer;transition:all .15s}
+.card:hover{border-color:var(--accent);transform:translateY(-2px);box-shadow:0 4px 12px rgba(0,0,0,.3)}
+.card-title{font-size:13px;font-weight:600;color:var(--text);margin-bottom:6px;display:flex;align-items:center;gap:6px}
+.card-title .icon{color:var(--accent)}
+.card-meta{font-size:11px;color:var(--text-dim);line-height:1.5}
+.card-badge{display:inline-block;padding:2px 6px;border-radius:3px;font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:.4px}
+.card-badge.green{background:rgba(166,227,161,.15);color:var(--green)}
+.card-badge.yellow{background:rgba(249,226,175,.15);color:var(--yellow)}
+.card-badge.mauve{background:rgba(203,166,247,.15);color:var(--mauve)}
+
+/* Markdown content */
+.md-content{font-size:13px;line-height:1.7;max-width:800px}
+.md-content.wide{max-width:none}
+.md-content.wide pre{max-width:none;overflow-x:auto;font-size:11px;line-height:1.4;white-space:pre;padding:16px 20px}
+.md-content.wide pre code{font-size:11px;white-space:pre}
+.md-content h1{font-size:20px;font-weight:700;color:var(--accent);margin:0 0 16px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+.md-content h2{font-size:16px;font-weight:700;color:var(--text);margin:24px 0 12px}
+.md-content h3{font-size:14px;font-weight:600;color:var(--text);margin:16px 0 8px}
+.md-content p{margin:8px 0;color:var(--text)}
+.md-content ul,.md-content ol{margin:8px 0;padding-left:24px}
+.md-content li{margin:4px 0}
+.md-content code{background:var(--surface2);padding:2px 5px;border-radius:3px;font-family:'JetBrains Mono',monospace;font-size:12px}
+.md-content pre{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:12px 16px;overflow-x:auto;margin:12px 0}
+.md-content pre code{background:none;padding:0;font-size:12px;line-height:1.5}
+.md-content table{border-collapse:collapse;margin:12px 0;font-size:12px;width:100%}
+.md-content th,td{border:1px solid var(--border);padding:6px 10px;text-align:left}
+.md-content th{background:var(--surface);font-weight:600;color:var(--accent)}
+.md-content blockquote{border-left:3px solid var(--accent);padding-left:12px;color:var(--text-dim);margin:12px 0}
+
+/* Mermaid diagram view */
+.diagram-container{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:20px;margin:16px 0;overflow:auto}
+.diagram-container svg{max-width:100%}
+
+/* File header */
+.file-header{display:flex;align-items:center;gap:12px;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid var(--border)}
+.file-header h2{font-size:16px;font-weight:700;color:var(--text);margin:0}
+.file-header .open-ide{padding:4px 8px;font-size:10px;border:1px solid var(--border);border-radius:3px;cursor:pointer;color:var(--text-dim);background:var(--surface2)}
+.file-header .open-ide:hover{border-color:var(--accent);color:var(--accent)}
+
+/* Search modal */
+#search-modal{display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.6);justify-content:center;padding-top:120px}
+#search-modal.open{display:flex}
+#search-box{width:500px;max-width:90vw;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 16px 48px rgba(0,0,0,.5);overflow:hidden}
+#search-input{width:100%;padding:14px 16px;border:none;background:transparent;color:var(--text);font-size:14px;font-family:inherit;outline:none}
+#search-results{max-height:300px;overflow-y:auto;border-top:1px solid var(--border)}
+.search-result{padding:10px 16px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--border)}
+.search-result:hover,.search-result.selected{background:var(--surface2)}
+.search-result .sr-type{color:var(--accent);font-size:10px;font-weight:600;width:70px;text-transform:uppercase}
+.search-result .sr-name{color:var(--text)}
+
+/* Notes panel */
+#notes-panel{position:fixed;right:0;top:42px;bottom:0;width:300px;background:var(--surface);border-left:1px solid var(--border);z-index:100;flex-direction:column;transform:translateX(100%);transition:transform 0.2s cubic-bezier(0.32,0.72,0,1);display:flex}
+#notes-panel.open{transform:translateX(0)}
+
+/* Kanban board */
+.kanban-board{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;height:calc(100vh - 140px);overflow:hidden}
+.kanban-col{background:var(--surface);border:1px solid var(--border);border-radius:8px;display:flex;flex-direction:column;overflow:hidden}
+.kanban-col-header{padding:10px 14px;font-size:12px;font-weight:700;color:var(--text);border-top:3px solid var(--text-dim);display:flex;align-items:center;gap:8px}
+.kanban-count{background:var(--surface2);padding:1px 6px;border-radius:10px;font-size:10px;color:var(--text-dim);font-weight:600}
+.kanban-card:focus-visible{outline:2px solid var(--accent);outline-offset:2px;transform:translateY(-1px)}
+.kanban-empty{padding:20px 12px;text-align:center;color:var(--text-dim);font-size:11px;font-style:italic;border:1px dashed var(--border);border-radius:6px;margin:8px}
+
+/* Skeleton loading */
+.skeleton{background:linear-gradient(90deg,var(--surface2) 25%,var(--border) 50%,var(--surface2) 75%);background-size:200% 100%;animation:skeleton-shimmer 1.5s infinite;border-radius:4px;height:14px;margin-bottom:8px}
+.skeleton.wide{width:80%}
+.skeleton.medium{width:60%}
+.skeleton.narrow{width:40%}
+@keyframes skeleton-shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+
+/* Task modal animation */
+#task-modal .task-detail{animation:modal-enter 0.2s cubic-bezier(0.32,0.72,0,1)}
+@keyframes modal-enter{from{opacity:0;transform:scale(0.95)}to{opacity:1;transform:scale(1)}}
+.kanban-cards{flex:1;overflow-y:auto;padding:8px}
+.kanban-card{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin-bottom:8px;cursor:pointer;transition:all .12s}
+.kanban-card:hover{border-color:var(--accent);transform:translateY(-1px);box-shadow:0 2px 8px rgba(0,0,0,.2)}
+
+/* Task detail modal */
+#task-modal{display:none;position:fixed;inset:0;z-index:1100;background:rgba(0,0,0,.6);justify-content:center;align-items:center;padding:40px}
+#task-modal.open{display:flex}
+.task-detail{width:600px;max-width:90vw;max-height:80vh;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 16px 48px rgba(0,0,0,.5);overflow-y:auto;padding:24px}
+.task-detail h2{font-size:15px;font-weight:700;color:var(--accent);margin:0 0 12px}
+.task-detail .td-meta{font-size:11px;color:var(--text-dim);margin-bottom:12px;line-height:1.6}
+.task-detail .td-scope{font-size:12px;color:var(--text);line-height:1.6;margin-bottom:16px}
+.task-detail .td-scope li{margin:4px 0}
+.task-detail .td-qa{border-top:1px solid var(--border);padding-top:12px;margin-top:12px}
+.task-detail .td-qa h3{font-size:12px;font-weight:600;color:var(--text);margin:0 0 8px}
+.task-detail .td-qa-input{display:flex;gap:6px}
+.task-detail .td-qa-input input{flex:1;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:6px 10px;font:11px/1.3 'JetBrains Mono',monospace;color:var(--text);outline:none}
+.task-detail .td-qa-input input:focus{border-color:var(--accent)}
+.task-detail .td-qa-input button{padding:6px 12px;font-size:11px}
+.task-detail .td-qa-thread{margin-top:8px;max-height:150px;overflow-y:auto}
+.task-detail .td-qa-msg{padding:4px 0;font-size:11px;border-bottom:1px solid var(--border)}
+.task-detail .td-qa-msg:last-child{border-bottom:none}
+.task-detail .td-qa-msg.user{color:var(--accent)}
+.task-detail .td-qa-msg.agent{color:var(--green)}
+#notes-panel.open{display:flex}
+#notes-panel-header{padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+#notes-panel-header h3{font-size:13px;font-weight:600}
+#notes-list{flex:1;overflow-y:auto;padding:12px}
+.note-entry{background:var(--surface2);border-radius:6px;padding:8px 12px;margin-bottom:8px;font-size:11px;line-height:1.4}
+.note-entry .note-ctx{color:var(--accent);font-size:10px;margin-bottom:4px}
+#note-input-area{padding:12px;border-top:1px solid var(--border)}
+#note-input-area textarea{width:100%;height:50px;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:8px;color:var(--text);font:11px/1.4 'JetBrains Mono',monospace;resize:none;outline:none}
+#note-input-area textarea:focus{border-color:var(--accent)}
+#note-input-area button{margin-top:6px;padding:4px 10px;font-size:10px}
+#note-input-area .wave-wait{animation:bubble-wave 2s ease-in-out infinite}
+@keyframes bubble-wave{0%,100%{box-shadow:0 0 0 rgba(137,180,250,0)}50%{box-shadow:0 0 12px rgba(137,180,250,0.4)}}
+#global-ctxmenu{display:none;position:fixed;background:rgba(42,42,62,0.85);backdrop-filter:blur(12px);border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 20px rgba(0,0,0,.4);padding:4px 0;z-index:999;min-width:160px;transform-origin:top left;animation:ctx-enter 0.12s ease-out}
+@keyframes ctx-enter{from{opacity:0;transform:scale(0.95)}to{opacity:1;transform:scale(1)}}
+#global-ctxmenu div{padding:7px 14px;cursor:pointer;font-size:11px;display:flex;align-items:center;gap:6px}
+#global-ctxmenu div:hover{background:var(--accent);color:var(--bg)}
+#global-notepanel{display:none;position:fixed;background:var(--surface);border:1px solid var(--accent);border-radius:8px;box-shadow:0 8px 32px rgba(0,0,0,.5);padding:10px;z-index:1000;width:280px}
+#global-notepanel textarea{width:100%;height:60px;font:11px/1.3 'JetBrains Mono',monospace;border:1px solid var(--border);border-radius:4px;padding:6px;background:var(--bg);color:var(--text);resize:vertical;outline:none}
+#global-notepanel textarea:focus{border-color:var(--accent)}
+#global-notepanel .np-bar{display:flex;gap:4px;margin-top:6px;align-items:center}
+#global-notepanel .np-hint{font-size:9px;color:var(--text-dim);margin-left:auto}
+</style>
+</head>
+<body>
+<div id="sidebar">
+  <div id="sidebar-header">
+    <h1>◈ Schematic</h1>
+    <div class="schematic-name" id="schematic-name">loading...</div>
+  </div>
+  <div id="sidebar-nav"></div>
+  <div id="sidebar-footer">
+    <span id="stats"></span>
+  </div>
+</div>
+<div id="main">
+  <div id="topbar">
+    <div id="breadcrumb"><span>Overview</span></div>
+    <div id="search-btn" onclick="openSearch()">Search <kbd>⌘K</kbd></div>
+    <button onclick="toggleNotes()" style="padding:4px 10px;font-size:11px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text-dim);cursor:pointer">Notes</button>
+  </div>
+  <div id="content"></div>
+</div>
+<div id="search-modal" onclick="if(event.target===this)closeSearch()">
+  <div id="search-box">
+    <input id="search-input" placeholder="Search components, tasks, diagrams..." oninput="onSearch(this.value)"/>
+    <div id="search-results"></div>
+  </div>
+</div>
+<div id="task-modal" onclick="if(event.target===this)closeTaskModal()"></div>
+<div id="notes-panel">
+  <div id="notes-panel-header"><h3>Notes</h3><span style="cursor:pointer;color:var(--text-dim);width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;border-radius:50%;background:var(--surface2);border:1px solid var(--border);font-size:10px;transition:all 0.15s" onmouseover="this.style.color='var(--red)';this.style.borderColor='var(--red)'" onmouseout="this.style.color='var(--text-dim)';this.style.borderColor='var(--border)'" onclick="toggleNotes()">✕</span></div>
+  <div id="notes-list"></div>
+  <div id="note-input-area">
+    <textarea id="note-text" placeholder="Add a note..."></textarea>
+    <div style="display:flex;gap:6px;margin-top:6px;align-items:center">
+      <button class="primary" onclick="addNote()">Save</button>
+      <button onclick="batchSubmitNotes()" style="padding:4px 10px;font-size:10px;border:1px solid var(--accent);border-radius:4px;background:var(--surface2);color:var(--accent);cursor:pointer">Submit all to agent</button>
+      <span id="batch-status" style="font-size:9px;color:var(--text-dim);margin-left:auto"></span>
+    </div>
+  </div>
+</div>
+<div id="global-ctxmenu">
+  <div data-action="g-note">📌 Add note</div>
+  <div data-action="g-question">❓ Ask question</div>
+  <div data-action="g-open-vscode">✎ Open in VS Code</div>
+  <div data-action="g-open-idea">⚙ Open in IntelliJ</div>
+</div>
+<div id="global-notepanel">
+  <textarea id="global-note-input" placeholder="Leave a note..."></textarea>
+  <div class="np-bar">
+    <button class="primary" id="global-np-send">Send</button>
+    <button id="global-np-cancel">Cancel</button>
+    <span class="np-hint">Enter=send · Esc=close</span>
+  </div>
+</div>
+<script src="/marked.min.js"></script>
+<script src="/purify.min.js"></script>
+<script src="/mermaid.min.js"></script>
+<script src="/qa-bubble-component.js"></script>
+<script src="/api/component/mermaid-editor"></script>
+<script>
+mermaid.initialize({startOnLoad:false, theme:'dark'});
+
+let manifest = {};
+let currentView = 'overview';
+let currentFilePath = null;
+let searchIndex = [];
+let notes = [];
+let activeEditor = null;
+
+async function init() {
+  const res = await fetch('/api/manifest');
+  manifest = await res.json();
+  document.getElementById('schematic-name').textContent = manifest.name;
+  notes = manifest.notes || [];
+  buildSidebar();
+  buildSearchIndex();
+  renderNotes();
+  updateStats();
+  restoreFromHash() || showOverview();
+}
+
+function restoreFromHash() {
+  const hash = window.location.hash.slice(1);
+  if (!hash) return false;
+  if (hash === 'kanban') { showKanban(); return true; }
+  if (hash === 'components') { showComponents(); return true; }
+  if (hash.startsWith('file:')) { const f = hash.slice(5); currentView=f; currentFilePath=f; showFile(f); return true; }
+  if (hash.startsWith('diagram:')) { const d = hash.slice(8); currentView='diagram:'+d; currentFilePath=d; showDiagram(d); return true; }
+  return false;
+}
+
+window.addEventListener('hashchange', () => { if (!restoreFromHash()) showOverview(); });
+
+function buildSidebar() {
+  const nav = document.getElementById('sidebar-nav');
+  let html = '';
+  html += `<div class="nav-group">
+    <div class="nav-item active" data-view="overview" onclick="navigate('overview')"><span class="icon">◈</span>Overview</div>
+  </div>`;
+
+  if (manifest.files?.['objective.md']) {
+    html += `<div class="nav-group"><div class="nav-group-title">Planning</div>
+      <div class="nav-item" data-view="objective" onclick="navigate('file','objective.md')"><span class="icon">◎</span>Objective</div>
+    </div>`;
+  }
+
+  if (manifest.components?.length) {
+    html += `<div class="nav-group"><div class="nav-group-title">Design</div>`;
+    const overview = manifest.components.filter(c => c === '_overview.md');
+    const contracts = manifest.components.filter(c => c !== '_overview.md');
+    overview.forEach(c => {
+      html += `<div class="nav-item" data-view="comp-${c}" onclick="navigate('file','components/${escHtml(c)}')"><span class="icon">⚡</span>Traceability &amp; Integration</div>`;
+    });
+    if (contracts.length) {
+      html += `<div style="padding:4px 16px;font-size:9px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.6px;margin-top:4px">Contracts (${contracts.length})</div>`;
+      contracts.forEach(c => {
+        const label = c.replace('.md','').replace(/_/g,' ');
+        html += `<div class="nav-item" data-view="comp-${c}" onclick="navigate('file','components/${escHtml(c)}')"><span class="icon">◆</span>${escHtml(label)}</div>`;
+      });
+    }
+    html += '</div>';
+  }
+
+  if (manifest.diagrams?.length) {
+    html += `<div class="nav-group"><div class="nav-group-title">Diagrams</div>`;
+    for (const d of manifest.diagrams) {
+      const label = d.replace('.mmd','').replace(/_/g,' ');
+      html += `<div class="nav-item" data-view="diag-${d}" onclick="navigate('diagram','${escHtml(d)}')"><span class="icon">◇</span>${escHtml(label)}</div>`;
+    }
+    html += '</div>';
+  }
+
+  if (manifest.files?.['tasks.md']) {
+    html += `<div class="nav-group"><div class="nav-group-title">Execution</div>
+      <div class="nav-item" data-view="kanban" onclick="navigate('kanban')"><span class="icon">▦</span>Kanban</div>
+      <div class="nav-item" data-view="tasks" onclick="navigate('file','tasks.md')"><span class="icon">☐</span>Tasks (raw)</div>
+    </div>`;
+  }
+
+  if (manifest.research?.length) {
+    html += `<div class="nav-group"><div class="nav-group-title">Research</div>`;
+    for (const r of manifest.research) {
+      const label = r.replace('.md','').replace(/[-_]/g,' ');
+      html += `<div class="nav-item" data-view="research-${r}" onclick="navigate('file','research/${escHtml(r)}')"><span class="icon">⬡</span>${escHtml(label)}</div>`;
+    }
+    html += '</div>';
+  }
+
+  if (manifest.traces?.length) {
+    html += `<div class="nav-group"><div class="nav-group-title">Traces</div>`;
+    for (const t of manifest.traces) {
+      const icon = t.status === 'complete' ? '✓' : '○';
+      html += `<div class="nav-item" data-view="trace-${t.name}" onclick="navigate('diagram','research/traces/${t.name}/trace.mmd')"><span class="icon">${icon}</span>${t.name} (${t.steps})</div>`;
+    }
+    html += '</div>';
+  } else if (manifest.trace?.length) {
+    html += `<div class="nav-group"><div class="nav-group-title">Trace</div>`;
+    for (const t of manifest.trace) {
+      const icon = t.endsWith('.mmd') ? '◇' : '◆';
+      html += `<div class="nav-item" data-view="trace-${t}" onclick="navigate('${t.endsWith('.mmd')?'diagram':'file'}','trace/${t}')"><span class="icon">${icon}</span>${t}</div>`;
+    }
+    html += '</div>';
+  }
+
+  nav.innerHTML = html;
+}
+
+function setActive(viewId) {
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+  const target = document.querySelector(`[data-view="${viewId}"]`);
+  if (target) target.classList.add('active');
+}
+
+function setBreadcrumb(parts) {
+  document.getElementById('breadcrumb').innerHTML = parts.map((p,i) =>
+    i === parts.length-1 ? `<span>${p}</span>` : `<span style="color:var(--text-dim)">${p}</span> › `
+  ).join('');
+}
+
+function showOverview() {
+  setActive('overview');
+  setBreadcrumb([manifest.name, 'Overview']);
+  const content = document.getElementById('content');
+  let html = `<div class="md-content"><h1>${escHtml(manifest.name)}</h1></div>`;
+  html += '<div class="cards">';
+
+  if (manifest.files?.['objective.md']) {
+    html += `<div class="card" onclick="navigate('file','objective.md')">
+      <div class="card-title"><span class="icon">◎</span>Objective</div>
+      <div class="card-meta">Feature ACs, context, scope</div>
+      <div style="margin-top:8px"><span class="card-badge green">Planning</span></div>
+    </div>`;
+  }
+
+  if (manifest.components?.length) {
+    html += `<div class="card" onclick="navigate('components')">
+      <div class="card-title"><span class="icon">◆</span>Components</div>
+      <div class="card-meta">${manifest.components.length} specs<br>${manifest.components.filter(c=>c!=='_overview.md').length} classes</div>
+      <div style="margin-top:8px"><span class="card-badge mauve">Design</span></div>
+    </div>`;
+  }
+
+  if (manifest.research?.length || manifest.traces?.length) {
+    const traceCount = manifest.traces?.length || 0;
+    const researchCount = manifest.research?.length || 0;
+    html += `<div class="card" onclick="document.querySelector('[data-view=\\'research-${manifest.research?.[0]||''}\\']')?.click()">
+      <div class="card-title"><span class="icon">⬡</span>Research</div>
+      <div class="card-meta">${researchCount} investigations<br>${traceCount} traces</div>
+      <div style="margin-top:8px"><span class="card-badge yellow">Analysis</span></div>
+    </div>`;
+  }
+
+  for (const d of (manifest.diagrams||[])) {
+    html += `<div class="card" onclick="navigate('diagram','${d}')">
+      <div class="card-title"><span class="icon">◇</span>${d.replace('.mmd','')}</div>
+      <div class="card-meta">Mermaid diagram</div>
+      <div style="margin-top:8px"><span class="card-badge yellow">Visual</span></div>
+    </div>`;
+  }
+
+  if (manifest.files?.['tasks.md']) {
+    html += `<div class="card" onclick="navigate('kanban')">
+      <div class="card-title"><span class="icon">☐</span>Tasks</div>
+      <div class="card-meta">Agent-ready work units</div>
+      <div style="margin-top:8px"><span class="card-badge green">Execution</span></div>
+    </div>`;
+  }
+
+  if (manifest.traces?.length) {
+    const completeCount = manifest.traces.filter(t => t.status === 'complete').length;
+    const totalSteps = manifest.traces.reduce((sum, t) => sum + t.steps, 0);
+    html += `<div class="card" onclick="navigate('traces')">
+      <div class="card-title"><span class="icon">⟿</span>Traces</div>
+      <div class="card-meta">${manifest.traces.length} flows, ${completeCount} complete, ${totalSteps} steps</div>
+      <div style="margin-top:8px"><span class="card-badge yellow">Flow</span></div>
+    </div>`;
+  } else if (manifest.trace?.length) {
+    html += `<div class="card" onclick="navigate('file','trace/trace.md')">
+      <div class="card-title"><span class="icon">⟿</span>Trace</div>
+      <div class="card-meta">${manifest.trace.length} artifacts</div>
+      <div style="margin-top:8px"><span class="card-badge yellow">Flow</span></div>
+    </div>`;
+  }
+
+  html += '</div>';
+  content.innerHTML = html;
+}
+
+async function navigate(type, arg) {
+  if (activeEditor) { activeEditor.destroy(); activeEditor = null; }
+  currentFilePath = null;
+  if (type === 'overview') { currentView='overview'; window.location.hash=''; showOverview(); return; }
+  if (type === 'components') { currentView='components'; window.location.hash='components'; showComponents(); return; }
+  if (type === 'traces') { currentView='traces'; window.location.hash='traces'; showTraces(); return; }
+  if (type === 'file') { currentView=arg; currentFilePath=arg; window.location.hash='file:'+arg; await showFile(arg); return; }
+  if (type === 'diagram') { currentView='diagram:'+arg; currentFilePath=arg; window.location.hash='diagram:'+arg; await showDiagram(arg); return; }
+  if (type === 'kanban') { currentView='kanban'; window.location.hash='kanban'; await showKanban(); return; }
+}
+
+function showComponents() {
+  setActive('components');
+  setBreadcrumb([manifest.name, 'Components']);
+  let html = '<div class="md-content"><h1>Components</h1></div><div class="cards">';
+  for (const c of manifest.components) {
+    const label = c.replace('.md','');
+    const isOverview = c === '_overview.md';
+    html += `<div class="card" onclick="navigate('file','components/${c}')">
+      <div class="card-title"><span class="icon">${isOverview?'⚡':'◆'}</span>${label}</div>
+      <div class="card-meta">${isOverview?'Cross-cutting: DAG, sequence, traceability':'Component spec'}</div>
+    </div>`;
+  }
+  html += '</div>';
+  document.getElementById('content').innerHTML = html;
+}
+
+function showTraces() {
+  setActive('traces');
+  setBreadcrumb([manifest.name, 'Traces']);
+  const traces = manifest.traces || [];
+  let html = '<div class="md-content"><h1>Traces</h1></div>';
+  if (!traces.length) { html += '<p>No traces registered.</p>'; document.getElementById('content').innerHTML = html; return; }
+  html += '<table style="width:100%;border-collapse:collapse;margin-top:16px">';
+  html += '<thead><tr><th style="text-align:left;padding:8px;border-bottom:1px solid var(--border)">Name</th><th style="text-align:left;padding:8px;border-bottom:1px solid var(--border)">Status</th><th style="text-align:left;padding:8px;border-bottom:1px solid var(--border)">Steps</th><th style="text-align:left;padding:8px;border-bottom:1px solid var(--border)">Entry</th></tr></thead><tbody>';
+  for (const t of traces) {
+    const icon = t.status === 'complete' ? '✓' : '○';
+    const color = t.status === 'complete' ? 'var(--green)' : 'var(--text-dim)';
+    html += `<tr style="cursor:pointer" onclick="navigate('diagram','traces/${escHtml(t.name)}/trace.mmd')">
+      <td style="padding:8px;border-bottom:1px solid var(--border)">${escHtml(t.name)}</td>
+      <td style="padding:8px;border-bottom:1px solid var(--border);color:${color}">${icon} ${escHtml(t.status)}</td>
+      <td style="padding:8px;border-bottom:1px solid var(--border)">${t.steps}</td>
+      <td style="padding:8px;border-bottom:1px solid var(--border);font-family:monospace;font-size:0.85em">${escHtml(t.entry||'?')}</td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  document.getElementById('content').innerHTML = html;
+}
+
+async function showFile(path) {
+  const viewId = path.includes('components/') ? 'comp-'+path.split('/').pop() :
+                 path.includes('traces/') ? 'trace-'+path.split('/')[1] :
+                 path.includes('trace/') ? 'trace-'+path.split('/').pop() :
+                 path.replace('.md','');
+  setActive(viewId);
+  const parts = path.split('/');
+  setBreadcrumb([manifest.name, ...parts]);
+
+  const res = await fetch(`/api/file?name=${encodeURIComponent(path)}`);
+  if (!res.ok) { document.getElementById('content').innerHTML = `<p style="color:var(--red)">File not found: ${path}</p>`; return; }
+  const text = await res.text();
+
+  let html = `<div class="file-header">
+    <h2>${escHtml(parts[parts.length-1])}</h2>
+    <button class="open-ide" onclick="openInIde('vscode','${escHtml(path)}')">VS Code</button>
+    <button class="open-ide" onclick="openInIde('idea','${escHtml(path)}')">IntelliJ</button>
+    ${path === 'tasks.md' ? '<button class="open-ide" onclick="navigate(\'kanban\')" style="background:var(--accent);color:var(--bg)">→ Kanban view</button>' : ''}
+  </div>`;
+
+  if (path === 'tasks.md') {
+    // Enhanced tasks view with status badges and click-through
+    const tasks = parseTasksFromMarkdown(text);
+    allTasks = tasks;
+    const statusColors = { complete:'var(--green)', in_progress:'var(--accent)', review:'var(--mauve)', pending:'var(--text-dim)' };
+    let tasksHtml = '<div style="margin-bottom:16px">';
+    tasks.forEach(t => {
+      const color = statusColors[t.status] || 'var(--text-dim)';
+      tasksHtml += `<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;border:1px solid var(--border);border-radius:6px;margin-bottom:6px;cursor:pointer;transition:all .12s" onclick="navigate('kanban');setTimeout(()=>openTaskModal('${escHtml(t.tag)}'),500)" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+        <span style="font-size:10px;font-weight:700;color:var(--text-dim);min-width:30px">${escHtml(t.tag)}</span>
+        <span style="font-size:10px;font-weight:600;color:${color};min-width:80px;text-transform:uppercase">${escHtml(t.status)}</span>
+        <span style="font-size:10px;color:var(--accent)">${escHtml(t.action)}</span>
+        <span style="font-size:12px;color:var(--text)">${escHtml(t.target)}</span>
+        ${t.blockedBy !== '—' ? '<span style="font-size:9px;color:var(--yellow);margin-left:auto">⚠ '+escHtml(t.blockedBy)+'</span>' : ''}
+      </div>`;
+    });
+    tasksHtml += '</div>';
+    html += tasksHtml;
+    html += `<details open style="margin-top:16px"><summary style="cursor:pointer;color:var(--text-dim);font-size:11px;user-select:none">Task Details</summary><div class="md-content">${DOMPurify.sanitize(marked.parse(text))}</div></details>`;
+  } else {
+    const wideClass = path.startsWith('research/') ? ' wide' : '';
+    html += `<div class="md-content${wideClass}">${DOMPurify.sanitize(marked.parse(text))}</div>`;
+  }
+  document.getElementById('content').innerHTML = html;
+}
+
+async function showDiagram(filename) {
+  setActive('diag-'+filename);
+  setBreadcrumb([manifest.name, 'Diagrams', filename]);
+
+  const content = document.getElementById('content');
+
+  // Launch bridge.py for this diagram and embed via iframe — same editor, same features
+  try {
+    const res = await fetch('/api/launch-editor', {
+      method: 'POST',
+      body: JSON.stringify({ filename }),
+      headers: { 'Content-Type': 'application/json' }
+    });
+    const { url } = await res.json();
+    content.innerHTML = `<iframe src="${url}?theme=${document.body.classList.contains('light')?'light':'dark'}" style="width:100%;height:calc(100vh - 90px);border:none;border-radius:6px"></iframe>`;
+    activeEditor = { destroy: () => { content.innerHTML = ''; } };
+  } catch(e) {
+    // Fallback to static view if bridge can't launch
+    const fileRes = await fetch(`/api/file?name=${encodeURIComponent(filename)}`);
+    if (!fileRes.ok) { content.innerHTML = `<p style="color:var(--red)">Not found: ${filename}</p>`; return; }
+    const mmdText = await fileRes.text();
+    content.innerHTML = `<div class="diagram-container"><pre style="color:var(--text);font-size:12px">${escHtml(mmdText)}</pre></div>`;
+    activeEditor = null;
+  }
+}
+
+function openInIde(ide, path) {
+  fetch('/api/open', {method:'POST', body:JSON.stringify({ide, path}), headers:{'Content-Type':'application/json'}});
+}
+
+// Search
+function buildSearchIndex() {
+  searchIndex = [];
+  if (manifest.files?.['objective.md']) searchIndex.push({type:'file', name:'Objective', path:'objective.md'});
+  if (manifest.files?.['tasks.md']) searchIndex.push({type:'file', name:'Tasks', path:'tasks.md'});
+  for (const c of (manifest.components||[])) searchIndex.push({type:'component', name:c.replace('.md',''), path:'components/'+c});
+  for (const d of (manifest.diagrams||[])) searchIndex.push({type:'diagram', name:d.replace('.mmd',''), path:d});
+  for (const t of (manifest.traces||[])) searchIndex.push({type:'trace', name:t.name, path:'traces/'+t.name+'/trace.mmd'});
+  for (const t of (manifest.trace||[])) searchIndex.push({type:'trace', name:t, path:'trace/'+t});
+}
+
+function openSearch() { document.getElementById('search-modal').classList.add('open'); document.getElementById('search-input').focus(); }
+function closeSearch() { document.getElementById('search-modal').classList.remove('open'); document.getElementById('search-input').value=''; document.getElementById('search-results').innerHTML=''; }
+
+function onSearch(q) {
+  const results = document.getElementById('search-results');
+  if (!q.trim()) { results.innerHTML=''; return; }
+  const lower = q.toLowerCase();
+  const matches = searchIndex.filter(s => s.name.toLowerCase().includes(lower) || s.type.includes(lower));
+  results.innerHTML = matches.slice(0,10).map(m =>
+    `<div class="search-result" onclick="closeSearch();navigate('${m.type==='diagram'?'diagram':'file'}','${escHtml(m.path)}')">
+      <span class="sr-type">${escHtml(m.type)}</span><span class="sr-name">${escHtml(m.name)}</span>
+    </div>`
+  ).join('');
+}
+
+// Notes
+function toggleNotes() { document.getElementById('notes-panel').classList.toggle('open'); }
+function escHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
+
+function renderNotes() {
+  document.getElementById('notes-list').innerHTML = notes.map(n => {
+    const statusBadge = n.submitted
+      ? '<span style="font-size:9px;color:var(--green);margin-left:auto">✓ sent</span>'
+      : '<span style="font-size:9px;color:var(--text-dim);margin-left:auto">unsent</span>';
+    return `<div class="note-entry"><div class="note-ctx" style="display:flex;align-items:center;gap:4px">${escHtml(n.context||'General')}${statusBadge}</div>${escHtml(n.text)}</div>`;
+  }).join('');
+}
+async function addNote() {
+  const text = document.getElementById('note-text').value.trim();
+  if (!text) return;
+  const note = {text, context: currentView, ts: new Date().toISOString(), submitted: false};
+  notes.push(note);
+  document.getElementById('note-text').value = '';
+  renderNotes();
+  await fetch('/api/note', {method:'POST', body:JSON.stringify(note), headers:{'Content-Type':'application/json'}});
+  showToastOverview('Note saved');
+}
+
+async function batchSubmitNotes() {
+  const unsubmitted = notes.filter(n => !n.submitted);
+  if (unsubmitted.length === 0) { showToastOverview('No new notes to submit'); return; }
+
+  const batchStatus = document.getElementById('batch-status');
+  const batchBtn = document.querySelector('button[onclick="batchSubmitNotes()"]');
+  batchStatus.textContent = '⏳ Submitting...';
+  batchStatus.style.color = 'var(--yellow)';
+  batchBtn.classList.add('wave-wait');
+
+  const batchText = unsubmitted.map((n, i) => `${i+1}. ${n.text}`).join('\n');
+  try {
+    const qRes = await fetch('/api/question', {
+      method:'POST',
+      body:JSON.stringify({text: `[Batch Notes]\n${batchText}`, context: currentView, ts: new Date().toISOString(), type:'batch-notes'}),
+      headers:{'Content-Type':'application/json'}
+    });
+    const { idx: serverIdx } = await qRes.json();
+
+    unsubmitted.forEach(n => n.submitted = true);
+    renderNotes();
+
+    batchStatus.innerHTML = '<span class="typing-dots" style="display:inline-block"><span style="display:inline-block;width:4px;height:4px;border-radius:50%;background:var(--yellow);margin:0 1px;animation:typing-bounce 1.2s infinite"></span><span style="display:inline-block;width:4px;height:4px;border-radius:50%;background:var(--yellow);margin:0 1px;animation:typing-bounce 1.2s infinite;animation-delay:0.2s"></span><span style="display:inline-block;width:4px;height:4px;border-radius:50%;background:var(--yellow);margin:0 1px;animation:typing-bounce 1.2s infinite;animation-delay:0.4s"></span></span> Waiting for agent...';
+
+    const pollAck = setInterval(async () => {
+      try {
+        const aRes = await fetch('/api/answers');
+        const answers = await aRes.json();
+        const matching = answers.filter(a => Number(a.idx) === Number(serverIdx));
+        if (matching.length > 0) {
+          clearInterval(pollAck);
+          const ackText = matching[matching.length-1].answer || matching[matching.length-1].text || 'Noted.';
+          batchBtn.classList.remove('wave-wait');
+          batchStatus.style.color = 'var(--green)';
+          batchStatus.textContent = '✓ ' + ackText;
+          showToastOverview('Agent acknowledged notes');
+          setTimeout(() => { batchStatus.textContent = ''; }, 8000);
+        }
+      } catch(e) {}
+    }, 2000);
+
+    setTimeout(() => { clearInterval(pollAck); if (batchStatus.textContent.includes('Waiting')) { batchBtn.classList.remove('wave-wait'); batchStatus.style.color='var(--text-dim)'; batchStatus.textContent='Submitted (agent will respond when available)'; } }, 30000);
+  } catch(e) {
+    batchBtn.classList.remove('wave-wait');
+    batchStatus.style.color = 'var(--red)';
+    batchStatus.textContent = '✕ Failed to reach agent';
+  }
+}
+
+function updateStats() {
+  const s = document.getElementById('stats');
+  const comps = manifest.components?.length || 0;
+  const diags = manifest.diagrams?.length || 0;
+  s.textContent = `${comps} components · ${diags} diagrams`;
+}
+
+// Kanban view
+async function showKanban() {
+  setActive('kanban');
+  setBreadcrumb([manifest.name, 'Tasks', 'Kanban']);
+  const content = document.getElementById('content');
+  content.innerHTML = `<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px"><h2 style="font-size:16px;font-weight:700;color:var(--text);margin:0">Tasks</h2></div><div class="kanban-board">${Array(4).fill('<div class="kanban-col"><div class="kanban-col-header" style="border-top-color:var(--text-dim)"><div class="skeleton narrow"></div></div><div class="kanban-cards"><div class="skeleton wide"></div><div class="skeleton medium"></div></div></div>').join('')}</div>`;
+
+  const res = await fetch('/api/file?name=tasks.md');
+  if (!res.ok) { content.innerHTML = '<p style="color:var(--red)">tasks.md not found</p>'; return; }
+  const tasksText = await res.text();
+
+  const tasks = parseTasksFromMarkdown(tasksText);
+  allTasks = tasks;
+
+  const columns = { pending: [], in_progress: [], review: [], complete: [] };
+  tasks.forEach(t => {
+    const col = columns[t.status] || columns.pending;
+    col.push(t);
+  });
+
+  content.innerHTML = `
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+      <h2 style="font-size:16px;font-weight:700;color:var(--text);margin:0">Tasks</h2>
+      <span style="font-size:11px;color:var(--text-dim)">${tasks.length} total</span>
+    </div>
+    <div class="kanban-board">
+      <div class="kanban-col">
+        <div class="kanban-col-header" style="border-top-color:#6c757d">Not Started <span class="kanban-count">${columns.pending.length}</span></div>
+        <div class="kanban-cards">${columns.pending.length ? columns.pending.map(renderKanbanCard).join('') : kanbanEmptyState('pending')}</div>
+      </div>
+      <div class="kanban-col">
+        <div class="kanban-col-header" style="border-top-color:var(--accent)">In Progress <span class="kanban-count">${columns.in_progress.length}</span></div>
+        <div class="kanban-cards">${columns.in_progress.length ? columns.in_progress.map(renderKanbanCard).join('') : kanbanEmptyState('in progress')}</div>
+      </div>
+      <div class="kanban-col">
+        <div class="kanban-col-header" style="border-top-color:var(--mauve)">Review <span class="kanban-count">${columns.review.length}</span></div>
+        <div class="kanban-cards">${columns.review.length ? columns.review.map(renderKanbanCard).join('') : kanbanEmptyState('in review')}</div>
+      </div>
+      <div class="kanban-col">
+        <div class="kanban-col-header" style="border-top-color:var(--green)">Done <span class="kanban-count">${columns.complete.length}</span></div>
+        <div class="kanban-cards">${columns.complete.length ? columns.complete.map(renderKanbanCard).join('') : kanbanEmptyState('completed')}</div>
+      </div>
+    </div>`;
+}
+
+function parseTasksFromMarkdown(text) {
+  const tasks = [];
+  const taskRegex = /^## ([a-z]\.\d+) \| (\w+) \| (.+)$/gm;
+  let match;
+  while ((match = taskRegex.exec(text)) !== null) {
+    const tag = match[1], action = match[2], target = match[3];
+    const afterMatch = text.substring(match.index + match[0].length, match.index + match[0].length + 500);
+    const statusMatch = afterMatch.match(/Status:\s*(pending|in_progress|complete|review)/);
+    const blockedMatch = afterMatch.match(/Blocked by:\s*(.+)/);
+    tasks.push({
+      tag, action, target,
+      status: statusMatch ? statusMatch[1] : 'pending',
+      blockedBy: blockedMatch ? blockedMatch[1].trim() : '—',
+      rawBlock: text.substring(match.index, text.indexOf('\n## ', match.index + 1) > -1 ? text.indexOf('\n## ', match.index + 1) : text.length),
+    });
+  }
+  return tasks;
+}
+
+function renderKanbanCard(task) {
+  const actionColors = { Create:'var(--green)', Modify:'var(--accent)', Delete:'var(--red)', Wire:'var(--mauve)' };
+  const color = actionColors[task.action] || 'var(--text-dim)';
+  const blocked = task.blockedBy !== '—' ? `<div style="font-size:9px;color:var(--yellow);margin-top:4px">⚠ ${task.blockedBy}</div>` : '';
+  return `<div class="kanban-card" tabindex="0" onclick="openTaskModal('${task.tag}')" onkeydown="if(event.key==='Enter')openTaskModal('${task.tag}')">
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+      <span style="font-size:9px;font-weight:700;color:var(--text-dim)">${task.tag}</span>
+      <span style="font-size:9px;font-weight:600;color:${color}">${task.action}</span>
+    </div>
+    <div style="font-size:11px;color:var(--text)">${task.target}</div>
+    ${blocked}
+  </div>`;
+}
+
+function kanbanEmptyState(label) {
+  return `<div class="kanban-empty">No tasks ${label}</div>`;
+}
+
+let allTasks = [];
+let taskQuestions = {};
+
+function openTaskModal(tag) {
+  const task = allTasks.find(t => t.tag === tag);
+  if (!task) return;
+  const modal = document.getElementById('task-modal');
+  const scopeHtml = DOMPurify.sanitize(marked.parse(task.rawBlock.split('\n').slice(1).join('\n')));
+  const safeTag = tag.replace(/\./g, '-');
+
+  // Fetch task notes from state
+  fetch('/api/state').then(r => r.json()).then(state => {
+    const taskNotes = state?.tasks?.[tag]?.notes || [];
+    const notesHtml = taskNotes.length ? `
+      <div style="border-top:1px solid var(--border);padding-top:10px;margin-top:10px">
+        <h3 style="font-size:11px;font-weight:600;color:var(--yellow);margin:0 0 6px">Agent Notes</h3>
+        ${taskNotes.map(n => `<div style="font-size:11px;color:var(--text-dim);margin-bottom:4px;padding:4px 8px;background:var(--surface2);border-radius:4px">${escHtml(n.text)}</div>`).join('')}
+      </div>` : '';
+
+    const detail = document.createElement('div');
+    detail.className = 'task-detail';
+    detail.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <h2>${escHtml(task.tag)} | ${escHtml(task.action)} | ${escHtml(task.target)}</h2>
+        <span style="cursor:pointer;color:var(--text-dim);font-size:14px" onclick="closeTaskModal()">✕</span>
+      </div>
+      <div class="td-meta">Status: <strong>${task.status}</strong> · Blocked by: ${escHtml(task.blockedBy)}</div>
+      <div class="td-scope"></div>
+      ${notesHtml}
+      <div class="td-qa">
+        <h3>Ask about this task</h3>
+        <div id="td-qa-bubble-${safeTag}" style="position:relative;min-height:80px"></div>
+      </div>`;
+    detail.querySelector('.td-scope').innerHTML = scopeHtml;
+    modal.innerHTML = '';
+    modal.appendChild(detail);
+    modal.classList.add('open');
+
+    // Instantiate shared QABubble in the task modal
+    const bubbleContainer = document.getElementById(`td-qa-bubble-${safeTag}`);
+    const taskBubble = new QABubble(bubbleContainer, {
+      context: `task:${tag} — ${task.action} ${task.target}`,
+      position: { x: 0, y: 0 },
+      onQuestion: async (text, ctx) => {
+        const res = await fetch('/api/question', {
+          method: 'POST',
+          body: JSON.stringify({ text, context: ctx, ts: new Date().toISOString(), type: 'question' }),
+          headers: { 'Content-Type': 'application/json' }
+        });
+        const { idx: serverIdx } = await res.json();
+        return { serverIdx };
+      },
+      pollAnswers: async (serverIdx) => {
+        try {
+          const r = await fetch('/api/answers');
+          const answers = await r.json();
+          const matching = answers.filter(a => Number(a.idx) === Number(serverIdx));
+          if (matching.length > 0) return matching[matching.length - 1].answer || matching[matching.length - 1].text;
+        } catch(e) {}
+        return null;
+      },
+    });
+    // Make it inline (not absolute)
+    taskBubble.el.style.position = 'relative';
+    taskBubble.el.style.left = '0';
+    taskBubble.el.style.top = '0';
+    taskBubble.el.style.maxWidth = '100%';
+    taskBubble.el.style.border = 'none';
+    taskBubble.el.style.boxShadow = 'none';
+    taskBubble.el.style.borderRadius = '6px';
+    taskBubble.el.style.background = 'var(--surface2)';
+    taskBubble.el.querySelector('.qa-drag').style.display = 'none';
+    taskBubble.el.querySelector('.qa-close').style.display = 'none';
+    taskBubble.el.classList.remove('wave');
+  });
+}
+
+function closeTaskModal() {
+  document.getElementById('task-modal').classList.remove('open');
+}
+
+
+// Global right-click context menu (works on all tabs except when MermaidEditor handles it)
+const gCtx = document.getElementById('global-ctxmenu');
+const gPanel = document.getElementById('global-notepanel');
+const gInput = document.getElementById('global-note-input');
+let gMode = 'note';
+let gPos = {x:0,y:0};
+
+document.getElementById('content').addEventListener('contextmenu', e => {
+  if (activeEditor) return; // MermaidEditor handles its own context menu
+  e.preventDefault();
+  gPos = {x:e.clientX, y:e.clientY};
+  // Only show IDE options when viewing a specific file (not overview/cards)
+  const ideItems = gCtx.querySelectorAll('[data-action="g-open-vscode"],[data-action="g-open-idea"]');
+  const hasFile = currentView !== 'overview' && currentView !== 'components';
+  ideItems.forEach(el => el.style.display = hasFile ? 'flex' : 'none');
+  gCtx.style.display = 'block';
+  gCtx.style.left = e.clientX+'px';
+  gCtx.style.top = e.clientY+'px';
+});
+
+document.addEventListener('mousedown', e => {
+  if (!gCtx.contains(e.target)) gCtx.style.display = 'none';
+  if (gPanel.style.display === 'block' && !gPanel.contains(e.target)) gPanel.style.display = 'none';
+});
+
+gCtx.addEventListener('click', e => {
+  const action = e.target.closest('[data-action]')?.dataset.action;
+  if (!action) return;
+  gCtx.style.display = 'none';
+  if (action === 'g-note') {
+    new NoteBubble(document.body, {
+      context: currentView,
+      position: { x: gPos.x, y: gPos.y },
+      positioning: 'fixed',
+      onSave: async (text, ctx) => {
+        const note = {text, context:ctx, ts:new Date().toISOString()};
+        notes.push(note);
+        renderNotes();
+        await fetch('/api/note', {method:'POST', body:JSON.stringify(note), headers:{'Content-Type':'application/json'}});
+        showToastOverview('Note saved ✓');
+      },
+    });
+  }
+  else if (action === 'g-question') {
+    new QABubble(document.body, {
+      context: currentView,
+      position: { x: gPos.x, y: gPos.y },
+      onQuestion: async (questionText, ctx) => {
+        const res = await fetch('/api/question', {method:'POST', body:JSON.stringify({text:questionText, context:ctx, ts:new Date().toISOString(), type:'question'}), headers:{'Content-Type':'application/json'}});
+        const { idx: serverIdx } = await res.json();
+        return { serverIdx };
+      },
+      pollAnswers: async (serverIdx) => {
+        try {
+          const r = await fetch('/api/answers');
+          const answers = await r.json();
+          const matching = answers.filter(a => Number(a.idx) === Number(serverIdx));
+          if (matching.length > 0) return matching[matching.length - 1].answer || matching[matching.length - 1].text;
+        } catch(e) {}
+        return null;
+      },
+    });
+  }
+  else if (action === 'g-open-vscode' && currentFilePath) openInIde('vscode', currentFilePath);
+  else if (action === 'g-open-idea' && currentFilePath) openInIde('idea', currentFilePath);
+});
+
+function openGlobalPanel() {
+  gPanel.style.display = 'block';
+  gPanel.style.left = Math.min(gPos.x, window.innerWidth-300)+'px';
+  gPanel.style.top = Math.min(gPos.y, window.innerHeight-150)+'px';
+  gInput.value = '';
+  gInput.placeholder = gMode==='question' ? 'Ask a question about this section...' : 'Leave a note here...';
+  gInput.focus();
+}
+
+document.getElementById('global-np-cancel').onclick = () => { gPanel.style.display='none'; };
+document.getElementById('global-np-send').onclick = submitGlobalNote;
+gInput.addEventListener('keydown', e => {
+  if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); submitGlobalNote(); }
+  if (e.key==='Escape') gPanel.style.display='none';
+});
+
+async function submitGlobalNote() {
+  const text = gInput.value.trim();
+  if (!text) return;
+  gPanel.style.display = 'none';
+  const payload = {text, context:currentView, ts:new Date().toISOString(), type:gMode};
+
+  if (gMode === 'note') {
+    notes.push(payload);
+    renderNotes();
+    await fetch('/api/note', {method:'POST', body:JSON.stringify(payload), headers:{'Content-Type':'application/json'}});
+    return;
+  }
+
+  // Question mode — use shared QABubble component (same as mermaid editor)
+  const bubbleIdx = document.querySelectorAll('.qa-bubble').length;
+  const bubbleContainer = document.getElementById('content');
+  const qaBubble = new QABubble(document.body, {
+    context: currentView,
+    position: { x: window.innerWidth - 360, y: window.innerHeight - 300 - (bubbleIdx * 220) },
+    onQuestion: async (questionText, ctx) => {
+      const res = await fetch('/api/question', {method:'POST', body:JSON.stringify({text:questionText, context:ctx, ts:new Date().toISOString(), type:'question'}), headers:{'Content-Type':'application/json'}});
+      return { serverIdx: Date.now() };
+    },
+    pollAnswers: async (serverIdx) => {
+      try {
+        const r = await fetch('/api/answers');
+        const answers = await r.json();
+        const matching = answers.filter(a => a.context === currentView);
+        if (matching.length > 0) return matching[matching.length - 1].answer || matching[matching.length - 1].text;
+      } catch(e) {}
+      return null;
+    },
+  });
+  qaBubble.appendUserMessage(text);
+  qaBubble._appendPending();
+  qaBubble._startPolling();
+}
+
+function showToastOverview(msg) {
+  const t = document.createElement('div');
+  t.style.cssText = 'position:fixed;top:12px;right:12px;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px 14px;font-size:11px;color:var(--text);box-shadow:0 4px 12px rgba(0,0,0,.4);z-index:3000;animation:toast-in 0.2s ease-out';
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity 0.3s'; setTimeout(() => t.remove(), 300); }, 2500);
+}
+
+// Keyboard
+document.addEventListener('keydown', e => {
+  if ((e.metaKey||e.ctrlKey) && e.key==='k') { e.preventDefault(); openSearch(); return; }
+  if (e.key==='Escape') { closeSearch(); closeTaskModal(); return; }
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+  // j/k navigation in sidebar
+  if (e.key === 'j' || e.key === 'k') {
+    const items = [...document.querySelectorAll('.nav-item')];
+    const active = document.querySelector('.nav-item.active');
+    const idx = items.indexOf(active);
+    const next = e.key === 'j' ? Math.min(idx + 1, items.length - 1) : Math.max(idx - 1, 0);
+    if (items[next]) items[next].click();
+    return;
+  }
+  // Enter on kanban card opens modal
+  if (e.key === 'Enter' && document.querySelector('.kanban-card:focus')) {
+    document.querySelector('.kanban-card:focus').click();
+    return;
+  }
+});
+
+// Collapsible sidebar groups
+document.getElementById('sidebar-nav').addEventListener('click', e => {
+  const title = e.target.closest('.nav-group-title');
+  if (!title) return;
+  const group = title.closest('.nav-group');
+  if (group) group.classList.toggle('collapsed');
+});
+
+init();
+</script>
+</body>
+</html>

@@ -633,7 +633,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
     if not args.install:
         print("dry run — would write PostToolUse hook to:")
         print(f"  {settings_path}")
-        print(f"\nhook triggers: schematic validate on any write to docs/schematics/")
+        print("\nhook triggers: schematic validate on any write to docs/schematics/")
         print("\nrun with --install to apply")
         return
 
@@ -843,7 +843,7 @@ def _emit_review_request(schematic_dir: Path, tag: str, task: dict) -> None:
 
     print(f"  ↪ SESSION AGENT: launch this review as a {REVIEW_MODEL} subagent (Agent tool),")
     print(f"    then record the verdict: schematic task review-result {tag} <clean|findings> --summary \"<one line>\" --schematic {schematic_dir.name}")
-    print(f"    Task cannot complete until the recorded verdict is 'clean'.\n")
+    print("    Task cannot complete until the recorded verdict is 'clean'.\n")
     print("  ── review prompt ───────────────────────────────────────────────")
     print(textwrap.indent(review_prompt, "  "))
     print("  ────────────────────────────────────────────────────────────────")

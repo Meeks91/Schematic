@@ -5,6 +5,7 @@ import json
 import re
 import subprocess
 import sys
+import textwrap
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,6 +23,9 @@ TASK_STATUS_COMPLETE = "complete"
 VALID_TASK_STATUSES = {TASK_STATUS_PENDING, TASK_STATUS_IN_PROGRESS, TASK_STATUS_REVIEW, TASK_STATUS_COMPLETE}
 
 REVIEW_MODEL = "sonnet"  # task reviews run on Sonnet — scoped + cheap, not the session's planning model
+REVIEW_VERDICT_CLEAN = "clean"
+REVIEW_VERDICT_FINDINGS = "findings"
+REVIEW_VERDICTS = {REVIEW_VERDICT_CLEAN, REVIEW_VERDICT_FINDINGS}
 
 VALID_PHASES = set(range(1, 8))
 PHASES_REQUIRING_AUDIT = {1, 2, 4, 6, 7}
@@ -240,6 +244,11 @@ _OVERVIEW_STUB = """\
 # Components Overview
 
 ## Component Summary
+
+<!-- One ### sub-heading per logical group (service + the internals that change
+     with it); Service row first, then its internals. Never one flat table. -->
+
+### <group>
 
 | # | Class | Type | Class AC (responsibility) | Necessitated by |
 |---|---|---|---|---|
@@ -678,6 +687,7 @@ def cmd_task(args: argparse.Namespace) -> None:
         "complete": _task_complete,
         "next": _task_next,
         "note": _task_note,
+        "review-result": _task_review_result,
     }
     task_handlers[args.task_command](args)
 
@@ -744,54 +754,64 @@ def _task_status(args: argparse.Namespace) -> None:
         }
         state["tasks"].setdefault(args.tag, {})["review_request"] = review_request
         save_state(schematic_dir, state)
-        print(f"\n⚡ REVIEW DISPATCHED for {args.tag}")
+        print(f"\n⚡ REVIEW REQUESTED for {args.tag}")
         print(f"  Target: {task.get('target', 'unknown')}")
-        _dispatch_review_agent(schematic_dir, args.tag, task)
+        _emit_review_request(schematic_dir, args.tag, task)
 
 
-def _dispatch_review_agent(schematic_dir: Path, tag: str, task: dict) -> None:
-    """Dispatch a Sonnet review of the task's files against CLAUDE.md, scoped to avoid token blow-up."""
-    import shutil
-
-    claude_bin = shutil.which("claude")
+def _emit_review_request(schematic_dir: Path, tag: str, task: dict) -> None:
+    """Print the review prompt for the session agent to dispatch as a subagent."""
     target = task.get("target", "unknown")
     component_spec = task.get("component_file") or "the task's component spec"
 
     review_prompt = (
-        f"Review ONLY the code written for task '{tag}' (target: {target}).\n"
-        f"Scope strictly to the source + test files implementing this target —\n"
-        f"read the component spec at {component_spec} to identify exactly which\n"
-        f"files those are. Do NOT review the whole repo or unrelated diffs; the\n"
-        f"scope is this one task, to keep the review token-bounded.\n\n"
-        f"PRIMARY lens: verify those files against the project's CLAUDE.md\n"
-        f"conventions (the ground-truth code standard — naming, suffixes, file\n"
+        f"Review ONLY the git-diff changes written for task '{tag}' (target: {target}).\n"
+        f"Scope (HARD RULES — violations produce false flags):\n"
+        f"  1. Run `git diff HEAD --stat` and `git status --short`, then read the\n"
+        f"     component spec at {component_spec} to identify which of those\n"
+        f"     changed files implement THIS task. Review only that intersection.\n"
+        f"  2. Within each file, flag ONLY lines that are added or modified in the\n"
+        f"     diff. Pre-existing code — even in the same file, even moved code\n"
+        f"     whose content is unchanged — is OUT of scope. Never flag it.\n"
+        f"  3. Do NOT read or review files outside the diff.\n\n"
+        f"PRIMARY lens: verify the changed lines against the project's CLAUDE.md\n"
+        f"conventions and resolved standards modules (naming, suffixes, file\n"
         f"layout, model placement, class size, typing, tests, cascading).\n"
-        f"If a /code-review skill is available in this project, also run it\n"
-        f"scoped to those same files and fold its findings in.\n"
-        f"Record findings as a note (do NOT complete the task — completion stays\n"
-        f"with the implementing agent via schematic-task-done):\n"
-        f"  schematic task note {tag} \"<one-line summary: PASS, or the findings>\" --schematic {schematic_dir.name}\n"
+        f"Record each finding as a note (do NOT complete the task — completion\n"
+        f"stays with the implementing agent):\n"
+        f"  schematic task note {tag} \"<finding>\" --schematic {schematic_dir.name}\n"
+        f"Final line of your reply: VERDICT: clean | VERDICT: findings\n"
     )
 
-    if not claude_bin:
-        print("  ⚠ claude CLI not found on PATH — run the review manually:")
-        print(f"  claude -p --model {REVIEW_MODEL} '<scoped CLAUDE.md review of {target}>'\n")
-        return
+    print(f"  ↪ SESSION AGENT: launch this review as a {REVIEW_MODEL} subagent (Agent tool),")
+    print(f"    then record the verdict: schematic task review-result {tag} <clean|findings> --summary \"<one line>\" --schematic {schematic_dir.name}")
+    print(f"    Task cannot complete until the recorded verdict is 'clean'.\n")
+    print("  ── review prompt ───────────────────────────────────────────────")
+    print(textwrap.indent(review_prompt, "  "))
+    print("  ────────────────────────────────────────────────────────────────")
 
-    review_cmd = [claude_bin, "-p", review_prompt, "--model", REVIEW_MODEL]
 
-    try:
-        proc = subprocess.Popen(
-            review_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=str(find_project_root()),
+def _task_review_result(args: argparse.Namespace) -> None:
+    schematic_dir = resolve_schematic_dir(args.schematic)
+    state = load_state(schematic_dir)
+    task_state = state["tasks"].get(args.tag)
+    if not task_state or "review_request" not in task_state:
+        _exit_error(
+            f"no review request recorded for task {args.tag}\n"
+            f"  run: schematic task status {args.tag} review --schematic {args.schematic}"
         )
-        print(f"  ✓ Review dispatched on {REVIEW_MODEL} (PID {proc.pid})")
-        print(f"  Scope: files implementing {target} (CLAUDE.md conventions + /code-review if available)")
-        print(f"  Findings will be recorded as a note on task {tag}.\n")
-    except OSError as e:
-        print(f"  ⚠ Failed to dispatch review agent: {e}")
+
+    review_request = task_state["review_request"]
+    review_request["status"] = args.verdict
+    review_request["summary"] = args.summary
+    review_request["recorded_at"] = datetime.now(tz=timezone.utc).isoformat()
+    save_state(schematic_dir, state)
+    print(f"review result for {args.tag}: {args.verdict} — {args.summary}")
+    if args.verdict == REVIEW_VERDICT_CLEAN:
+        print(f"  next: schematic task complete {args.tag} --schematic {args.schematic}")
+    else:
+        print("  resolve every finding (see task notes), re-run tests, then re-dispatch:")
+        print(f"  schematic task status {args.tag} review --schematic {args.schematic}")
 
 
 def _task_complete(args: argparse.Namespace) -> None:
@@ -802,7 +822,27 @@ def _task_complete(args: argparse.Namespace) -> None:
     if not task:
         _exit_error(f"task '{args.tag}' not found in tasks.md")
 
-    if task["status"] != TASK_STATUS_IN_PROGRESS:
+    review_state = load_state(schematic_dir)["tasks"].get(args.tag, {}).get("review_request")
+    review_verdict = review_state["status"] if review_state else None
+    if review_verdict != REVIEW_VERDICT_CLEAN:
+        if args.override:
+            state = load_state(schematic_dir)
+            record_override(
+                state,
+                f"task complete {args.tag} without clean review (verdict: {review_verdict or 'never dispatched'})",
+                args.override,
+            )
+            save_state(schematic_dir, state)
+        else:
+            _exit_error(
+                f"task {args.tag} has no clean review recorded "
+                f"(review verdict: {review_verdict or 'never dispatched'})\n"
+                f"  run: schematic task status {args.tag} review --schematic {args.schematic}\n"
+                f"  then: schematic task review-result {args.tag} clean --summary \"<one line>\" --schematic {args.schematic}\n"
+                f"  or:   schematic task complete {args.tag} --schematic {args.schematic} --override \"<reason>\""
+            )
+
+    if task["status"] not in {TASK_STATUS_IN_PROGRESS, TASK_STATUS_REVIEW}:
         if args.override:
             state = load_state(schematic_dir)
             record_override(
@@ -813,7 +853,7 @@ def _task_complete(args: argparse.Namespace) -> None:
             save_state(schematic_dir, state)
         else:
             _exit_error(
-                f"task {args.tag} must be in_progress to complete "
+                f"task {args.tag} must be in_progress or review to complete "
                 f"(currently: '{task['status']}')\n"
                 f"  run: schematic task status {args.tag} in_progress --schematic {args.schematic}\n"
                 f"  or:  schematic task complete {args.tag} --schematic {args.schematic} "
@@ -958,10 +998,16 @@ def _build_parser() -> argparse.ArgumentParser:
     p_tstat.add_argument("--schematic", required=True, metavar="NAME")
     p_tstat.add_argument("--override", metavar="REASON", help="Bypass legal transition check")
 
-    p_tcomp = task_sub.add_parser("complete", help="Mark task complete (requires in_progress)")
+    p_tcomp = task_sub.add_parser("complete", help="Mark task complete (requires clean review)")
     p_tcomp.add_argument("tag")
     p_tcomp.add_argument("--schematic", required=True, metavar="NAME")
-    p_tcomp.add_argument("--override", metavar="REASON", help="Bypass in_progress check")
+    p_tcomp.add_argument("--override", metavar="REASON", help="Bypass status + clean-review checks")
+
+    p_trev = task_sub.add_parser("review-result", help="Record the review verdict for a task")
+    p_trev.add_argument("tag", help="Task tag (e.g. b.1)")
+    p_trev.add_argument("verdict", choices=sorted(REVIEW_VERDICTS))
+    p_trev.add_argument("--summary", required=True, help="One-line review outcome")
+    p_trev.add_argument("--schematic", required=True, metavar="NAME")
 
     p_tnext = task_sub.add_parser("next", help="Show next unblocked pending task")
     p_tnext.add_argument("name", nargs="?", help="Schematic name (omit for all)")

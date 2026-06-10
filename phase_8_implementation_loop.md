@@ -11,10 +11,10 @@ in this phase keep that delivery honest:
    *why* behind atomicity, FK invariants, security boundaries, and other
    cross-cutting concerns. Read it before touching code.
 2. **Implemented code passes a standards review before it can complete.**
-   Moving a task to `review` dispatches a code-standards review of the
-   written code against the resolved standards modules (see "Review gate"
-   below). Findings are resolved before completion — no task goes straight
-   from code to done.
+   Moving a task to `review` emits a review request; the implementing agent
+   launches it as a Sonnet subagent scoped to the task's git diff (see
+   "Review gate" below). Findings are resolved and a `clean` verdict recorded
+   before completion — the CLI hard-blocks `complete` without it.
 3. **Completion is reported through the CLI, not narrated free-text.** The
    CLI forces an explicit answer on whether implementation matched the
    schematic and (if not) whether the schematic was patched to reflect
@@ -41,12 +41,16 @@ For each task in `tasks.md`, in order:
    NO AUTO-IMPLEMENTATION. The sketch gate is mandatory regardless of how
    small or mechanical the task appears.
 4. Run tests (the new tests for this class AND the full suite at milestones)
-5. Move the task to REVIEW — this dispatches the code-standards review:
+5. Move the task to REVIEW — this emits the review request:
        schematic task status <tag> review --schematic <name>
-   See "Review gate" below. The task CANNOT complete until the review is clean.
+   Launch the printed prompt as a Sonnet subagent (Agent tool), then record
+   the verdict:
+       schematic task review-result <tag> clean|findings --summary "<one line>" --schematic <name>
+   See "Review gate" below. The task CANNOT complete until the recorded
+   verdict is clean.
 6. Resolve review findings: address every note the review agent leaves, then
    re-run tests. Re-trigger step 5 if you changed code.
-7. Mark task complete via the CLI (drift report) once the review is clean:
+7. Mark task complete via the CLI (drift report) once the verdict is clean:
        schematic-task-done <tag> --matched [y|n] --updated [y|n]
 8. Move to next task
 ```
@@ -66,27 +70,40 @@ It exists to verify the **written code adheres to the resolved standards** befor
 schematic task status <tag> review --schematic <name>
 ```
 
-On that transition the CLI dispatches a review (`claude -p --model sonnet`)
-**scoped strictly to the files implementing this one task** — derived from the
-task's component spec — so the review never re-reads the whole repo and stays
-token-bounded. Its **primary lens is the resolved standards modules** (styling + testing for the
-task's language, plus the project's CLAUDE.md); if a
-`/code-review` skill is present, it runs that too and folds the findings in. The
-review runs on Sonnet (scoped + cheap), not the session's planning model.
+**Dispatch model: the CLI is the gatekeeper, the session agent is the
+dispatcher.** On that transition the CLI records a `review_request` and prints
+the review prompt; the **implementing agent** launches it as a Sonnet subagent
+via its Agent tool (in-session — so the dispatcher can prepend known
+sanctioned patterns and prior false-positive rulings to the prompt). The CLI
+never spawns `claude -p` itself.
+
+**Scope: the git diff ONLY.** The reviewer reads `git diff HEAD` /
+`git status --short`, intersects the changed files with the task's component
+spec, and reviews **only added/modified lines**. Pre-existing code — even in
+the same file, even verbatim-moved code — is out of scope and must never be
+flagged: findings on unchanged code are false flags by definition. Primary
+lens is the resolved standards modules (styling + testing for the task's
+language, plus the project's CLAUDE.md). The review runs on Sonnet (scoped +
+cheap), not the session's planning model.
 
 Protocol:
 
-1. **Dispatch** — `task status <tag> review` records a `review_request` and
-   spawns the review agent. If `claude` is not on PATH, the CLI prints the
-   review prompt for manual execution — run it yourself, do not skip it.
-2. **Findings land as notes** — the review agent records each finding via
-   `schematic task note <tag> "<finding>"`. The agent does **not** self-complete
-   the task; completion stays with the implementing agent + drift report.
-3. **Resolve** — fix every finding through the normal sketch loop, re-run
-   tests, and re-dispatch `task status <tag> review` if code changed.
-4. **Complete** — only once the review is clean, run `schematic-task-done`
-   (below). A `review` task legally transitions to `complete`; it may also
-   return to `in_progress` if findings require substantial rework.
+1. **Request** — `task status <tag> review` records a `review_request`
+   (status: pending) and prints the diff-scoped review prompt.
+2. **Dispatch** — the implementing agent launches the prompt as a Sonnet
+   subagent (Agent tool). Never skip; never review your own code inline
+   instead.
+3. **Findings land as notes** — the review agent records each finding via
+   `schematic task note <tag> "<finding>"` and ends with `VERDICT: clean` or
+   `VERDICT: findings`. It does **not** self-complete the task.
+4. **Record** — the implementing agent records the verdict:
+   `schematic task review-result <tag> clean|findings --summary "<one line>"`.
+5. **Resolve** — on `findings`: fix every note through the normal sketch loop,
+   re-run tests, re-dispatch from step 1.
+6. **Complete** — only once the recorded verdict is `clean`, run
+   `schematic-task-done` (below). Both `schematic task complete` and
+   `schematic-task-done` hard-block without a clean verdict (`--override` /
+   `--force` are the explicit, recorded escape hatches).
 
 The review gate verifies standards; `schematic-task-done` records schematic
 drift. Both run — neither replaces the other.
@@ -129,6 +146,8 @@ The CLI exits non-zero if:
 - the tag is not found in `tasks.md`
 - required flags are missing
 - the task is already marked complete (re-running requires `--force`)
+- no `clean` review verdict is recorded in `.schematic-state.json` for the tag
+  (bypassing requires `--force`)
 
 ---
 

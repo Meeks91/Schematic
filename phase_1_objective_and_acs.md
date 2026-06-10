@@ -46,29 +46,31 @@ Then proceed from the earliest phase that still needs user sign-off — skipping
 
 Produce a **numbered feature change list**. Each entry is class-anchored, with sub-changes broken out and What/Why per sub-change. This is the single locked intent document for the feature.
 
-Format:
+Format — one heading + one table per feature, NEVER nested Title/What/Why prose blocks (they are unreadable at 3+ sub-changes):
 
-```
+```markdown
 Part of change set: <max 2 lines — answers "what are we working on?" at a glance.
                      NOT a list of features. A casual one-breath description of the umbrella work>
 
-1. <Feature heading — present-tense outcome, no method names>
-   Class:   <ClassName>  (or: <ClassA> + <ClassB> + <ClassC> if multi-class)
-   Changes:
-     1.A
-       Title: <one-line description of this sub-change>
-       What:  <what the change is>
-       Why:   <purpose — ties back to Context/Objective>
-     1.B
-       Title: <one-line description>
-       What:  <what>
-       Why:   <purpose>
+### 1. <Feature heading — present-tense outcome, no method names>
+Class: <ClassName>  (or: <ClassA> + <ClassB> + <ClassC> if multi-class)
+
+| AC | Title | What | Why |
+|---|---|---|---|
+| 1.A | <one-line description> | <what the change is> | <purpose — ties back to Context/Objective> |
+| 1.B | <one-line description> | <what> | <purpose> |
+
+Notes (non-AC):
+- <composition/wiring fallout that is NOT a verifiable AC — e.g. "the hook
+  requires an enrichment read the assembler can't reach today; wiring lands
+  in Phase 2 topology / Phase 5 injection". Omit the section when empty.>
 ```
 
 Rules:
 - **Change-set header mandatory**: anchors the numbered features in their umbrella context.
 - **Class-anchored**: every feature change must name the class(es) it touches. Orphan changes are not allowed.
-- **Title / What / Why all mandatory per sub-change**.
+- **Table mandatory**: one row per sub-change; AC / Title / What / Why columns all populated. Keep What/Why cells to one or two sentences — if a cell needs a paragraph, the sub-change is too big; split it.
+- **Notes (non-AC) section**: wiring/composition consequences live here as bullets, never disguised as ACs and never buried in a Why cell.
 - **No method names, no return types, no signatures**: those are Phase 4 (contracts). Feature lines describe outcomes, not interfaces.
 - **Hygiene changes explicit**: renames, test re-splits, audit-event additions are numbered entries — never hidden in implementation tasks.
 - **Wording style**: short, information-dense, full sentences in plain English. Density comes from precision, not from clipping articles or verbs.

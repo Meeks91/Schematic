@@ -7,6 +7,8 @@
 
 Define what each class OWNS — produce Class ACs. Write the Component Summary to `<schematic_dir>/components/_overview.md` (NOT objective.md — that stays human-only). Max 3 classes per gate.
 
+**Component Summary grouping (binding):** never one flat table mixing services, repos, and utils. One `###` sub-heading per logical group — a service plus the internals that change with it — Service row first, then its internals; groups ordered by the feature's flow. Template: `SKILL.md` → `components/_overview.md`.
+
 ## Component Card Format (BINDING — every class)
 
 Every class is presented as a **boxed card**. The box surfaces the same surfaces every time so the user can scan a card cold and immediately see (1) what changes, (2) why, (3) what the class does, (4) where it fails loud. Apply the same shape to the in-chat presentation AND the on-disk `components/_overview.md` block.

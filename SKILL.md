@@ -22,7 +22,7 @@ description: Multi-phase feature planning skill. Grills the user to produce a fe
 > schematic phase audit --schematic <name> <N> <"clean"|findings>
 > schematic phase sign-off --schematic <name> <N>
 > schematic phase complete --schematic <name> <N>
-> schematic task show|status|complete|next                      # phase 7+ task lifecycle
+> schematic task show|status|review-result|complete|next        # phase 7+ task lifecycle
 > schematic mermaid                                             # validate .mmd diagrams
 > ```
 >
@@ -436,12 +436,26 @@ See Contract Block Format in `phase_4_contracts_and_tests.md` for the full templ
 # Components Overview
 
 ## Component Summary                                  [Phase 2]
-For ≤6 classes use a table; for >6 (or multi-line ACs) use the Phase 2 block
+For ≤6 classes use tables; for >6 (or multi-line ACs) use the Phase 2 block
 form (preserve the bullets, don't collapse — see `phase_2_topology.md`).
 
+**Grouping rule (binding):** NEVER one flat table mixing services, repos, and
+utils in arbitrary order. Split into one `###` sub-heading per logical group —
+a service together with the internals/repos/utils that change with it — so a
+related change set reads as one unit. Within a group: the Service row first,
+then its internals. Order groups by the feature's flow (read path before write
+path, producers before consumers).
+
+### <Group — e.g. reelAnalytics (read-path extraction)>
 | # | Class | Type | Class AC (responsibility) | Necessitated by |
 |---|---|---|---|---|
-| 3.1 | EffectsLinker | NounVerber | Links raw effects to brinson containers | 1.A — conviction-aware rollup, 1.B — followed/notFollowed split |
+| 3.1 | ReelAnalyticsService | Service | Owns the read-side analytics cut | 1.A — region on every reel |
+| 3.2 | CreatorBaselineMetricsRepository | Repository | Owns baseline metric rows | 1.A — region on every reel |
+
+### <Group — e.g. timelineMetrics (shared math)>
+| # | Class | Type | Class AC (responsibility) | Necessitated by |
+|---|---|---|---|---|
+| 3.3 | TimelineMetricsService | Service | Owns per-period timeline math | 2.B — per-period growth series |
 
 ## Injection DAG                                      [Phase 5]
 > Authoritative: ../dag.mmd (when >8 nodes)

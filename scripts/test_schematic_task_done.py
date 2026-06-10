@@ -498,3 +498,156 @@ class TestSchematicTaskDoneStdout:
         assert result.returncode == 0
         assert "✓ Task b.6 marked complete" in result.stdout
         assert "Divergence" not in result.stdout
+
+
+# Fixtures:
+
+_STATE_REVIEW_PENDING = '{"phases": {}, "tasks": {"b.6": {"review_request": {"tag": "b.6", "status": "pending"}}}, "overrides": []}'
+_STATE_REVIEW_CLEAN = '{"phases": {}, "tasks": {"b.6": {"review_request": {"tag": "b.6", "status": "clean"}}}, "overrides": []}'
+
+
+def _write_state_file(tmp_path: Path, content: str) -> Path:
+    state_file = tmp_path / ".schematic-state.json"
+    state_file.write_text(content)
+    return state_file
+
+
+# Fixtures
+
+
+class TestSchematicTaskDoneReviewGate:
+
+    def test_fails_with_exit_6_when_review_verdict_not_clean(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # Given
+        tasks_file = _write_tasks_file(
+            tmp_path=tmp_path,
+            content=_TASKS_FIXTURE_TWO_TASKS,
+        )
+        _write_state_file(
+            tmp_path=tmp_path,
+            content=_STATE_REVIEW_PENDING,
+        )
+
+        # When
+        result = _run_cli(
+            args=[
+                "b.6",
+                "--matched", "y",
+                "--updated", "y",
+                "--tasks-file", str(tasks_file),
+            ],
+        )
+
+        # Then
+        assert result.returncode == 6
+        assert "no clean review" in result.stderr
+
+    def test_fails_with_exit_6_when_review_never_dispatched(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # Given
+        tasks_file = _write_tasks_file(
+            tmp_path=tmp_path,
+            content=_TASKS_FIXTURE_TWO_TASKS,
+        )
+        _write_state_file(
+            tmp_path=tmp_path,
+            content='{"phases": {}, "tasks": {}, "overrides": []}',
+        )
+
+        # When
+        result = _run_cli(
+            args=[
+                "b.6",
+                "--matched", "y",
+                "--updated", "y",
+                "--tasks-file", str(tasks_file),
+            ],
+        )
+
+        # Then
+        assert result.returncode == 6
+        assert "never dispatched" in result.stderr
+
+    def test_succeeds_when_review_verdict_is_clean(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # Given
+        tasks_file = _write_tasks_file(
+            tmp_path=tmp_path,
+            content=_TASKS_FIXTURE_TWO_TASKS,
+        )
+        _write_state_file(
+            tmp_path=tmp_path,
+            content=_STATE_REVIEW_CLEAN,
+        )
+
+        # When
+        result = _run_cli(
+            args=[
+                "b.6",
+                "--matched", "y",
+                "--updated", "y",
+                "--tasks-file", str(tasks_file),
+            ],
+        )
+
+        # Then
+        assert result.returncode == 0
+        assert "✓ Task b.6 marked complete" in result.stdout
+
+    def test_force_bypasses_review_gate(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # Given
+        tasks_file = _write_tasks_file(
+            tmp_path=tmp_path,
+            content=_TASKS_FIXTURE_TWO_TASKS,
+        )
+        _write_state_file(
+            tmp_path=tmp_path,
+            content=_STATE_REVIEW_PENDING,
+        )
+
+        # When
+        result = _run_cli(
+            args=[
+                "b.6",
+                "--matched", "y",
+                "--updated", "y",
+                "--tasks-file", str(tasks_file),
+                "--force",
+            ],
+        )
+
+        # Then
+        assert result.returncode == 0
+
+    def test_passes_when_no_state_file_exists(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # Given — legacy bundle with no state file
+        tasks_file = _write_tasks_file(
+            tmp_path=tmp_path,
+            content=_TASKS_FIXTURE_TWO_TASKS,
+        )
+
+        # When
+        result = _run_cli(
+            args=[
+                "b.6",
+                "--matched", "y",
+                "--updated", "y",
+                "--tasks-file", str(tasks_file),
+            ],
+        )
+
+        # Then
+        assert result.returncode == 0

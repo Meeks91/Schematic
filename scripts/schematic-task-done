@@ -10,16 +10,21 @@ Behaviour matrix (matched, updated):
     n, y  → Status: complete. Divergence: patched-in-component-file
     n, n  → Status: complete. Divergence: bridged-not-patched
 
-Exits non-zero on: tag not found, missing flags, task already complete (unless --force).
+Exits non-zero on: tag not found, missing flags, task already complete, or no
+clean review verdict recorded in .schematic-state.json (each unless --force).
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 from pathlib import Path
 
+
+_STATE_FILENAME = ".schematic-state.json"
+_REVIEW_VERDICT_CLEAN = "clean"
 
 _STATUS_PENDING_PATTERN = re.compile(r"^Status:[ \t]*(pending|in_progress|review|complete)[ \t]*$", re.MULTILINE)
 _DIVERGENCE_LINE_PATTERN = re.compile(r"^Divergence:\s*.+$\n?", re.MULTILINE)
@@ -37,6 +42,10 @@ class TaskAlreadyCompleteError(Exception):
 
 
 class MalformedTaskEntryError(Exception):
+    pass
+
+
+class ReviewNotCleanError(Exception):
     pass
 
 
@@ -124,6 +133,21 @@ def update_task_block(
     return f"{trimmed_block}\n{divergence_line}\n"
 
 
+def assert_review_clean(tasks_file_path: Path, tag: str) -> None:
+    state_path = tasks_file_path.parent / _STATE_FILENAME
+    if not state_path.exists():
+        return
+    task_state = json.loads(state_path.read_text()).get("tasks", {}).get(tag, {})
+    review_verdict = task_state.get("review_request", {}).get("status")
+    if review_verdict != _REVIEW_VERDICT_CLEAN:
+        raise ReviewNotCleanError(
+            f"Task {tag} has no clean review recorded "
+            f"(review verdict: {review_verdict or 'never dispatched'}). "
+            f"Dispatch the review gate (`schematic task status {tag} review`), record "
+            f"`schematic task review-result {tag} clean`, or pass --force to bypass."
+        )
+
+
 def apply_completion(
     tasks_file_path: Path,
     tag: str,
@@ -131,6 +155,8 @@ def apply_completion(
     updated: str,
     force: bool,
 ) -> None:
+    if not force:
+        assert_review_clean(tasks_file_path=tasks_file_path, tag=tag)
     original_content = tasks_file_path.read_text()
     block_start, block_end = find_task_block(content=original_content, tag=tag)
     updated_block = update_task_block(
@@ -169,6 +195,9 @@ def main(argv: list[str] | None = None) -> int:
     except MalformedTaskEntryError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 5
+    except ReviewNotCleanError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 6
 
     divergence_summary = resolve_divergence_line(
         matched=args.matched,

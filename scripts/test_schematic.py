@@ -405,28 +405,111 @@ class TestTaskComplete(unittest.TestCase):
         args = _make_args(tag=tag, schematic=schematic_dir.name, override=override)
         _with_resolved_dir(schematic_dir, _cli._task_complete, args)
 
+    def _record_review(self, schematic_dir: Path, tag: str, verdict: str) -> None:
+        state = _cli.load_state(schematic_dir)
+        state["tasks"].setdefault(tag, {})["review_request"] = {
+            "tag": tag,
+            "status": verdict,
+        }
+        _cli.save_state(schematic_dir, state)
+
     def test_complete_fails_when_task_is_pending(self) -> None:
         with TemporaryDirectory() as tmp:
             schematic_dir = _make_schematic_dir(tmp)
+            self._record_review(schematic_dir, "b.1", "clean")
             with self.assertRaises(SystemExit):
                 self._run_task_complete(schematic_dir, "b.1")
 
-    def test_complete_succeeds_when_task_is_in_progress(self) -> None:
+    def test_complete_fails_when_no_review_recorded(self) -> None:
         with TemporaryDirectory() as tmp:
             schematic_dir = _make_schematic_dir(tmp)
             _cli.update_task_status_in_file(schematic_dir / "tasks.md", "b.1", "in_progress")
+            with self.assertRaises(SystemExit):
+                self._run_task_complete(schematic_dir, "b.1")
+
+    def test_complete_fails_when_review_verdict_is_findings(self) -> None:
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            _cli.update_task_status_in_file(schematic_dir / "tasks.md", "b.1", "in_progress")
+            self._record_review(schematic_dir, "b.1", "findings")
+            with self.assertRaises(SystemExit):
+                self._run_task_complete(schematic_dir, "b.1")
+
+    def test_complete_succeeds_when_in_progress_with_clean_review(self) -> None:
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            _cli.update_task_status_in_file(schematic_dir / "tasks.md", "b.1", "in_progress")
+            self._record_review(schematic_dir, "b.1", "clean")
             self._run_task_complete(schematic_dir, "b.1")
             updated_tasks = _cli.parse_tasks(schematic_dir / "tasks.md")
             b1_task = next(t for t in updated_tasks if t["tag"] == "b.1")
             self.assertEqual(b1_task["status"], "complete")
 
-    def test_complete_with_override_bypasses_in_progress_check(self) -> None:
+    def test_complete_succeeds_when_in_review_with_clean_review(self) -> None:
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            _cli.update_task_status_in_file(schematic_dir / "tasks.md", "b.1", "review")
+            self._record_review(schematic_dir, "b.1", "clean")
+            self._run_task_complete(schematic_dir, "b.1")
+            updated_tasks = _cli.parse_tasks(schematic_dir / "tasks.md")
+            b1_task = next(t for t in updated_tasks if t["tag"] == "b.1")
+            self.assertEqual(b1_task["status"], "complete")
+
+    def test_complete_with_override_bypasses_status_and_review_checks(self) -> None:
         with TemporaryDirectory() as tmp:
             schematic_dir = _make_schematic_dir(tmp)
             self._run_task_complete(schematic_dir, "b.1", override="fast-tracking")
             updated_tasks = _cli.parse_tasks(schematic_dir / "tasks.md")
             b1_task = next(t for t in updated_tasks if t["tag"] == "b.1")
             self.assertEqual(b1_task["status"], "complete")
+
+
+# Fixtures
+
+
+class TestTaskReviewResult(unittest.TestCase):
+
+    def _run_review_result(
+        self, schematic_dir: Path, tag: str, verdict: str, summary: str
+    ) -> None:
+        args = _make_args(
+            tag=tag,
+            verdict=verdict,
+            summary=summary,
+            schematic=schematic_dir.name,
+        )
+        _with_resolved_dir(schematic_dir, _cli._task_review_result, args)
+
+    def _request_review(self, schematic_dir: Path, tag: str) -> None:
+        state = _cli.load_state(schematic_dir)
+        state["tasks"].setdefault(tag, {})["review_request"] = {
+            "tag": tag,
+            "status": "pending",
+        }
+        _cli.save_state(schematic_dir, state)
+
+    def test_review_result_fails_without_prior_review_request(self) -> None:
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            with self.assertRaises(SystemExit):
+                self._run_review_result(schematic_dir, "b.1", "clean", "all good")
+
+    def test_review_result_records_clean_verdict_and_summary(self) -> None:
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            self._request_review(schematic_dir, "b.1")
+            self._run_review_result(schematic_dir, "b.1", "clean", "all good")
+            review_request = _cli.load_state(schematic_dir)["tasks"]["b.1"]["review_request"]
+            self.assertEqual(review_request["status"], "clean")
+            self.assertEqual(review_request["summary"], "all good")
+
+    def test_review_result_records_findings_verdict(self) -> None:
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            self._request_review(schematic_dir, "b.1")
+            self._run_review_result(schematic_dir, "b.1", "findings", "2 naming violations")
+            review_request = _cli.load_state(schematic_dir)["tasks"]["b.1"]["review_request"]
+            self.assertEqual(review_request["status"], "findings")
 
 
 # Fixtures

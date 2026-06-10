@@ -14,6 +14,7 @@ Schematic absorbs the conventions of the repo it runs in. Standards are **plugga
 | `types` | class-suffix / component-type vocabulary, banned suffixes | P2, topology + contract audits |
 | `styling.<language>` | naming, formatting, idioms, defensive-code policy | P4, P8 |
 | `testing` | test planning, naming, G/W/T, object-equality | P4, P7, P8 |
+| `review` | code review lenses, gate criteria, report format | audits, `/code-review` |
 | `exemplars` | known-good dirs to imitate | learn mode, P8 |
 
 ## Manifest

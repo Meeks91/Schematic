@@ -3,7 +3,7 @@
 Phase 7 produces `tasks.md`. Phase 8 is the loop that executes each task.
 
 The schematic is the contract; the sketch loop in `~/.claude/CLAUDE.md`
-(Plan→Sketch→Confirm→Implement) is the delivery mechanism. Three clauses
+(Plan→Sketch→Confirm→Implement) is the delivery mechanism. Four clauses
 in this phase keep that delivery honest:
 
 1. **Cross-cutting concerns must be read before implementing.** Component
@@ -19,13 +19,36 @@ in this phase keep that delivery honest:
    CLI forces an explicit answer on whether implementation matched the
    schematic and (if not) whether the schematic was patched to reflect
    reality. No silent "done" allowed.
+4. **The phase keeps a MINIMAL completion record: `implementation_report.md`
+   at the bundle root.** Record ONLY what required user sign-off: divergences
+   from the locked schematic (one dated bullet each), deferred items awaiting
+   decision, and commit status — success on everything else is assumed, not
+   narrated. Reviews get one line ("Pristine — <rounds>"), not a ledger.
+   **Link it from the top of `objective.md`** (one blockquote line) — the
+   dashboard renders the bundle, and an unlinked report is invisible there.
 
 > [!CAUTION]
-> ## NEVER auto-implement tasks. NON-NEGOTIABLE.
+> ## Manual mode NEVER auto-implements. Auto mode is opt-in ONLY.
 >
-> Phase 7 may auto-write **task definitions** (the `tasks.md` entries themselves) when the contract is already locked. Phase 8 **implementation** is different: every task goes through the full Plan→Sketch→Confirm→Implement loop from `~/.claude/CLAUDE.md`. The user signed off on the contract, not on the code that implements it. Skipping the sketch gate strips the user of the last review point before code lands on disk.
+> In **manual mode** (the default) every task goes through the full Plan→Sketch→Confirm→Implement loop from `~/.claude/CLAUDE.md`. **Forbidden:** writing implementation code without first presenting a sketch and receiving explicit user confirmation. "The schematic approved the shape" is not consent for the implementation.
 >
-> **Forbidden:** writing implementation code for a task without first presenting a sketch and receiving explicit user confirmation. "The schematic approved the shape" is not consent for the implementation.
+> **Auto mode** suspends the per-task sketch gate — but ONLY because the user explicitly entered it via `schematic review start --auto`. It is the single context in which an agent writes implementation code without a per-task sketch. Even then, every task is tested and diff-reviewed as it goes, and the entire feature diff is swept until pristine before the feature is done. **An agent must never select auto mode on its own initiative.**
+
+---
+
+## Two modes — chosen at `review start`
+
+Phase 8 runs in one of two modes, recorded by `schematic review start`:
+
+| Mode | Entry | Per-task delivery | Final pass |
+|---|---|---|---|
+| **manual** (default) | `schematic review start --schematic <name>` | Plan→Sketch→Confirm→Implement — sketch gate mandatory | per-task review gate |
+| **auto** | `schematic review start --auto --goal "<goal>" --schematic <name>` | implement→test→diff-scoped review→fix, no sketch gate | batch-until-pristine sweep over the whole feature diff |
+
+Manual is the default and the safe path. Auto is the user's explicit opt-in to
+autonomous implementation; an agent never self-selects it. The per-task protocol
+and review gate below apply to **both** modes — manual adds the sketch step in
+front; auto omits it and adds the final sweep (see "Auto mode").
 
 ---
 
@@ -107,6 +130,65 @@ Protocol:
 
 The review gate verifies standards; `schematic-task-done` records schematic
 drift. Both run — neither replaces the other.
+
+---
+
+## Auto mode — driver loop + batch-until-pristine sweep
+
+Entered by `schematic review start --auto --goal "<goal>" --schematic <name>`,
+which records the mode and pins `base_ref` to the current HEAD. An agent never
+enters this mode on its own — only the user runs that command.
+
+### Driver loop (per task, NO sketch gate)
+
+```
+while `schematic task next` returns a task:
+  1. READ the component file (+ _overview.md if a cross-cutting concern is flagged)
+  2. implement the task directly — no sketch, no confirm
+  3. run its tests + the full suite at milestones
+  4. per-task review gate, diff-scoped to THIS task only:
+       schematic task status <tag> review        → dispatch Sonnet subagent on the task's diff
+       schematic task review-result <tag> clean|findings --summary "..."
+     fix findings, re-dispatch until clean
+  5. schematic-task-done <tag> --matched [y|n] --updated [y|n]
+```
+
+The per-task review here is the same gate as manual mode — scoped to that one
+task's diff. Auto mode only removes the sketch step in front of implementation.
+
+### Final sweep (batch-until-pristine)
+
+Once the board is drained, sweep the WHOLE feature diff until it returns clean:
+
+```
+schematic review sweep --schematic <name>
+```
+
+Each sweep computes the cumulative diff since `base_ref` (feature files only —
+the `docs/schematics/` planning tree is excluded), shards it into batches of at
+most **5 files**, and prints one review prompt per batch. For each batch the
+implementing agent launches a Sonnet subagent (Agent tool) on the printed
+prompt. Every prompt carries three HARD RULES:
+
+1. **Read ONLY the ≤5 listed files** — never open, grep, or read anything else.
+   This is the token bound; reading outside the batch blows the budget.
+2. **Flag ONLY lines added/modified vs `base_ref`** — pre-existing or unchanged
+   code, even in these files, is out of scope and a false flag.
+3. **Never flag or edit code outside the feature.**
+
+Lens: the resolved `review`-slot module if the manifest maps one, else the
+resolved styling + testing modules for each file's language.
+
+Record each batch, then fix and re-sweep:
+
+```
+schematic review batch-result <batch_id> clean|findings --summary "<one line>" --schematic <name>
+```
+
+Fix every finding, then **re-run `review sweep`** — a fresh sweep over the new
+diff. Repeat until a sweep reports `PRISTINE` (every batch clean). The feature
+is not done until a pristine sweep exists. `schematic review status` shows the
+mode, `base_ref`, and the latest sweep's per-batch verdicts.
 
 ---
 

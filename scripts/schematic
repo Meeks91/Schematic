@@ -27,6 +27,13 @@ REVIEW_VERDICT_CLEAN = "clean"
 REVIEW_VERDICT_FINDINGS = "findings"
 REVIEW_VERDICTS = {REVIEW_VERDICT_CLEAN, REVIEW_VERDICT_FINDINGS}
 
+MAX_FILES_PER_REVIEW_BATCH = 5  # token bound: a sweep subagent reads at most this many files, nothing else
+RUN_MODE_MANUAL = "manual"  # per-task sketch gate (default)
+RUN_MODE_AUTO = "auto"      # long-running driver loop + batch-until-pristine sweep
+VALID_RUN_MODES = {RUN_MODE_MANUAL, RUN_MODE_AUTO}
+SWEEP_STATUS_PRISTINE = "pristine"
+REVIEW_SLOT_KEY = "review"
+
 VALID_PHASES = set(range(1, 8))
 PHASES_REQUIRING_AUDIT = {1, 2, 4, 6, 7}
 PHASE_STATUS_LOCKED = "locked"
@@ -82,8 +89,11 @@ def list_schematic_dirs() -> list[Path]:
 def load_state(schematic_dir: Path) -> dict:
     state_path = schematic_dir / STATE_FILENAME
     if not state_path.exists():
-        return {"phases": {}, "tasks": {}, "overrides": []}
-    return json.loads(state_path.read_text())
+        return {"phases": {}, "tasks": {}, "overrides": [], "run": None, "sweeps": []}
+    loaded_state = json.loads(state_path.read_text())
+    loaded_state.setdefault("run", None)
+    loaded_state.setdefault("sweeps", [])
+    return loaded_state
 
 
 def save_state(schematic_dir: Path, state: dict) -> None:
@@ -96,6 +106,54 @@ def record_override(state: dict, context: str, reason: str) -> None:
         "reason": reason,
         "at": datetime.now(tz=timezone.utc).isoformat(),
     })
+
+# ── diff collection ──────────────────────────────────────────────────────────────
+
+def _run_git(git_args: list[str], project_root: Path) -> list[str]:
+    """Run a git command in project_root; return non-empty stdout lines."""
+    completed = subprocess.run(
+        ["git", *git_args],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        _exit_error(f"git {' '.join(git_args)} failed: {completed.stderr.strip()}")
+    return [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+
+
+def _cumulative_diff_files(base_ref: str, project_root: Path) -> list[str]:
+    """Feature files changed since base_ref — tracked diffs plus new untracked, minus schematic planning artifacts."""
+    tracked_changed = _run_git(["diff", "--name-only", base_ref], project_root)
+    untracked_new = _run_git(["ls-files", "--others", "--exclude-standard"], project_root)
+    all_changed = set(tracked_changed) | set(untracked_new)
+    return sorted(path for path in all_changed if not path.startswith(SCHEMATICS_BASE + "/"))
+
+
+def _shard_diff_into_batches(changed_files: list[str], max_files_per_batch: int) -> list[list[str]]:
+    """Split changed files into ordered batches of at most max_files_per_batch each."""
+    return [
+        changed_files[start : start + max_files_per_batch]
+        for start in range(0, len(changed_files), max_files_per_batch)
+    ]
+
+
+def _load_standards_manifest(project_root: Path) -> dict:
+    """Repo manifest if present, else the global default, else empty."""
+    repo_manifest = project_root / STANDARDS_MANIFEST_RELPATH
+    global_manifest = Path.home() / STANDARDS_MANIFEST_RELPATH
+    for manifest_path in (repo_manifest, global_manifest):
+        if manifest_path.exists():
+            return json.loads(manifest_path.read_text())
+    return {}
+
+
+def _resolve_review_lens(project_root: Path) -> str:
+    """Review lens for sweep prompts: the manifest's `review` module if mapped, else styling+testing."""
+    review_source = _load_standards_manifest(project_root).get(REVIEW_SLOT_KEY)
+    if review_source:
+        return f"the resolved review module ({review_source})"
+    return "the resolved styling + testing standards modules for each file's language"
 
 # ── markdown parsers ───────────────────────────────────────────────────────────
 
@@ -898,6 +956,144 @@ def _task_note(args: argparse.Namespace) -> None:
     print(f"note added to {args.tag}: {args.text}")
 
 
+# ── review (auto-mode driver + batch-until-pristine sweep) ───────────────────────
+
+def cmd_review(args: argparse.Namespace) -> None:
+    handlers = {
+        "start": _review_start,
+        "sweep": _review_sweep,
+        "batch-result": _review_batch_result,
+        "status": _review_status,
+    }
+    handlers[args.review_command](args)
+
+
+def _review_start(args: argparse.Namespace) -> None:
+    schematic_dir = resolve_schematic_dir(args.schematic)
+    project_root = find_project_root()
+    mode = RUN_MODE_AUTO if args.auto else RUN_MODE_MANUAL
+    if mode == RUN_MODE_AUTO and not args.goal:
+        _exit_error("auto mode requires a goal: schematic review start --auto --goal \"<goal>\" --schematic <name>")
+    base_ref = _run_git(["rev-parse", "HEAD"], project_root)[0]
+    state = load_state(schematic_dir)
+    state["run"] = {
+        "mode": mode,
+        "goal": args.goal,
+        "base_ref": base_ref,
+        "started_at": datetime.now(tz=timezone.utc).isoformat(),
+    }
+    save_state(schematic_dir, state)
+    print(f"run started: mode={mode} base_ref={base_ref[:12]}")
+    if mode == RUN_MODE_AUTO:
+        print(f"  goal: {args.goal}")
+        print("  drive the board; per-task reviews run diff-scoped as you go, then:")
+        print(f"  schematic review sweep --schematic {args.schematic}")
+
+
+def _review_sweep(args: argparse.Namespace) -> None:
+    schematic_dir = resolve_schematic_dir(args.schematic)
+    project_root = find_project_root()
+    state = load_state(schematic_dir)
+    run = state["run"]
+    if not run or run["mode"] != RUN_MODE_AUTO:
+        _exit_error(
+            "no auto run recorded — start one first:\n"
+            f"  schematic review start --auto --goal \"<goal>\" --schematic {args.schematic}"
+        )
+    diff_files = _cumulative_diff_files(run["base_ref"], project_root)
+    if not diff_files:
+        _exit_error(f"no changes since base_ref {run['base_ref'][:12]} — nothing to sweep")
+    batches = _shard_diff_into_batches(diff_files, MAX_FILES_PER_REVIEW_BATCH)
+    sweep_id = len(state["sweeps"]) + 1
+    sweep_record = {
+        "sweep_id": sweep_id,
+        "batches": [
+            {"batch_id": f"{sweep_id}.{index + 1}", "files": batch, "verdict": "pending", "summary": None}
+            for index, batch in enumerate(batches)
+        ],
+        "pristine": False,
+    }
+    state["sweeps"].append(sweep_record)
+    save_state(schematic_dir, state)
+    _emit_sweep_prompts(schematic_dir, sweep_record, _resolve_review_lens(project_root), run["base_ref"])
+
+
+def _emit_sweep_prompts(schematic_dir: Path, sweep_record: dict, review_lens: str, base_ref: str) -> None:
+    batches = sweep_record["batches"]
+    print(f"sweep {sweep_record['sweep_id']}: {len(batches)} batch(es) over the cumulative feature "
+          f"diff (≤{MAX_FILES_PER_REVIEW_BATCH} files each)")
+    for batch in batches:
+        _emit_batch_review_prompt(schematic_dir, batch, review_lens, base_ref)
+    print(f"\n  dispatch each batch as a {REVIEW_MODEL} subagent, fix every finding, then record:")
+    print(f"    schematic review batch-result <batch_id> clean|findings --summary \"<one line>\" "
+          f"--schematic {schematic_dir.name}")
+    print("  re-run `review sweep` after fixes; PRISTINE = a sweep where every batch is clean.")
+
+
+def _emit_batch_review_prompt(schematic_dir: Path, batch: dict, review_lens: str, base_ref: str) -> None:
+    file_list = "\n".join(f"    - {path}" for path in batch["files"])
+    review_prompt = (
+        f"Review batch {batch['batch_id']} — these files ONLY:\n"
+        f"{file_list}\n"
+        f"Scope (HARD RULES — violations are false flags + wasted tokens):\n"
+        f"  1. Read ONLY the files listed above. Do NOT open, grep, or read any other file.\n"
+        f"  2. Flag ONLY lines added/modified vs the feature base: `git diff {base_ref} -- <file>`.\n"
+        f"     Pre-existing/unchanged lines — even in these files — are OUT of scope.\n"
+        f"  3. Never flag or edit code outside the feature.\n"
+        f"Lens: judge the changed lines against {review_lens}.\n"
+        f"Output: a numbered list of findings (file:line — issue — required fix), then a final\n"
+        f"line: VERDICT: clean (zero findings) | VERDICT: findings\n"
+    )
+    print(f"\n  ── batch {batch['batch_id']} review prompt ──────────────────────")
+    print(textwrap.indent(review_prompt, "  "))
+
+
+def _review_batch_result(args: argparse.Namespace) -> None:
+    schematic_dir = resolve_schematic_dir(args.schematic)
+    state = load_state(schematic_dir)
+    target_sweep = None
+    target_batch = None
+    for sweep in state["sweeps"]:
+        for batch in sweep["batches"]:
+            if batch["batch_id"] == args.batch_id:
+                target_sweep = sweep
+                target_batch = batch
+    if target_batch is None:
+        _exit_error(f"batch '{args.batch_id}' not found — run `schematic review sweep --schematic {args.schematic}` first")
+    target_batch["verdict"] = args.verdict
+    target_batch["summary"] = args.summary
+    all_clean = all(b["verdict"] == REVIEW_VERDICT_CLEAN for b in target_sweep["batches"])
+    target_sweep["pristine"] = all_clean
+    save_state(schematic_dir, state)
+    print(f"batch {args.batch_id}: {args.verdict} — {args.summary}")
+    if all_clean:
+        print(f"  sweep {target_sweep['sweep_id']}: PRISTINE ✓ — all {len(target_sweep['batches'])} batches clean")
+    else:
+        outstanding = [b["batch_id"] for b in target_sweep["batches"] if b["verdict"] != REVIEW_VERDICT_CLEAN]
+        print(f"  sweep {target_sweep['sweep_id']}: not pristine — outstanding: {', '.join(outstanding)}")
+        print(f"  fix findings, then re-run: schematic review sweep --schematic {args.schematic}")
+
+
+def _review_status(args: argparse.Namespace) -> None:
+    schematic_dir = resolve_schematic_dir(args.schematic)
+    state = load_state(schematic_dir)
+    run = state["run"]
+    if not run:
+        print(f"no run recorded — schematic review start --schematic {args.schematic}")
+        return
+    print(f"mode: {run['mode']}  base_ref: {run['base_ref'][:12]}")
+    if run["goal"]:
+        print(f"goal: {run['goal']}")
+    if not state["sweeps"]:
+        print("sweeps: none yet")
+        return
+    latest_sweep = state["sweeps"][-1]
+    pristine_flag = "PRISTINE ✓" if latest_sweep["pristine"] else "not pristine"
+    print(f"latest sweep {latest_sweep['sweep_id']}: {pristine_flag} ({len(latest_sweep['batches'])} batches)")
+    for batch in latest_sweep["batches"]:
+        print(f"  {batch['batch_id']:<6} {batch['verdict']:<9} [{', '.join(batch['files'])}]")
+
+
 # ── track (lazy-loaded) ───────────────────────────────────────────────────────
 
 def cmd_track(args: argparse.Namespace) -> None:
@@ -1017,6 +1213,26 @@ def _build_parser() -> argparse.ArgumentParser:
     p_tnote.add_argument("text", help="Note text")
     p_tnote.add_argument("--schematic", required=True, metavar="NAME")
 
+    p_review = sub.add_parser("review", help="Auto-mode driver + batch-until-pristine diff sweep")
+    review_sub = p_review.add_subparsers(dest="review_command", required=True)
+
+    p_rstart = review_sub.add_parser("start", help="Record run mode + base ref (HEAD)")
+    p_rstart.add_argument("--schematic", required=True, metavar="NAME")
+    p_rstart.add_argument("--auto", action="store_true", help="Auto mode (omit for manual)")
+    p_rstart.add_argument("--goal", help="Long-running goal (required in auto mode)")
+
+    p_rsweep = review_sub.add_parser("sweep", help="Shard the cumulative diff into <=5-file review batches")
+    p_rsweep.add_argument("--schematic", required=True, metavar="NAME")
+
+    p_rresult = review_sub.add_parser("batch-result", help="Record a batch verdict; flags PRISTINE when all clean")
+    p_rresult.add_argument("batch_id", help="Batch id (e.g. 1.2)")
+    p_rresult.add_argument("verdict", choices=sorted(REVIEW_VERDICTS))
+    p_rresult.add_argument("--summary", required=True, help="One-line batch outcome")
+    p_rresult.add_argument("--schematic", required=True, metavar="NAME")
+
+    p_rstatus = review_sub.add_parser("status", help="Show run mode + latest sweep batch verdicts")
+    p_rstatus.add_argument("--schematic", required=True, metavar="NAME")
+
     p_track = sub.add_parser("track", help="Trace a feature flow E2E")
     track_sub = p_track.add_subparsers(dest="track_command", required=True)
 
@@ -1051,6 +1267,7 @@ def dispatch(args: argparse.Namespace) -> None:
         "mermaid": cmd_mermaid,
         "phase": cmd_phase,
         "task": cmd_task,
+        "review": cmd_review,
         "track": cmd_track,
         "overview": cmd_overview,
     }

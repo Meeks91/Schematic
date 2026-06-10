@@ -57,4 +57,4 @@ A manifest entry is `skill:<name>` (a Claude Code skill in `.claude/skills/` or 
 5. **Injection DAG** — dependency wiring
 6. **Sequence** — runtime flow diagram
 7. **Tasks** — agent-ready implementation steps
-8. **Implementation Loop** — execute tasks with feedback
+8. **Implementation Loop** — execute tasks in **manual** mode (per-task sketch gate) or **auto** mode (autonomous driver loop + batch-until-pristine review sweep over the feature diff, ≤5 files per review subagent)

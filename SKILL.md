@@ -85,7 +85,8 @@ docs/schematics/<feature_name>/
 │   └── ...
 ├── tasks.md                        ← agent-ready work units, one task per class
 ├── dag.mmd                         ← Mermaid injection DAG
-└── sequence.mmd                    ← Mermaid sequence diagram
+├── sequence.mmd                    ← Mermaid sequence diagram
+└── implementation_report.md        ← Phase 8 completion record: gates, review ledger, post-lock amendments, deferred items
 ```
 
 **File responsibilities:**
@@ -100,6 +101,7 @@ docs/schematics/<feature_name>/
 | `tasks.md` | One task per class, references component files by name | Agent — "do this" |
 | `dag.mmd` | Mermaid injection DAG (authoritative when >8 nodes) | Visual tool rendering |
 | `sequence.mmd` | Mermaid sequence diagram | Visual tool rendering |
+| `implementation_report.md` | Phase 8 completion record — MINIMAL: signed-off divergences, deferred decisions, commit status; success elsewhere assumed; reviews one line | Human — "what diverged and what's outstanding" |
 
 **Write routing by phase:**
 
@@ -115,6 +117,7 @@ docs/schematics/<feature_name>/
 | 5: DAG + App Integration | `dag.mmd` + `components/_overview.md` |
 | 6: Sequence diagram | `sequence.mmd` + `components/_overview.md` (ASCII) |
 | 7: Tasks | `tasks.md` |
+| 8: Implementation loop | `implementation_report.md` (created at phase start, updated as gates/reviews/amendments land; link it from the top of `objective.md` so it is reachable from the dashboard) |
 
 ---
 

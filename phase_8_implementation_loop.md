@@ -156,9 +156,14 @@ while `schematic task next` returns a task:
 The per-task review here is the same gate as manual mode — scoped to that one
 task's diff. Auto mode only removes the sketch step in front of implementation.
 
-### Final sweep (batch-until-pristine)
+### Final review — two-pass (diff-only style sweep → master e2e correctness gate)
 
-Once the board is drained, sweep the WHOLE feature diff until it returns clean:
+Once the board is drained, the feature diff goes through two review passes:
+
+1. **Diff-only style sweep** (Sonnet subagents, loop-until-pristine) — standards compliance on changed lines only
+2. **E2e correctness gate** (master agent, inline) — integration, wiring, contract fidelity using full schematic context
+
+#### Pass 1: Diff-only style sweep
 
 ```
 schematic review sweep --schematic <name>
@@ -168,16 +173,20 @@ Each sweep computes the cumulative diff since `base_ref` (feature files only —
 the `docs/schematics/` planning tree is excluded), shards it into batches of at
 most **5 files**, and prints one review prompt per batch. For each batch the
 implementing agent launches a Sonnet subagent (Agent tool) on the printed
-prompt. Every prompt carries three HARD RULES:
+prompt.
 
-1. **Read ONLY the ≤5 listed files** — never open, grep, or read anything else.
-   This is the token bound; reading outside the batch blows the budget.
-2. **Flag ONLY lines added/modified vs `base_ref`** — pre-existing or unchanged
-   code, even in these files, is out of scope and a false flag.
+**Diff-only prompts — agents see diff hunks, not full files.** The CLI inlines
+`git diff base_ref -- <batch files>` and the resolved standards module content
+(styling + testing for the batch's languages) directly into the prompt. Agents
+receive all input inline and do NOT read any files. This structurally eliminates
+false positives from pre-existing code — agents literally cannot see it.
+
+Every prompt carries three HARD RULES:
+
+1. **Do NOT read, open, or grep ANY files** — the diff below is the ONLY input.
+2. **Flag ONLY lines that appear as added (+) or modified in the diff** —
+   pre-existing context lines are OUT of scope and a false flag.
 3. **Never flag or edit code outside the feature.**
-
-Lens: the resolved `review`-slot module if the manifest maps one, else the
-resolved styling + testing modules for each file's language.
 
 Record each batch, then fix and re-sweep:
 
@@ -186,9 +195,39 @@ schematic review batch-result <batch_id> clean|findings --summary "<one line>" -
 ```
 
 Fix every finding, then **re-run `review sweep`** — a fresh sweep over the new
-diff. Repeat until a sweep reports `PRISTINE` (every batch clean). The feature
-is not done until a pristine sweep exists. `schematic review status` shows the
-mode, `base_ref`, and the latest sweep's per-batch verdicts.
+diff. Repeat until a sweep reports `PRISTINE` (every batch clean).
+
+#### Pass 2: E2e correctness gate (master agent)
+
+After the style sweep reaches PRISTINE:
+
+```
+schematic review e2e --schematic <name>
+```
+
+The master agent — which has full schematic context, naming decisions, and prior
+feedback — reviews all changed files for correctness. This is NOT a style review
+(the sweep handled that). The master checks:
+
+1. **Wiring** — DI constructor args match, imports resolve, method signatures match callers
+2. **Contracts** — implementation matches the locked schematic component specs
+3. **Test coverage** — every schematic AC test exists and tests the right behaviour
+4. **Integration** — cross-component call flows are correct (sequence diagram vs code)
+
+**In auto mode:** fix findings silently, record the result — no user gate. The
+implementation report notes the e2e verdict.
+
+**In manual mode:** present findings to the user with `Confirm: y/comment`.
+
+Record the verdict:
+
+```
+schematic review e2e-result clean|findings --summary "<one line>" --schematic <name>
+```
+
+The feature is not done until both a PRISTINE sweep AND a clean (or recorded)
+e2e verdict exist. `schematic review status` shows the mode, `base_ref`, the
+latest sweep's per-batch verdicts, and the e2e state.
 
 ---
 

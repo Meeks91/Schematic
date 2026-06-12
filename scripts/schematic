@@ -122,6 +122,19 @@ def _run_git(git_args: list[str], project_root: Path) -> list[str]:
     return [line.strip() for line in completed.stdout.splitlines() if line.strip()]
 
 
+def _run_git_raw(git_args: list[str], project_root: Path) -> str:
+    """Run a git command in project_root; return raw stdout."""
+    completed = subprocess.run(
+        ["git", *git_args],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        _exit_error(f"git {' '.join(git_args)} failed: {completed.stderr.strip()}")
+    return completed.stdout
+
+
 def _cumulative_diff_files(base_ref: str, project_root: Path) -> list[str]:
     """Feature files changed since base_ref — tracked diffs plus new untracked, minus schematic planning artifacts."""
     tracked_changed = _run_git(["diff", "--name-only", base_ref], project_root)
@@ -154,6 +167,69 @@ def _resolve_review_lens(project_root: Path) -> str:
     if review_source:
         return f"the resolved review module ({review_source})"
     return "the resolved styling + testing standards modules for each file's language"
+
+
+# ── standards content resolution (for inline review prompts) ─────────────────
+
+_LANGUAGE_EXTENSIONS: dict[str, str] = {
+    ".py": "python",
+    ".kt": "kotlin",
+    ".kts": "kotlin",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+}
+
+
+def _resolve_skill_path(source: str) -> Path | None:
+    """Resolve a 'skill:<name>' source to its SKILL.md path (repo-local then user-global)."""
+    if not source.startswith("skill:"):
+        return None
+    skill_name = source[len("skill:"):]
+    project_root = find_project_root()
+    for base in (project_root / ".claude" / "skills", Path.home() / ".claude" / "skills"):
+        candidate = base / skill_name / "SKILL.md"
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _resolve_standards_content_for_batch(batch_files: list[str], project_root: Path) -> str:
+    """Read and concatenate the styling + testing standards modules relevant to the batch's languages."""
+    manifest = _load_standards_manifest(project_root)
+
+    # Determine which languages appear in this batch.
+    languages_in_batch: set[str] = set()
+    for file_path in batch_files:
+        ext = Path(file_path).suffix
+        lang = _LANGUAGE_EXTENSIONS.get(ext)
+        if lang:
+            languages_in_batch.add(lang)
+
+    # Collect unique module sources to read: styling per language + testing.
+    sources_to_read: dict[str, str] = {}
+    styling_map = manifest.get("styling", {})
+    for lang in sorted(languages_in_batch):
+        source = styling_map.get(lang) if isinstance(styling_map, dict) else None
+        if source:
+            sources_to_read[f"styling.{lang}"] = source
+    testing_source = manifest.get("testing")
+    if testing_source:
+        sources_to_read["testing"] = testing_source
+
+    if not sources_to_read:
+        return ""
+
+    sections: list[str] = []
+    for slot_label, source in sources_to_read.items():
+        skill_path = _resolve_skill_path(source)
+        if skill_path and skill_path.exists():
+            content = skill_path.read_text().strip()
+            sections.append(f"── {slot_label} ({source}) ──\n{content}")
+
+    if not sections:
+        return ""
+
+    return "\n\n".join(sections)
 
 # ── markdown parsers ───────────────────────────────────────────────────────────
 
@@ -963,6 +1039,8 @@ def cmd_review(args: argparse.Namespace) -> None:
         "start": _review_start,
         "sweep": _review_sweep,
         "batch-result": _review_batch_result,
+        "e2e": _review_e2e,
+        "e2e-result": _review_e2e_result,
         "status": _review_status,
     }
     handlers[args.review_command](args)
@@ -1015,32 +1093,69 @@ def _review_sweep(args: argparse.Namespace) -> None:
     }
     state["sweeps"].append(sweep_record)
     save_state(schematic_dir, state)
-    _emit_sweep_prompts(schematic_dir, sweep_record, _resolve_review_lens(project_root), run["base_ref"])
+
+    # Collect per-batch diff hunks and resolved standards content.
+    batch_diffs: dict[str, str] = {}
+    for batch in sweep_record["batches"]:
+        diff_content = _run_git_raw(
+            ["diff", run["base_ref"], "--"] + batch["files"],
+            project_root,
+        )
+        batch_diffs[batch["batch_id"]] = diff_content
+
+    standards_content = _resolve_standards_content_for_batch(diff_files, project_root)
+    _emit_sweep_prompts(schematic_dir, sweep_record, batch_diffs, standards_content, run["base_ref"])
 
 
-def _emit_sweep_prompts(schematic_dir: Path, sweep_record: dict, review_lens: str, base_ref: str) -> None:
+def _emit_sweep_prompts(
+    schematic_dir: Path,
+    sweep_record: dict,
+    batch_diffs: dict[str, str],
+    standards_content: str,
+    base_ref: str,
+) -> None:
     batches = sweep_record["batches"]
-    print(f"sweep {sweep_record['sweep_id']}: {len(batches)} batch(es) over the cumulative feature "
-          f"diff (≤{MAX_FILES_PER_REVIEW_BATCH} files each)")
+    print(f"sweep {sweep_record['sweep_id']}: {len(batches)} batch(es) — diff-only style review "
+          f"(≤{MAX_FILES_PER_REVIEW_BATCH} files each)")
     for batch in batches:
-        _emit_batch_review_prompt(schematic_dir, batch, review_lens, base_ref)
+        diff_content = batch_diffs.get(batch["batch_id"], "")
+        _emit_batch_review_prompt(schematic_dir, batch, diff_content, standards_content)
     print(f"\n  dispatch each batch as a {REVIEW_MODEL} subagent, fix every finding, then record:")
     print(f"    schematic review batch-result <batch_id> clean|findings --summary \"<one line>\" "
           f"--schematic {schematic_dir.name}")
     print("  re-run `review sweep` after fixes; PRISTINE = a sweep where every batch is clean.")
+    print("  after PRISTINE: run `schematic review e2e --schematic <name>` for master-agent correctness gate.")
 
 
-def _emit_batch_review_prompt(schematic_dir: Path, batch: dict, review_lens: str, base_ref: str) -> None:
+def _emit_batch_review_prompt(
+    schematic_dir: Path,
+    batch: dict,
+    diff_content: str,
+    standards_content: str,
+) -> None:
     file_list = "\n".join(f"    - {path}" for path in batch["files"])
     review_prompt = (
-        f"Review batch {batch['batch_id']} — these files ONLY:\n"
-        f"{file_list}\n"
+        f"Review batch {batch['batch_id']} — STYLE + STANDARDS review of these changes:\n"
+        f"Files in this batch:\n"
+        f"{file_list}\n\n"
         f"Scope (HARD RULES — violations are false flags + wasted tokens):\n"
-        f"  1. Read ONLY the files listed above. Do NOT open, grep, or read any other file.\n"
-        f"  2. Flag ONLY lines added/modified vs the feature base: `git diff {base_ref} -- <file>`.\n"
-        f"     Pre-existing/unchanged lines — even in these files — are OUT of scope.\n"
-        f"  3. Never flag or edit code outside the feature.\n"
-        f"Lens: judge the changed lines against {review_lens}.\n"
+        f"  1. Do NOT read, open, or grep ANY files. The diff below is your ONLY input.\n"
+        f"  2. Flag ONLY lines that appear as added (+) or modified in the diff.\n"
+        f"     Pre-existing/unchanged context lines are OUT of scope — never flag them.\n"
+        f"  3. Never flag or edit code outside the feature.\n\n"
+        f"── DIFF ──\n"
+        f"{diff_content}\n"
+        f"── END DIFF ──\n\n"
+    )
+
+    if standards_content:
+        review_prompt += (
+            f"── STANDARDS (judge the diff against these) ──\n"
+            f"{standards_content}\n"
+            f"── END STANDARDS ──\n\n"
+        )
+
+    review_prompt += (
         f"Output: a numbered list of findings (file:line — issue — required fix), then a final\n"
         f"line: VERDICT: clean (zero findings) | VERDICT: findings\n"
     )
@@ -1074,6 +1189,81 @@ def _review_batch_result(args: argparse.Namespace) -> None:
         print(f"  fix findings, then re-run: schematic review sweep --schematic {args.schematic}")
 
 
+def _review_e2e(args: argparse.Namespace) -> None:
+    """Master-agent correctness gate — runs after the diff-only sweep reaches PRISTINE."""
+    schematic_dir = resolve_schematic_dir(args.schematic)
+    project_root = find_project_root()
+    state = load_state(schematic_dir)
+    run = state["run"]
+    if not run or run["mode"] != RUN_MODE_AUTO:
+        _exit_error(
+            "no auto run recorded — start one first:\n"
+            f"  schematic review start --auto --goal \"<goal>\" --schematic {args.schematic}"
+        )
+
+    # Verify a pristine sweep exists.
+    has_pristine = any(sweep.get("pristine") for sweep in state["sweeps"])
+    if not has_pristine:
+        _exit_error(
+            "no PRISTINE sweep recorded — run the diff-only style sweep first:\n"
+            f"  schematic review sweep --schematic {args.schematic}"
+        )
+
+    diff_files = _cumulative_diff_files(run["base_ref"], project_root)
+    if not diff_files:
+        _exit_error(f"no changes since base_ref {run['base_ref'][:12]} — nothing to review")
+
+    # Record e2e gate start.
+    state.setdefault("e2e", None)
+    state["e2e"] = {
+        "status": "pending",
+        "started_at": datetime.now(tz=timezone.utc).isoformat(),
+        "verdict": None,
+        "summary": None,
+    }
+    save_state(schematic_dir, state)
+
+    file_list = "\n".join(f"  - {path}" for path in diff_files)
+    print(f"e2e correctness gate — {len(diff_files)} changed files for master-agent review:")
+    print(file_list)
+    print()
+    print("MASTER AGENT: review all changed files for correctness, integration, and contract fidelity.")
+    print("This is NOT a style review (the sweep handled that). Check:")
+    print("  1. Read every changed file (full content, not just diff).")
+    print("  2. Verify wiring: DI constructor args match, imports resolve, method signatures match callers.")
+    print("  3. Verify contracts: implementation matches the locked schematic component specs.")
+    print("  4. Verify test coverage: every schematic AC test exists and tests the right behaviour.")
+    print("  5. Verify integration: cross-component call flows are correct (sequence diagram vs code).")
+    print()
+    if run["mode"] == RUN_MODE_AUTO:
+        print("AUTO MODE: fix any findings silently, then record the result. No user gate required —")
+        print("the implementation report will note the e2e verdict.")
+    else:
+        print("Present findings to the user with `Confirm: y/comment`.")
+    print(f"  schematic review e2e-result clean|findings --summary \"<one line>\" --schematic {args.schematic}")
+
+
+def _review_e2e_result(args: argparse.Namespace) -> None:
+    schematic_dir = resolve_schematic_dir(args.schematic)
+    state = load_state(schematic_dir)
+    e2e = state.get("e2e")
+    if not e2e:
+        _exit_error(
+            f"no e2e gate recorded — run `schematic review e2e --schematic {args.schematic}` first"
+        )
+    e2e["status"] = args.verdict
+    e2e["verdict"] = args.verdict
+    e2e["summary"] = args.summary
+    e2e["completed_at"] = datetime.now(tz=timezone.utc).isoformat()
+    save_state(schematic_dir, state)
+    print(f"e2e result: {args.verdict} — {args.summary}")
+    if args.verdict == REVIEW_VERDICT_CLEAN:
+        print("  feature review complete — style sweep PRISTINE + e2e CLEAN.")
+    else:
+        print("  resolve findings, then re-run:")
+        print(f"    schematic review e2e --schematic {args.schematic}")
+
+
 def _review_status(args: argparse.Namespace) -> None:
     schematic_dir = resolve_schematic_dir(args.schematic)
     state = load_state(schematic_dir)
@@ -1092,6 +1282,12 @@ def _review_status(args: argparse.Namespace) -> None:
     print(f"latest sweep {latest_sweep['sweep_id']}: {pristine_flag} ({len(latest_sweep['batches'])} batches)")
     for batch in latest_sweep["batches"]:
         print(f"  {batch['batch_id']:<6} {batch['verdict']:<9} [{', '.join(batch['files'])}]")
+    e2e = state.get("e2e")
+    if e2e:
+        e2e_flag = "CLEAN ✓" if e2e.get("verdict") == REVIEW_VERDICT_CLEAN else e2e.get("status", "pending")
+        print(f"e2e correctness: {e2e_flag}")
+        if e2e.get("summary"):
+            print(f"  {e2e['summary']}")
 
 
 # ── track (lazy-loaded) ───────────────────────────────────────────────────────
@@ -1229,6 +1425,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p_rresult.add_argument("verdict", choices=sorted(REVIEW_VERDICTS))
     p_rresult.add_argument("--summary", required=True, help="One-line batch outcome")
     p_rresult.add_argument("--schematic", required=True, metavar="NAME")
+
+    p_re2e = review_sub.add_parser("e2e", help="Master-agent correctness gate (after PRISTINE sweep)")
+    p_re2e.add_argument("--schematic", required=True, metavar="NAME")
+
+    p_re2e_result = review_sub.add_parser("e2e-result", help="Record e2e correctness verdict")
+    p_re2e_result.add_argument("verdict", choices=sorted(REVIEW_VERDICTS))
+    p_re2e_result.add_argument("--summary", required=True, help="One-line e2e outcome")
+    p_re2e_result.add_argument("--schematic", required=True, metavar="NAME")
 
     p_rstatus = review_sub.add_parser("status", help="Show run mode + latest sweep batch verdicts")
     p_rstatus.add_argument("--schematic", required=True, metavar="NAME")

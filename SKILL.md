@@ -23,6 +23,7 @@ description: Multi-phase feature planning skill. Grills the user to produce a fe
 > schematic phase sign-off --schematic <name> <N>
 > schematic phase complete --schematic <name> <N>
 > schematic task show|status|review-result|complete|next        # phase 7+ task lifecycle
+> schematic review start|sweep|batch-result|e2e|e2e-result|status  # phase 8 review
 > schematic mermaid                                             # validate .mmd diagrams
 > ```
 >

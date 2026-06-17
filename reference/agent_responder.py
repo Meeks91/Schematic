@@ -8,6 +8,32 @@ from pathlib import Path
 ENCODING = "utf-8"
 
 
+def _build_bundle_context(bundle_dir: Path, companion_path: Path | None) -> str:
+    """Build a file-tree + summary context for the schematic bundle."""
+    lines = ["Schematic bundle files:"]
+    for item in sorted(bundle_dir.rglob("*")):
+        if item.is_file() and not item.name.startswith(".") and "__pycache__" not in str(item):
+            rel = item.relative_to(bundle_dir)
+            size_kb = item.stat().st_size / 1024
+            lines.append(f"  {rel} ({size_kb:.1f}kb)")
+
+    objective = bundle_dir / "objective.md"
+    if objective.exists() and (not companion_path or companion_path.resolve() != objective.resolve()):
+        content = objective.read_text(encoding=ENCODING)
+        acs_section = ""
+        for line in content.split("\n"):
+            if line.startswith("## Functional ACs"):
+                acs_section = "## Functional ACs\n"
+            elif acs_section and line.startswith("## "):
+                break
+            elif acs_section:
+                acs_section += line + "\n"
+        if acs_section:
+            lines.append(f"\nFeature ACs (from objective.md):\n{acs_section.strip()}")
+
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
 def answer_question(
     question_text: str,
     server_idx: int,
@@ -22,14 +48,19 @@ def answer_question(
     companion_content = ""
     if companion_path and companion_path.exists():
         companion_content = companion_path.read_text(encoding=ENCODING)
+    bundle_context = ""
     if diagram_path and diagram_path.exists():
+        bundle_dir = diagram_path.parent
+        bundle_context = _build_bundle_context(bundle_dir, companion_path)
         diagram_content = diagram_path.read_text(encoding=ENCODING)
         prompt = (
             f"You are helping a user edit a Mermaid diagram that is part of a software design schematic. "
             f"The current diagram content is:\n```mermaid\n{diagram_content}\n```\n\n"
         )
-        if companion_content:
-            prompt += f"Design context (from companion doc):\n{companion_content}\n\n"
+        if bundle_context:
+            prompt += f"{bundle_context}\n\n"
+        if companion_content and companion_path:
+            prompt += f"Design context (from {companion_path.name}):\n{companion_content}\n\n"
         prompt += (
             f"Context: {context}\n"
             f"{conversation or f'User request: {question_text}'}\n\n"
@@ -37,7 +68,8 @@ def answer_question(
             f"If they ask you to change the diagram, output ONLY the full updated mermaid content "
             f"between ```mermaid and ``` markers — no explanation, no partial snippets. "
             f"If it's a general question, answer concisely in 1-3 sentences referencing specific "
-            f"classes, ACs, or components from the design context."
+            f"classes, ACs, or components from the design context. "
+            f"When referencing detail you don't have inline, point to the file path."
         )
     else:
         prompt = (

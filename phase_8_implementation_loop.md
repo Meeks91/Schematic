@@ -57,30 +57,35 @@ front; auto omits it and adds the final sweep (see "Auto mode").
 For each task in `tasks.md`, in order:
 
 ```
-1. READ the component file at components/<class>.md
-2. READ components/_overview.md if this task is flagged as participating in a
+1. CLAIM the task:
+       schematic task next --schematic <name>
+   This shows the task AND moves it to in_progress atomically.
+   (Use --peek to inspect without claiming.)
+2. READ the component file at components/<class>.md
+3. READ components/_overview.md if this task is flagged as participating in a
    cross-cutting concern (atomicity, security, FK invariant, etc.)
-3. Sketch → Confirm → Implement, per ~/.claude/CLAUDE.md sketch loop.
+4. Sketch → Confirm → Implement, per ~/.claude/CLAUDE.md sketch loop.
    NO AUTO-IMPLEMENTATION. The sketch gate is mandatory regardless of how
    small or mechanical the task appears.
-4. Run tests (the new tests for this class AND the full suite at milestones)
-5. Move the task to REVIEW — this emits the review request:
+5. Run tests (the new tests for this class AND the full suite at milestones)
+6. Move the task to REVIEW — this emits the review request:
        schematic task status <tag> review --schematic <name>
    Launch the printed prompt as a Sonnet subagent (Agent tool), then record
    the verdict:
        schematic task review-result <tag> clean|findings --summary "<one line>" --schematic <name>
    See "Review gate" below. The task CANNOT complete until the recorded
    verdict is clean.
-6. Resolve review findings: address every note the review agent leaves, then
-   re-run tests. Re-trigger step 5 if you changed code.
-7. Mark task complete via the CLI (drift report) once the verdict is clean:
+7. Resolve review findings: address every note the review agent leaves, then
+   re-run tests. Re-trigger step 6 if you changed code.
+8. Mark task complete via the CLI (drift report) once the verdict is clean:
        schematic-task-done <tag> --matched [y|n] --updated [y|n]
-8. Move to next task
+9. Move to next task
 ```
 
-Steps 5 and 7 are binding. Completing a task that never passed through `review`,
-or by any mechanism other than the CLI (editing tasks.md directly, narrating
-"✓ done"), is forbidden.
+Steps 1, 6, and 8 are binding. Starting implementation without `task next` having
+moved the task to `in_progress`, completing a task that never passed through
+`review`, or completing by any mechanism other than the CLI (editing tasks.md
+directly, narrating "✓ done"), is forbidden.
 
 ---
 

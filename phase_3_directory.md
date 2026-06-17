@@ -8,6 +8,8 @@ Open your gate message with the Frame Header (SKILL.md → Structural Rules → 
 
 After topology is signed off, define the file placement for every new class and model. This gives the user a visual map of the feature's footprint before diving into contract detail. Write to `<schematic_dir>/objective.md` §3.
 
+> **Gate enforcement:** `schematic phase complete` will reject if `objective.md` does not contain `## Directory Structure`. Write to disk before locking.
+
 For each new file:
 - Full path from project root
 - What it contains (class name or model names)

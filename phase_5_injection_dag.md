@@ -7,6 +7,8 @@
 
 Write DAG edge inventory and app integration to `<schematic_dir>/components/_overview.md`. Write the mermaid diagram to `<schematic_dir>/dag.mmd`.
 
+> **Gate enforcement:** `schematic phase complete` will reject if `components/_overview.md` does not contain `## Injection DAG` and `## App Integration`. Write to disk before locking.
+
 ## Section A: Injection DAG
 
 Shows the constructor injection graph. `A -> B` means `A` is constructor-injected into `B`. The graph must be a complete DAG — no cycles.

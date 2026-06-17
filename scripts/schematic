@@ -36,6 +36,11 @@ REVIEW_SLOT_KEY = "review"
 
 VALID_PHASES = set(range(1, 8))
 PHASES_REQUIRING_AUDIT = {1, 2, 4, 6, 7}
+PHASE_ARTIFACT_CHECKS: dict[int, list[tuple[str, str]]] = {
+    3: [("objective.md", "## Directory Structure")],
+    5: [("components/_overview.md", "## Injection DAG"),
+        ("components/_overview.md", "## App Integration")],
+}
 PHASE_STATUS_LOCKED = "locked"
 PHASE_AUDIT_CLEAN = "clean"
 
@@ -805,6 +810,21 @@ def _phase_complete(args: argparse.Namespace) -> None:
                 f"--override \"<reason>\""
             )
 
+    for rel_path, heading in PHASE_ARTIFACT_CHECKS.get(args.num, []):
+        target = schematic_dir / rel_path
+        if not target.exists() or heading not in target.read_text():
+            if args.override:
+                record_override(state, context, args.override)
+                break
+            else:
+                _exit_error(
+                    f"phase {args.num} artifact check failed: "
+                    f"'{rel_path}' must contain '{heading}'.\n"
+                    f"  Write the artifact to disk before locking.\n"
+                    f"  or:  schematic phase complete {args.num} --schematic {args.schematic} "
+                    f"--override \"<reason>\""
+                )
+
     state["phases"].setdefault(str(args.num), {})["status"] = PHASE_STATUS_LOCKED
     save_state(schematic_dir, state)
     print(f"phase {args.num} locked ✓")
@@ -1003,10 +1023,12 @@ def _task_complete(args: argparse.Namespace) -> None:
 
 def _task_next(args: argparse.Namespace) -> None:
     name = getattr(args, "name", None)
+    peek = getattr(args, "peek", False)
     schematic_dirs = _resolve_single_or_all(name)
 
     for schematic_dir in schematic_dirs:
-        tasks = parse_tasks(schematic_dir / "tasks.md")
+        tasks_md = schematic_dir / "tasks.md"
+        tasks = parse_tasks(tasks_md)
         complete_tags = {t["tag"] for t in tasks if t["status"] == TASK_STATUS_COMPLETE}
 
         for task in tasks:
@@ -1017,6 +1039,12 @@ def _task_next(args: argparse.Namespace) -> None:
                 continue
             print(f"schematic: {schematic_dir.name}")
             print("\n".join(task["raw_lines"]))
+            if not peek:
+                update_task_status_in_file(tasks_md, task["tag"], TASK_STATUS_IN_PROGRESS)
+                state = load_state(schematic_dir)
+                state["tasks"].setdefault(task["tag"], {})["status"] = TASK_STATUS_IN_PROGRESS
+                save_state(schematic_dir, state)
+                print(f"\n→ task {task['tag']}: pending → in_progress")
             return
 
     print("no pending unblocked tasks found")
@@ -1401,8 +1429,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_trev.add_argument("--summary", required=True, help="One-line review outcome")
     p_trev.add_argument("--schematic", required=True, metavar="NAME")
 
-    p_tnext = task_sub.add_parser("next", help="Show next unblocked pending task")
+    p_tnext = task_sub.add_parser("next", help="Show next unblocked pending task and claim it")
     p_tnext.add_argument("name", nargs="?", help="Schematic name (omit for all)")
+    p_tnext.add_argument("--peek", action="store_true", help="Show without claiming (no status transition)")
 
     p_tnote = task_sub.add_parser("note", help="Add agent note to a task")
     p_tnote.add_argument("tag", help="Task tag (e.g. a.1)")

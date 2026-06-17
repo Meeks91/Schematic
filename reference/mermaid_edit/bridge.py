@@ -33,11 +33,17 @@ def _discover_companion(diagram_path: Path) -> Path | None:
     """Find a markdown companion file for the diagram.
 
     Search order:
-    1. Same name with .md extension (e.g. pipeline.md next to pipeline.mmd)
-    2. README.md in the same directory
-    3. Any single .md file in the same directory
+    1. Schematic bundle: use components/_overview.md (has edge inventory, summary table)
+    2. Same name with .md extension (e.g. pipeline.md next to pipeline.mmd)
+    3. README.md in the same directory
+    4. Any single .md file in the same directory
     """
     parent = diagram_path.parent
+
+    overview = parent / "components" / "_overview.md"
+    if overview.exists():
+        return overview
+
     same_name_md = parent / (diagram_path.stem + ".md")
     if same_name_md.exists():
         return same_name_md

@@ -16,19 +16,28 @@ def answer_question(
     diagram_path: Path | None = None,
     file_lock: threading.Lock | None = None,
     history: list[dict[str, str]] | None = None,
+    companion_path: Path | None = None,
 ) -> None:
     conversation = _format_history(history)
+    companion_content = ""
+    if companion_path and companion_path.exists():
+        companion_content = companion_path.read_text(encoding=ENCODING)
     if diagram_path and diagram_path.exists():
         diagram_content = diagram_path.read_text(encoding=ENCODING)
         prompt = (
-            f"You are helping a user edit a Mermaid diagram. "
+            f"You are helping a user edit a Mermaid diagram that is part of a software design schematic. "
             f"The current diagram content is:\n```mermaid\n{diagram_content}\n```\n\n"
+        )
+        if companion_content:
+            prompt += f"Design context (from companion doc):\n{companion_content}\n\n"
+        prompt += (
             f"Context: {context}\n"
             f"{conversation or f'User request: {question_text}'}\n\n"
-            f"Respond to the user's latest message. "
+            f"Respond to the user's latest message using the design context to ground your answer. "
             f"If they ask you to change the diagram, output ONLY the full updated mermaid content "
             f"between ```mermaid and ``` markers — no explanation, no partial snippets. "
-            f"If it's a general question, answer concisely in 1-2 sentences."
+            f"If it's a general question, answer concisely in 1-3 sentences referencing specific "
+            f"classes, ACs, or components from the design context."
         )
     else:
         prompt = (
@@ -88,10 +97,11 @@ def spawn_answer(
     diagram_path: Path | None = None,
     file_lock: threading.Lock | None = None,
     history: list[dict[str, str]] | None = None,
+    companion_path: Path | None = None,
 ) -> None:
     threading.Thread(
         target=answer_question,
-        args=(question_text, server_idx, context, answers_path, diagram_path, file_lock, history),
+        args=(question_text, server_idx, context, answers_path, diagram_path, file_lock, history, companion_path),
         daemon=True,
     ).start()
 

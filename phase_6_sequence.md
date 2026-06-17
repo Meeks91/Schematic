@@ -8,6 +8,8 @@
 
 Write ASCII sequence to `<schematic_dir>/components/_overview.md`. Write Mermaid to `<schematic_dir>/sequence.mmd`.
 
+> **Gate enforcement:** `schematic phase complete` will reject if `sequence.mmd` does not exist or `components/_overview.md` does not contain `## Sequence Diagram`. Write to disk before locking.
+
 Produce the sequence diagram in **two formats**:
 
 1. **ASCII** — rendered in the terminal for immediate review

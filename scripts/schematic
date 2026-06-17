@@ -40,6 +40,8 @@ PHASE_ARTIFACT_CHECKS: dict[int, list[tuple[str, str]]] = {
     3: [("objective.md", "## Directory Structure")],
     5: [("components/_overview.md", "## Injection DAG"),
         ("components/_overview.md", "## App Integration")],
+    6: [("sequence.mmd", ""),
+        ("components/_overview.md", "## Sequence Diagram")],
 }
 PHASE_STATUS_LOCKED = "locked"
 PHASE_AUDIT_CLEAN = "clean"
@@ -812,14 +814,17 @@ def _phase_complete(args: argparse.Namespace) -> None:
 
     for rel_path, heading in PHASE_ARTIFACT_CHECKS.get(args.num, []):
         target = schematic_dir / rel_path
-        if not target.exists() or heading not in target.read_text():
+        content = target.read_text() if target.exists() else ""
+        check_failed = not content if not heading else heading not in content
+        if check_failed:
             if args.override:
                 record_override(state, context, args.override)
                 break
             else:
+                reason = f"'{rel_path}' must exist and be non-empty" if not heading else f"'{rel_path}' must contain '{heading}'"
                 _exit_error(
                     f"phase {args.num} artifact check failed: "
-                    f"'{rel_path}' must contain '{heading}'.\n"
+                    f"{reason}.\n"
                     f"  Write the artifact to disk before locking.\n"
                     f"  or:  schematic phase complete {args.num} --schematic {args.schematic} "
                     f"--override \"<reason>\""

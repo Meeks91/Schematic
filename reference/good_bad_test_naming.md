@@ -15,12 +15,12 @@ Pattern: `test_<outcome>_when/for/on_<condition>`
 
 - `test_creates_user_and_issues_session`
 - `test_raises_token_expired_when_past_ttl`
-- `test_feed_page_preserves_ranked_feed_response`
+- `test_rolls_back_on_settings_update_failure`
 
 ### Bad
 
 - `test_login` — no outcome, just the method name.
-- `test_feed_page_returns_ranked_reels_from_standard_timelines` — names the refactor mechanism instead of the behaviour.
+- `test_returns_response_from_repository` — names collaborator plumbing instead of the behaviour.
 - `test_LoginFlow` — CamelCase; not Python convention.
 - `test_does_things` — vague outcome.
 

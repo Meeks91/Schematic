@@ -7,7 +7,7 @@ For full test-writing standards (Given/When/Then, fixtures, factory naming, obje
 Pattern: `test_<outcome>_when/for/on_<condition>`
 
 - Lowercase, underscore-separated.
-- `<outcome>` describes the asserted result (verb phrase) — outcome-focused, NO method-name prefix; the test class/file already says what's under test.
+- `<outcome>` describes the asserted user/domain result (verb phrase) — not the refactor mechanism, collaborator, or model source; the test class/file already says what's under test.
 - `<condition>` names the precise input/state that triggers it — omit only when the behaviour is unconditional.
 - The name reads as a sentence: "test outcome when condition."
 
@@ -15,12 +15,12 @@ Pattern: `test_<outcome>_when/for/on_<condition>`
 
 - `test_creates_user_and_issues_session`
 - `test_raises_token_expired_when_past_ttl`
-- `test_rolls_back_on_settings_update_failure`
+- `test_feed_page_preserves_ranked_feed_response`
 
 ### Bad
 
 - `test_login` — no outcome, just the method name.
-- `test_user_repository_works` — vague, untestable.
+- `test_feed_page_returns_ranked_reels_from_standard_timelines` — names the refactor mechanism instead of the behaviour.
 - `test_LoginFlow` — CamelCase; not Python convention.
 - `test_does_things` — vague outcome.
 

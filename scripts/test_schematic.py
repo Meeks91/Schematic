@@ -68,6 +68,12 @@ _OBJECTIVE_MD = textwrap.dedent("""\
     |---|---|---|---|---|
     | 1.1 | FoundationService | Service | Provides foundation | 1.A |
     | 1.2 | ReelEnrichmentService | Service | Enriches reels | 1.A |
+
+    ## Directory Structure
+    src/
+      services/
+        enrichment/
+          reel_enrichment_service.py (NEW)
 """)
 
 _VALID_SEQUENCE_MMD = textwrap.dedent("""\
@@ -882,7 +888,8 @@ class TestReviewSweep(unittest.TestCase):
         args = _make_args(schematic=schematic_dir.name)
         with patch.object(_cli, "resolve_schematic_dir", return_value=schematic_dir), \
              patch.object(_cli, "find_project_root", return_value=schematic_dir), \
-             patch.object(_cli, "_cumulative_diff_files", return_value=diff_files):
+             patch.object(_cli, "_cumulative_diff_files", return_value=diff_files), \
+             patch.object(_cli, "_run_git_raw", return_value=""):
             _cli._review_sweep(args)
 
     def test_appends_sweep_with_sharded_batches(self) -> None:

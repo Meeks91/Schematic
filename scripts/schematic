@@ -22,7 +22,9 @@ TASK_STATUS_REVIEW = "review"
 TASK_STATUS_COMPLETE = "complete"
 VALID_TASK_STATUSES = {TASK_STATUS_PENDING, TASK_STATUS_IN_PROGRESS, TASK_STATUS_REVIEW, TASK_STATUS_COMPLETE}
 
-REVIEW_MODEL = "sonnet"  # task reviews run on Sonnet — scoped + cheap, not the session's planning model
+REVIEW_MODEL_DEFAULT = "sonnet"
+REVIEW_MODEL_KEY = "reviewModel"
+SCHEMATIC_CONFIG_KEY = "schematic"
 REVIEW_VERDICT_CLEAN = "clean"
 REVIEW_VERDICT_FINDINGS = "findings"
 REVIEW_VERDICTS = {REVIEW_VERDICT_CLEAN, REVIEW_VERDICT_FINDINGS}
@@ -166,6 +168,13 @@ def _load_standards_manifest(project_root: Path) -> dict:
         if manifest_path.exists():
             return json.loads(manifest_path.read_text())
     return {}
+
+
+def _resolve_review_model(project_root: Path) -> str:
+    """Review model from manifest's schematic.reviewModel, else default."""
+    manifest = _load_standards_manifest(project_root)
+    schematic_config = manifest.get(SCHEMATIC_CONFIG_KEY, {})
+    return schematic_config.get(REVIEW_MODEL_KEY, REVIEW_MODEL_DEFAULT)
 
 
 def _resolve_review_lens(project_root: Path) -> str:
@@ -920,6 +929,8 @@ def _task_status(args: argparse.Namespace) -> None:
 
 def _emit_review_request(schematic_dir: Path, tag: str, task: dict) -> None:
     """Print the review prompt for the session agent to dispatch as a subagent."""
+    project_root = find_project_root()
+    review_model = _resolve_review_model(project_root)
     target = task.get("target", "unknown")
     component_spec = task.get("component_file") or "the task's component spec"
 
@@ -942,7 +953,7 @@ def _emit_review_request(schematic_dir: Path, tag: str, task: dict) -> None:
         f"Final line of your reply: VERDICT: clean | VERDICT: findings\n"
     )
 
-    print(f"  ↪ SESSION AGENT: launch this review as a {REVIEW_MODEL} subagent (Agent tool),")
+    print(f"  ↪ SESSION AGENT: launch this review as a {review_model} subagent (Agent tool),")
     print(f"    then record the verdict: schematic task review-result {tag} <clean|findings> --summary \"<one line>\" --schematic {schematic_dir.name}")
     print("    Task cannot complete until the recorded verdict is 'clean'.\n")
     print("  ── review prompt ───────────────────────────────────────────────")
@@ -1104,6 +1115,7 @@ def _review_start(args: argparse.Namespace) -> None:
 def _review_sweep(args: argparse.Namespace) -> None:
     schematic_dir = resolve_schematic_dir(args.schematic)
     project_root = find_project_root()
+    review_model = _resolve_review_model(project_root)
     state = load_state(schematic_dir)
     run = state["run"]
     if not run or run["mode"] != RUN_MODE_AUTO:
@@ -1137,7 +1149,7 @@ def _review_sweep(args: argparse.Namespace) -> None:
         batch_diffs[batch["batch_id"]] = diff_content
 
     standards_content = _resolve_standards_content_for_batch(diff_files, project_root)
-    _emit_sweep_prompts(schematic_dir, sweep_record, batch_diffs, standards_content, run["base_ref"])
+    _emit_sweep_prompts(schematic_dir, sweep_record, batch_diffs, standards_content, run["base_ref"], review_model)
 
 
 def _emit_sweep_prompts(
@@ -1146,6 +1158,7 @@ def _emit_sweep_prompts(
     batch_diffs: dict[str, str],
     standards_content: str,
     base_ref: str,
+    review_model: str,
 ) -> None:
     batches = sweep_record["batches"]
     print(f"sweep {sweep_record['sweep_id']}: {len(batches)} batch(es) — diff-only style review "
@@ -1153,7 +1166,7 @@ def _emit_sweep_prompts(
     for batch in batches:
         diff_content = batch_diffs.get(batch["batch_id"], "")
         _emit_batch_review_prompt(schematic_dir, batch, diff_content, standards_content)
-    print(f"\n  dispatch each batch as a {REVIEW_MODEL} subagent, fix every finding, then record:")
+    print(f"\n  dispatch each batch as a {review_model} subagent, fix every finding, then record:")
     print(f"    schematic review batch-result <batch_id> clean|findings --summary \"<one line>\" "
           f"--schematic {schematic_dir.name}")
     print("  re-run `review sweep` after fixes; PRISTINE = a sweep where every batch is clean.")

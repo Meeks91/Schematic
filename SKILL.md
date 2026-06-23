@@ -34,6 +34,12 @@ description: Multi-phase feature planning skill. Grills the user to produce a fe
 > `phase complete`. Never accept text "y" as the only proof of sign-off — the
 > CLI is the state of record.
 
+> [!NOTE]
+> ## On entry: notify the user (once per session).
+>
+> 1. **Standards config check:** if `.claude/standards.json` does NOT exist at the repo root, tell the user: _"No standards manifest found. Run `schematic init` to configure your project's coding conventions (component types, styling, testing). The skill uses your resolved standards to shape every phase."_ Offer to help configure it.
+> 2. **Visual tools available:** _"You can request `schematic overview` to launch the interactive dashboard, or `schematic editor` / the mermaid-edit skill to visually edit sequence diagrams and DAGs at any phase."_
+
 > [!CAUTION]
 > ## RESOLVED STANDARDS are the GROUND TRUTH for code style. NON-NEGOTIABLE.
 >

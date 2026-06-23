@@ -1,7 +1,10 @@
-"""Shared agent responder — spawns claude CLI to answer questions from the UI."""
+"""Shared agent responder — builds prompts for the session agent to answer questions from the UI.
+
+Runtime-agnostic: does NOT shell out to any CLI (claude, kiro, etc). Instead, writes
+the prompt + context to the answers file for the main session agent to pick up and respond to,
+or for the overview server to relay back to the user.
+"""
 import json
-import re
-import subprocess
 import threading
 from pathlib import Path
 
@@ -34,16 +37,14 @@ def _build_bundle_context(bundle_dir: Path, companion_path: Path | None) -> str:
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
-def answer_question(
+def _build_prompt(
     question_text: str,
-    server_idx: int,
     context: str,
-    answers_path: Path,
     diagram_path: Path | None = None,
-    file_lock: threading.Lock | None = None,
     history: list[dict[str, str]] | None = None,
     companion_path: Path | None = None,
-) -> None:
+) -> str:
+    """Build the full prompt text without dispatching to any CLI."""
     conversation = _format_history(history)
     companion_content = ""
     if companion_path and companion_path.exists():
@@ -78,47 +79,35 @@ def answer_question(
             f"{conversation or f'User question: {question_text}'}\n\n"
             f"Answer the user's latest message concisely in 1-3 sentences."
         )
-
-    try:
-        result = subprocess.run(
-            ["claude", "-p", prompt],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        answer_text = result.stdout.strip() if result.returncode == 0 else f"Error: {result.stderr.strip()}"
-
-        if diagram_path and diagram_path.exists():
-            mermaid_match = re.search(r'```mermaid\n(.*?)```', answer_text, re.DOTALL)
-            if mermaid_match:
-                new_content = mermaid_match.group(1).strip()
-                diagram_path.write_text(new_content + "\n", encoding=ENCODING)
-                answer_text = "Done — diagram updated."
-
-        _write_answer(answers_path, server_idx, answer_text, file_lock)
-        print(f"Answered q#{server_idx}: {question_text[:60]}", flush=True)
-
-    except subprocess.TimeoutExpired:
-        _write_answer(answers_path, server_idx, "Timed out (120s). Try a simpler request.", file_lock)
-    except FileNotFoundError:
-        _write_answer(answers_path, server_idx, "claude CLI not found. Install: npm i -g @anthropic-ai/claude-code", file_lock)
-    except Exception as e:
-        _write_answer(answers_path, server_idx, f"Error: {e}", file_lock)
+    return prompt
 
 
-def _format_history(history: list[dict[str, str]] | None) -> str:
-    """Render the Q&A thread as a labelled transcript so the agent sees prior turns."""
-    if not history:
-        return ""
-    role_to_speaker = {"user": "User", "agent": "Assistant"}
-    lines = [
-        f"{role_to_speaker[m['role']]}: {m.get('text', '')}"
-        for m in history
-        if m.get("role") in role_to_speaker and m.get("text")
-    ]
-    if not lines:
-        return ""
-    return "Conversation so far:\n" + "\n".join(lines)
+def answer_question(
+    question_text: str,
+    server_idx: int,
+    context: str,
+    answers_path: Path,
+    diagram_path: Path | None = None,
+    file_lock: threading.Lock | None = None,
+    history: list[dict[str, str]] | None = None,
+    companion_path: Path | None = None,
+) -> None:
+    prompt = _build_prompt(
+        question_text=question_text,
+        context=context,
+        diagram_path=diagram_path,
+        history=history,
+        companion_path=companion_path,
+    )
+
+    answer_text = (
+        f"[AGENT_REQUEST]\n{prompt}\n[/AGENT_REQUEST]\n\n"
+        f"The session agent should process this prompt and reply. "
+        f"If editing a diagram, write the updated mermaid content to: {diagram_path}"
+    )
+
+    _write_answer(answers_path, server_idx, answer_text, file_lock)
+    print(f"Queued q#{server_idx} for session agent: {question_text[:60]}", flush=True)
 
 
 def spawn_answer(
@@ -136,6 +125,21 @@ def spawn_answer(
         args=(question_text, server_idx, context, answers_path, diagram_path, file_lock, history, companion_path),
         daemon=True,
     ).start()
+
+
+def _format_history(history: list[dict[str, str]] | None) -> str:
+    """Render the Q&A thread as a labelled transcript so the agent sees prior turns."""
+    if not history:
+        return ""
+    role_to_speaker = {"user": "User", "agent": "Assistant"}
+    lines = [
+        f"{role_to_speaker[m['role']]}: {m.get('text', '')}"
+        for m in history
+        if m.get("role") in role_to_speaker and m.get("text")
+    ]
+    if not lines:
+        return ""
+    return "Conversation so far:\n" + "\n".join(lines)
 
 
 def _write_answer(

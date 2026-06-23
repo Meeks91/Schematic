@@ -12,7 +12,7 @@ This phase writes the human frame of `<schematic_dir>/objective.md`: Context & O
 
 ## Phase 1 entry — branch by session state
 
-**If this is a fresh planning session (no prior context):** GRILL FIRST.
+**If this is a fresh planning session or the current context has shared understanding gaps:** PROCEED TO GRILL.
 Interview the user relentlessly about every aspect of this feature until reaching shared understanding. Walk down **every branch** of the design tree, resolving dependencies between decisions one-by-one. For each question, provide your recommended answer. Ask questions **one at a time**. If a question can be answered by exploring the codebase, explore the codebase instead.
 
 **If picking up with existing context (resuming a build, working from a prior plan, mid-conversation):** ABSORB AND ACCELERATE.

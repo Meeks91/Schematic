@@ -63,8 +63,8 @@ schematic/
     ├── good_bad_function_ac.md     ← Function AC examples
     ├── good_bad_test_naming.md     ← test naming examples
     ├── track_subskill.md           ← execution trace sub-skill docs
-    ├── headless_review_agent.md    ← review agent prompt template
-    ├── agent_responder.py          ← shared Q&A agent (spawns claude -p with context)
+    ├── headless_review_agent.md    ← review agent design notes
+    ├── agent_responder.py          ← shared Q&A prompt builder (runtime-agnostic, no CLI dependency)
     ├── shared_utils.py             ← IDE integration + project root resolution
     ├── mermaid_edit/               ← live-preview Mermaid editor (browser-based)
     │   ├── bridge.py               ← HTTP server + question relay
@@ -137,7 +137,9 @@ Schematic absorbs the standards of the repo it runs in — design, types, stylin
 | `types` | class-suffix / component-type vocabulary |
 | `styling.<language>` | naming, formatting, idioms per language |
 | `testing` | test planning, naming, structure |
+| `review` | code review lenses, gate criteria, report format |
 | `exemplars` | known-good directories to imitate |
+| `schematic.reviewModel` | model used for review subagents (default: `sonnet`) |
 
 **Resolution order** (at `schematic init`):
 

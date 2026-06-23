@@ -30,8 +30,12 @@ Schematic absorbs the conventions of the repo it runs in. Standards are **plugga
     "typescript": "skill:typescript-standards"
   },
   "testing": "skill:writing-tests",
+  "review": "skill:code-review",
   "exemplars": ["src/services/reelEnrichment/"],
-  "unresolved": "learn"
+  "unresolved": "learn",
+  "schematic": {
+    "reviewModel": "sonnet"
+  }
 }
 ```
 

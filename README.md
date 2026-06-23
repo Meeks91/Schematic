@@ -41,6 +41,7 @@ schematic/
 ├── phase_6_sequence.md             ← Phase 6: runtime flow diagrams (ASCII + Mermaid)
 ├── phase_7_tasks.md                ← Phase 7: agent-ready task generation
 ├── phase_8_implementation_loop.md  ← Phase 8: execution (manual or auto mode)
+├── phase_9_compression.md         ← Phase 9: compress knowledge into repo arch docs
 ├── audits/                         ← background audit agents dispatched at phase-end
 │   ├── README.md                   ← dispatch protocol + output contract
 │   ├── _format.md                  ← output schema, severity gates, hard caps
@@ -92,6 +93,7 @@ schematic/
 | 6 | Sequence Diagram | `sequence.mmd`, `components/_overview.md` §Sequence | `sequence_audit.md` + artifact gate |
 | 7 | Tasks | `tasks.md` | `end_to_end_audit.md` |
 | 8 | Implementation | code + `implementation_report.md` | per-task review gate |
+| 9 | Compression | `<archDocsPath>/<feature>.md` + sequence; deletes schematic dir | — (strategy from init) |
 
 **Artifact gates** (Phases 3, 5, 6): `schematic phase complete` rejects the lock if the required files/sections don't exist on disk. Prevents "shown in chat but not written" drift.
 
@@ -140,6 +142,7 @@ Schematic absorbs the standards of the repo it runs in — design, types, stylin
 | `review` | code review lenses, gate criteria, report format |
 | `exemplars` | known-good directories to imitate |
 | `schematic.reviewModel` | model used for review subagents (default: `sonnet`) |
+| `schematic.completionCompression` | how schematic knowledge integrates into repo docs post-implementation |
 
 **Resolution order** (at `schematic init`):
 

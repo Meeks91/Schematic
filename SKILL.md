@@ -9,7 +9,7 @@ description: Multi-phase feature planning skill. Grills the user to produce a fe
 > ## On entry: run `schematic --help` to discover the CLI surface. NON-NEGOTIABLE.
 >
 > This skill bundles its CLI at `scripts/schematic` (symlinked onto PATH at `~/.claude/scripts/schematic`, so bare `schematic …` resolves) that tracks gate
-> state, audit results, sign-offs, and phase completion for **every phase 1–7**
+> state, audit results, sign-offs, and phase completion for **every phase 1–9**
 > — not just Phase 8. Working without it leaves state untracked and `validate`
 > blind.
 >
@@ -93,7 +93,8 @@ docs/schematics/<feature_name>/
 ├── tasks.md                        ← agent-ready work units, one task per class
 ├── dag.mmd                         ← Mermaid injection DAG
 ├── sequence.mmd                    ← Mermaid sequence diagram
-└── implementation_report.md        ← Phase 8 completion record: gates, review ledger, post-lock amendments, deferred items
+├── implementation_report.md        ← Phase 8 completion record: gates, review ledger, post-lock amendments, deferred items
+└── [DELETED after Phase 9 — knowledge compressed into repo arch docs]
 ```
 
 **File responsibilities:**
@@ -125,6 +126,7 @@ docs/schematics/<feature_name>/
 | 6: Sequence diagram | `sequence.mmd` + `components/_overview.md` (ASCII) |
 | 7: Tasks | `tasks.md` |
 | 8: Implementation loop | `implementation_report.md` (created at phase start, updated as gates/reviews/amendments land; link it from the top of `objective.md` so it is reachable from the dashboard) |
+| 9: Compression | Writes to `<archDocsPath>/<feature>.md` + sequence; deletes schematic dir per config |
 
 ---
 
@@ -174,6 +176,7 @@ The traceability check at end of Phase 4 validates this pyramid is complete — 
 | 6: Sequence Diagram | `phase_6_sequence.md` |
 | 7: Tasks | `phase_7_tasks.md` |
 | 8: Implementation Loop (per-task sketch + CLI completion gate) | `phase_8_implementation_loop.md` |
+| 9: Compression (integrate knowledge into repo docs) | `phase_9_compression.md` |
 
 ---
 
@@ -223,7 +226,7 @@ The schematic is **one rational view** of the design — every fact in exactly o
 Defined once here; inherited by every phase — 4 content lines, re-emitted each gate:
 
 ```
-── SCHEMATIC <name> · PHASE <N>/7 — <title> ──────────────────
+── SCHEMATIC <name> · PHASE <N>/9 — <title> ──────────────────
 Objective:   <one-line session deliverable>
 Locked:      P1 ✓  P2 ✓  …        This gate: <what this artifact adds>
 Driving ACs: 1.A — <title>, 2.C — <title>

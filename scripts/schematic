@@ -612,17 +612,29 @@ def _validate_mermaid_file(path: Path) -> list[str]:
     return _heuristic_mermaid_check(path)
 
 
+MMDC_INVOCATIONS = (
+    ["mmdc"],
+    ["npx", "--yes", "@mermaid-js/mermaid-cli"],
+)
+MMDC_TIMEOUT_SECONDS = 60
+
+
 def _try_mmdc(path: Path) -> list[str] | None:
-    try:
-        result = subprocess.run(
-            ["mmdc", "-i", str(path), "-o", "/dev/null"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        return [] if result.returncode == 0 else [f"mmdc: {result.stderr.strip()}"]
-    except (OSError, subprocess.TimeoutExpired):
-        return None
+    for base_command in MMDC_INVOCATIONS:
+        try:
+            result = subprocess.run(
+                [*base_command, "-i", str(path), "-o", "/dev/null"],
+                capture_output=True,
+                text=True,
+                timeout=MMDC_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode == 0:
+            return []
+        if "Parse error" in result.stderr:
+            return [f"mmdc: {result.stderr.strip()}"]
+    return None
 
 
 def _heuristic_mermaid_check(path: Path) -> list[str]:
@@ -655,6 +667,12 @@ def _check_sequence_diagram(body_lines: list[str]) -> list[str]:
         line = raw_line.strip()
         if not line or line.startswith("%%"):
             continue
+
+        if ";" in line and not line.rstrip().endswith(";"):
+            findings.append(
+                f"line {lineno}: ';' inside text splits the statement "
+                "(mermaid treats ';' as a separator — use '—' or ',')"
+            )
 
         first_word = line.split()[0].lower()
 

@@ -14,7 +14,7 @@
    └────────────────── audit ▸ sign-off ▸ lock at every gate ───────────────────┘
 ```
 
-**An agentic development kit** — built for Claude Code, tied to no runtime (see [Portability](#portability)). One agent-first pipeline for the arms of development you currently orchestrate separately — planning, implementation, review, standards, knowledge compression. "Build me X" becomes a locked, cross-referenced blueprint; implementation is driven against it through gates a language model cannot talk its way past.
+**An agentic development kit** — built for any agentic harness that supports Agent Skills; Claude Code is the reference harness, not a dependency (see [Portability](#portability)). One agent-first pipeline for the arms of development you currently orchestrate separately — planning, implementation, review, standards, knowledge compression. "Build me X" becomes a locked, cross-referenced blueprint; implementation is driven against it through gates a language model cannot talk its way past.
 
 **The design is the contract.** Code that diverges is corrected — or the schematic is amended with sign-off. Nothing lands silently: the mental model you approved during planning is what exists at the end.
 
@@ -166,7 +166,7 @@ schematic answer overview#0 "<text>"   # reply — the bubble updates live
 
 ## Portability
 
-Schematic ships as a Claude Code skill, but the machinery is runtime-agnostic by design — nothing shells out to `claude` or any vendor binary:
+Schematic ships in the Agent Skills format, so it runs on any harness that supports skills. What a harness needs to provide: load `SKILL.md` as instructions, execute shell commands (the CLI), read/write files, and dispatch subagent prompts (audits + reviews). The machinery underneath is runtime-agnostic by design — nothing shells out to `claude` or any vendor binary:
 
 | Piece | Coupling |
 |---|---|
@@ -175,7 +175,7 @@ Schematic ships as a Claude Code skill, but the machinery is runtime-agnostic by
 | **Review loop** | The CLI is the gatekeeper, the session agent is the dispatcher: prompts are *printed*, verdicts are *recorded* (`task review-result`, `review batch-result`). Sweep prompts inline the diff hunks + standards content so the reviewer needs **zero file access** — any subagent, any model, any harness |
 | Audits | Same pattern — self-contained prompt files, results recorded via `phase audit` |
 | Dashboard + Mermaid editor | Stdlib HTTP servers + vanilla JS in a browser; Q&A relays through JSON files (`schematic questions` / `answer`) |
-| Skill packaging (`SKILL.md`, phase files) | The only Claude Code-specific part — and it's just instructions. Feed the same files to any harness that follows system-prompt-style rules |
+| Skill packaging (`SKILL.md`, phase files) | Standard Agent Skills format — loads in any skills-aware harness; even without one, they're plain instruction files any agent can follow |
 
 Practically: another runtime (or a plain human) drives the same pipeline by running the CLI, dispatching the printed prompts to whatever model it has, and recording the verdicts. The gates neither know nor care who's on the other end.
 

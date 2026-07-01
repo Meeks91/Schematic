@@ -38,6 +38,7 @@ description: Multi-phase feature planning skill. Grills the user to produce a fe
 >
 > 1. **Standards config check:** if `.claude/standards.json` does NOT exist at the repo root, tell the user: _"No standards manifest found. Run `schematic init` to configure your project's coding conventions (component types, styling, testing). The skill uses your resolved standards to shape every phase."_ Offer to onboard them: map slots to skills they already have, or LEARN unmapped slots from their codebase's exemplar directories (`standards_resolution.md` → Learn mode).
 > 2. **Visual tools available:** _"You can request `schematic overview` to launch the interactive dashboard (objective, components, DAG + sequence diagrams, tasks in one view), or the bundled live Mermaid editor to hand-edit any diagram. Both have a Q&A bubble that routes questions to me."_
+> 3. **Long builds run as a goal (loop within a loop):** if the user has a goal/persistence runner, recommend wrapping Phase 8 in it. The outer goal loop guarantees the agent returns until the board is drained; schematic's inner gates and review loops guarantee each return does verified work. The bundle + `.schematic-state.json` are the durable state — every re-entry starts with `schematic status` → `schematic task next`, never from memory.
 >
 > **Re-surface, don't bury:** the dashboard and editor are offered again at the phases where they matter most — Phase 5 (DAG) and Phase 6 (sequence) gates explicitly present them (see those phase files). A user who never learns the screens exist is a skill bug.
 

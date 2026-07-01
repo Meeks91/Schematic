@@ -1,6 +1,17 @@
 # Schematic
 
-**Design-first feature delivery for Claude Code.** Schematic turns "build me X" into a locked, cross-referenced engineering blueprint — feature ACs, class topology, per-class contracts with tests, an injection DAG, a sequence diagram, and agent-ready tasks — then drives implementation against that blueprint with hard gates a language model cannot talk its way past.
+**An agentic development kit for Claude Code.** Schematic integrates the disparate arms of the development process — planning, implementation, review, per-repo standards, and knowledge compression — into one agent-first pipeline, so you stop orchestrating separate tools for each part of the flow. It turns "build me X" into a locked, cross-referenced engineering blueprint — feature ACs, class topology, per-class contracts with tests, an injection DAG, a sequence diagram, agent-ready tasks — then drives implementation against that blueprint with hard gates a language model cannot talk its way past.
+
+It is maximised for two things:
+
+- **Highly visual planning.** Boxed component cards, dependency grids, interactive DAG and sequence diagrams, a browser dashboard, a live diagram editor. Structure exposes design flaws that prose hides.
+- **Trustworthiness.** The mental model you sign off during planning is what exists at the end. Instead of relying on one model doing the right thing, Schematic scrubs the code clean as it goes with incremental, continuous, automated review — background audits on every planning phase, a diff-scoped review on every task before it can complete, a batch-until-pristine sweep over the whole feature diff, and a master-agent correctness gate — each verdict recorded in state the agent cannot forge. Drift doesn't accumulate; it gets caught at the gate where it's cheapest to fix.
+
+Standards are **modular**: each slot (architecture, component types, styling per language, testing, review) points at a module you choose — your own skills for the conventions you already like, or modules **learned from your codebase's exemplar directories**. That makes it fit greenfield sites (bring your style) and brownfield sites (absorb the existing one) with the same mechanism.
+
+Because a schematic is plain markdown + Mermaid living in the repo, **it's shareable by default**: teammates pull the branch, read `objective.md` in two minutes, review contracts and diagrams in the PR, and open the same dashboard locally. Design review and sign-off become team activities on a durable artifact — not a scrollback in one person's agent session.
+
+**Built to run as a goal — a loop within a loop.** Long builds belong inside a persistence loop (a goal runner that re-invokes the agent until the work is done). Schematic is designed for exactly that nesting: the outer goal loop guarantees the agent doesn't give up; Schematic's inner gates and review loops guarantee every iteration does *verified* work. All state lives on disk, so each re-entry is `schematic status` → next unblocked task — no context to reconstruct, no progress to take on faith.
 
 The premise is simple: **the design is the contract.** Code that diverges from the schematic is corrected — or the schematic is amended with sign-off. Nothing lands silently.
 

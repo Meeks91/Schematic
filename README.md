@@ -4,6 +4,8 @@
 
 The premise is simple: **the design is the contract.** Code that diverges from the schematic is corrected — or the schematic is amended with sign-off. Nothing lands silently.
 
+![Schematic overview dashboard — one browser view over the whole bundle: objective, component contracts, diagrams, research, and execution state](docs/assets/dashboard.png)
+
 ## Why
 
 Agent-written features fail in predictable ways: responsibilities drift between classes, contracts change mid-implementation, tests assert what the code does rather than what was agreed, and "done" is narrated rather than verified. Schematic attacks each failure structurally:
@@ -54,6 +56,27 @@ Invoke `/schematic` in Claude Code, or ask to architect a feature end-to-end bef
 | 9 | Compression | knowledge merged into repo arch docs | lock, then cleanup |
 
 Phase 8 runs **manual** (sketch → confirm → implement, per task) or **auto** (user-opted autonomous loop with per-task diff reviews, a batch-until-pristine style sweep, and a master-agent correctness gate). Re-sweeps are incremental: files unchanged since their last clean review are skipped, not re-reviewed.
+
+**Phase 1 — the objective**, human-readable in two minutes, and **Phase 3 — the feature's footprint**, every file annotated with the AC that necessitated it:
+
+<p>
+  <img src="docs/assets/objective.png" width="49%" alt="objective.md — context, purpose, functional ACs with What/Why per sub-change" />
+  <img src="docs/assets/directory-structure.png" width="49%" alt="Directory structure — NEW/MODIFIED annotations with driving AC refs" />
+</p>
+
+**Phase 4 — per-class contracts**: signatures, models, behaviour notes, and the feature/branch tests that prove them, one self-contained card per class:
+
+<p>
+  <img src="docs/assets/contract.png" width="49%" alt="Contract card — constructor deps, method signatures, behaviour" />
+  <img src="docs/assets/component-spec.png" width="49%" alt="Component spec — models, errors, feature and branch tests" />
+</p>
+
+**Phase 8 — execution**: tasks flow across a kanban driven entirely by the CLI's legal state transitions; review findings land as notes on the task:
+
+<p>
+  <img src="docs/assets/agent-kanban.png" width="49%" alt="Task kanban — Not Started / In Progress / Review / Done, dependency tags per card" />
+  <img src="docs/assets/agent-task-with-notes.png" width="49%" alt="Task detail — agent notes and review findings attached to the task" />
+</p>
 
 ## Enforcement gates
 
@@ -106,6 +129,10 @@ Resolution order: repo `.claude/standards.json` → global `~/.claude/standards.
 **Overview dashboard** — `schematic overview` renders the full bundle (objective, components, DAG, sequence, tasks, traces) in one browser view.
 
 **Live Mermaid editor** — round-trips any `.mmd` on disk with live preview, zoom/pan, notes, and per-node IDE jump. Ctrl+S saves; **Save & Close** ends the session and hands the file back to the agent. Handles very large diagrams.
+
+![Live Mermaid editor — source and rendered sequence diagram side by side, with the Q&A input routing questions to the session agent](docs/assets/editable-diagram-with-chat.png)
+
+![Interactive diagram view in the dashboard — rendered sequence flow with AC-labelled frames](docs/assets/interactive-diagram.png)
 
 **Q&A relay** — both UIs embed a chat bubble. Questions asked there are compiled into fully-contextualised prompts (diagram + bundle tree + Feature ACs + thread) and queued for the main session agent:
 

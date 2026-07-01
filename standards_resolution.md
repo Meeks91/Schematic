@@ -12,10 +12,15 @@ Schematic absorbs the conventions of the repo it runs in. Standards are **plugga
 |---|---|---|
 | `architecture` | service layout, directories, models placement, DI, boundaries | P2, P3, P5 |
 | `types` | class-suffix / component-type vocabulary, banned suffixes | P2, topology + contract audits |
-| `styling.<language>` | naming, formatting, idioms, defensive-code policy | P4, P8 |
-| `testing` | test planning, naming, G/W/T, object-equality | P4, P7, P8 |
-| `review` | code review lenses, gate criteria, report format | audits, `/code-review` |
+| `styling.<language>` | naming, formatting, idioms, defensive-code policy | P4, P8 (inlined into sweep prompts) |
+| `testing` | test planning, naming, G/W/T, object-equality | P4, P7, P8 (inlined into sweep prompts) |
+| `review` | code review lenses, gate criteria, report format | audits, P8 review prompts + sweeps, `/code-review` |
 | `exemplars` | known-good dirs to imitate | learn mode, P8 |
+
+Every slot is a modular input: the CLI resolves the mapped module and pulls it into the stage that
+consumes it — per-task review prompts list the resolved module paths; sweep prompts inline the
+styling/testing/review module content. A slot left unmapped is a gap in every downstream stage,
+which is why init reports slot-by-slot coverage and Phase 0 closes the gaps (map or LEARN).
 
 ## Manifest
 

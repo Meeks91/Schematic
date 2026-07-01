@@ -37,6 +37,8 @@ At each gate-end, BEFORE printing the `Confirm: y/comment` sigil:
      prompt: <contents of audits/<phase>_audit.md> + "Files to read: <concrete paths>"
    })
    ```
+   Before dispatch, substitute every `<schematic_dir>` and `<skill_dir>` placeholder in the
+   prompt with the concrete absolute paths (the skill dir is this file's grandparent).
 3. Present the artifact summary to the user.
 4. When the audit returns:
    - **Clean** → print `✓ Audit (<phase>): clean` above the Confirm sigil.
@@ -57,5 +59,5 @@ Audits run in the background while the planner-agent presents the gate summary t
 
 1. Drop a new `<name>_audit.md` in this directory.
 2. The file must be self-contained: any context the agent needs goes in the prompt.
-3. Reference it from the relevant phase block in `SKILL.md` at the dispatch point.
+3. Reference it from the relevant `phase_N_*.md` file's audit-hook section (and the audit table above).
 4. Use the format of an existing audit as a template.

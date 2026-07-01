@@ -4,10 +4,10 @@ Quality gate for Phase 2. Read the freshly-locked classes from this gate (and th
 
 ## Files to read
 
-- `<schematic_dir>/objective.md` §2 (Topology — the locked-so-far class blocks)
+- `<schematic_dir>/components/_overview.md` §Component Summary (the locked-so-far class blocks/tables)
 - `<schematic_dir>/components/*.md` (if any exist — for cross-reference orphan checks)
 - The resolved `types` + `architecture` standards modules (see `../standards_resolution.md`; defaults: `~/.claude/skills/component-types/SKILL.md`, `~/.claude/skills/architecture-standards/SKILL.md`; bundled fallback: `../reference/component_types.md`)
-- `/Users/micahsimmons/.claude/skills/schematic/SKILL.md` (Phase 2 + Architecture Principles + Component Types)
+- `<skill_dir>/phase_2_topology.md` (the Phase 2 rules being audited against) + `<skill_dir>/SKILL.md` §Architecture Principles
 
 ## Checks (in order)
 

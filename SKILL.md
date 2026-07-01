@@ -13,21 +13,20 @@ description: Multi-phase feature planning skill. Grills the user to produce a fe
 > — not just Phase 8. Working without it leaves state untracked and `validate`
 > blind.
 >
-> The CLI surface (one command per gate-step):
+> `--help` is the surface of record. Command groups:
 >
 > ```
-> schematic init <name>                                         # scaffold bundle
-> schematic status [name]                                       # progress view
-> schematic validate [name]                                     # AC pyramid + xref integrity
-> schematic phase audit --schematic <name> <N> <"clean"|findings>
-> schematic phase sign-off --schematic <name> <N>
-> schematic phase complete --schematic <name> <N>
-> schematic task show|status|review-result|complete|next        # phase 7+ task lifecycle
+> schematic init|status|validate|mermaid          # bundle lifecycle + integrity
+> schematic phase audit|sign-off|complete         # gate state per phase 1-9 (audit: 1,2,4,6,7 only)
+> schematic task next|show|status|note|review-result|complete   # phase 8 task loop
 > schematic review start|sweep|batch-result|e2e|e2e-result|status  # phase 8 review
-> schematic mermaid                                             # validate .mmd diagrams
+> schematic questions / schematic answer          # dashboard/editor Q&A relay
+> schematic overview / schematic track            # dashboard + execution traces
 > ```
 >
-> **Edit any `.mmd` visually (on request, any phase):** launch the bundled live-preview editor — `python3 <skill_dir>/reference/mermaid_edit/bridge.py <path-to.mmd>` (backgrounded; blocks until the user clicks Save, then re-read the file). Handles very large diagrams. See `phase_6_sequence.md` → "Visual round-trip editor".
+> **Edit any `.mmd` visually (on request, any phase):** launch the bundled live-preview editor — `python3 <skill_dir>/reference/mermaid_edit/bridge.py <path-to.mmd>` (backgrounded; blocks until the user clicks Save & Close, then re-read the file — Ctrl+S in the editor saves without closing). Handles very large diagrams. See `phase_6_sequence.md` → "Visual round-trip editor".
+>
+> **Dashboard/editor questions reach YOU:** questions the user asks in any browser UI queue for this session. After a UI session (or when the user says they asked something there), run `schematic questions` and reply with `schematic answer <id> "<text>"` — the bubble updates live. Never leave the queue undrained.
 >
 > **Binding workflow per gate:** dispatch audit → record audit result via CLI
 > → present to user → on `y` reply, record sign-off via CLI → lock with
@@ -37,8 +36,10 @@ description: Multi-phase feature planning skill. Grills the user to produce a fe
 > [!NOTE]
 > ## On entry: notify the user (once per session).
 >
-> 1. **Standards config check:** if `.claude/standards.json` does NOT exist at the repo root, tell the user: _"No standards manifest found. Run `schematic init` to configure your project's coding conventions (component types, styling, testing). The skill uses your resolved standards to shape every phase."_ Offer to help configure it.
-> 2. **Visual tools available:** _"You can request `schematic overview` to launch the interactive dashboard, or `schematic editor` / the mermaid-edit skill to visually edit sequence diagrams and DAGs at any phase."_
+> 1. **Standards config check:** if `.claude/standards.json` does NOT exist at the repo root, tell the user: _"No standards manifest found. Run `schematic init` to configure your project's coding conventions (component types, styling, testing). The skill uses your resolved standards to shape every phase."_ Offer to onboard them: map slots to skills they already have, or LEARN unmapped slots from their codebase's exemplar directories (`standards_resolution.md` → Learn mode).
+> 2. **Visual tools available:** _"You can request `schematic overview` to launch the interactive dashboard (objective, components, DAG + sequence diagrams, tasks in one view), or the bundled live Mermaid editor to hand-edit any diagram. Both have a Q&A bubble that routes questions to me."_
+>
+> **Re-surface, don't bury:** the dashboard and editor are offered again at the phases where they matter most — Phase 5 (DAG) and Phase 6 (sequence) gates explicitly present them (see those phase files). A user who never learns the screens exist is a skill bug.
 
 > [!CAUTION]
 > ## RESOLVED STANDARDS are the GROUND TRUTH for code style. NON-NEGOTIABLE.
@@ -235,7 +236,7 @@ Driving ACs: 1.A — <title>, 2.C — <title>
 
 AC tags MUST carry their one-line title here — no bare refs. Abbreviate with `…` if >2 ACs.
 
-`Locked:` is generatable from `schematic status` — don't hand-maintain it. Phase files never restate this template; they inherit it.
+`Locked:` is printed verbatim by `schematic status` (the `locked:` line) — paste it, don't hand-maintain it. Phase files never restate this template; they inherit it.
 
 **Approval gate (mandatory, binding):**
 
@@ -359,7 +360,7 @@ Every task reference uses the canonical three-column form:
 <tag> | <Action> | <Target>
 ```
 
-- **tag** — short stable ID for agent-internal cross-referencing (`b.1`, `c.3`, `4.A`). Letters group related work; numbers order within the group. Codes carry no meaning on their own.
+- **tag** — short stable ID for agent-internal cross-referencing (`b.1`, `c.3`). Format is `<group-letter>.<index>` — the CLI parser accepts nothing else. Letters group related work; numbers order within the group. Codes carry no meaning on their own. (`4.A`-style codes are AC stamps, never task tags — see Stamp form below.)
 - **Action** — verb in past-participle-imperative form. One of: `Create`, `Modify`, `Rename`, `Tighten`, `Delete`, `Wire`, `Add`, `Split`. The verb tells the reader what the task DOES at a glance.
 - **Target** — fully-qualified class, method, or scope. Class names, file paths, or `ClassName.method` are all valid. The reader sees what the task touches.
 

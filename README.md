@@ -1,10 +1,19 @@
 # Schematic
 
-Multi-phase feature planning skill for Claude Code. Grills the user to produce a feature spec with acceptance criteria, derives class topology, directory structure, contracts with tests, injection DAG, sequence diagram, then generates agent-ready tasks.
+**Design-first feature delivery for Claude Code.** Schematic turns "build me X" into a locked, cross-referenced engineering blueprint — feature ACs, class topology, per-class contracts with tests, an injection DAG, a sequence diagram, and agent-ready tasks — then drives implementation against that blueprint with hard gates a language model cannot talk its way past.
 
-## Installation
+The premise is simple: **the design is the contract.** Code that diverges from the schematic is corrected — or the schematic is amended with sign-off. Nothing lands silently.
 
-Clone into your Claude Code skills directory:
+## Why
+
+Agent-written features fail in predictable ways: responsibilities drift between classes, contracts change mid-implementation, tests assert what the code does rather than what was agreed, and "done" is narrated rather than verified. Schematic attacks each failure structurally:
+
+- **Every decision traces.** Feature AC → Class AC → Function AC → AC Test. A traceability matrix proves the pyramid is complete before a line of code is written.
+- **Every gate is enforced by a CLI, not by discipline.** Phases can't lock without a recorded audit + user sign-off + on-disk artifacts. Tasks can't complete without a clean review verdict. Diagrams can't lock if they don't parse.
+- **Every audit is a background agent** with a strict output schema, severity gates, and a do-not-flag list — signal, not a 20-bullet wall.
+- **Standards are pluggable.** The skill absorbs *your* conventions per slot (architecture, component types, styling per language, testing, review) and quotes them back at every phase. No manifest? It onboards you — or learns the conventions from your own codebase.
+
+## Install
 
 ```bash
 git clone https://github.com/Meeks91/Schematic.git ~/.claude/skills/schematic
@@ -16,185 +25,122 @@ Or project-level:
 git clone https://github.com/Meeks91/Schematic.git .claude/skills/schematic
 ```
 
-The `scripts/` directory should be symlinked onto PATH (or added directly):
+Symlink the CLI onto PATH:
 
 ```bash
 ln -s ~/.claude/skills/schematic/scripts/schematic ~/.claude/scripts/schematic
 ln -s ~/.claude/skills/schematic/scripts/schematic-task-done ~/.claude/scripts/schematic-task-done
 ```
 
+Zero runtime dependencies — the CLI, the audit protocol, the dashboard, and the Mermaid editor are stdlib Python + vanilla JS.
+
 ## Usage
 
-Invoke with `/schematic` in Claude Code, or when you want to architect a feature end-to-end before implementation.
+Invoke `/schematic` in Claude Code, or ask to architect a feature end-to-end before implementation. `schematic init <feature>` scaffolds the bundle and reports your standards coverage slot by slot.
 
-## Skill Layout
+## The pipeline
 
-```
-schematic/
-├── SKILL.md                        ← entry point: cross-cutting rules, structural rules, file format specs
-├── standards_resolution.md         ← Phase 0: how standards are resolved/learned per repo
-├── phase_1_objective_and_acs.md    ← Phase 1: feature spec + acceptance criteria
-├── phase_2_topology.md             ← Phase 2: class/component structure + Class ACs
-├── phase_3_directory.md            ← Phase 3: file layout
-├── phase_4_contracts_and_tests.md  ← Phase 4: interfaces, models, Function ACs, tests
-├── phase_5_injection_dag.md        ← Phase 5: dependency wiring + app integration
-├── phase_6_sequence.md             ← Phase 6: runtime flow diagrams (ASCII + Mermaid)
-├── phase_7_tasks.md                ← Phase 7: agent-ready task generation
-├── phase_8_implementation_loop.md  ← Phase 8: execution (manual or auto mode)
-├── phase_9_compression.md         ← Phase 9: compress knowledge into repo arch docs
-├── audits/                         ← background audit agents dispatched at phase-end
-│   ├── README.md                   ← dispatch protocol + output contract
-│   ├── _format.md                  ← output schema, severity gates, hard caps
-│   ├── _precedence.md              ← DO NOT FLAG list (confirmed non-issues)
-│   ├── ac_audit.md                 ← Phase 1 audit
-│   ├── topology_audit.md           ← Phase 2 audit
-│   ├── contract_audit.md           ← Phase 4 audit
-│   ├── sequence_audit.md           ← Phase 6 audit
-│   └── end_to_end_audit.md         ← Post-Phase 7 audit
-├── scripts/
-│   ├── schematic                   ← main CLI (Python) — gates, state, validation
-│   ├── schematic-task-done         ← task completion with drift reporting
-│   ├── overview.py                 ← schematic overview dashboard launcher
-│   ├── track.py                    ← execution trace sub-skill CLI
-│   ├── test_schematic.py           ← CLI tests
-│   └── test_schematic_task_done.py ← task-done tests
-└── reference/
-    ├── component_types.md          ← class-suffix vocabulary + banned suffixes
-    ├── good_bad_class_ac.md        ← Class AC examples
-    ├── good_bad_function_ac.md     ← Function AC examples
-    ├── good_bad_test_naming.md     ← test naming examples
-    ├── track_subskill.md           ← execution trace sub-skill docs
-    ├── headless_review_agent.md    ← review agent design notes
-    ├── agent_responder.py          ← shared Q&A prompt builder (runtime-agnostic, no CLI dependency)
-    ├── shared_utils.py             ← IDE integration + project root resolution
-    ├── mermaid_edit/               ← live-preview Mermaid editor (browser-based)
-    │   ├── bridge.py               ← HTTP server + question relay
-    │   ├── editor.html             ← editor UI
-    │   ├── watcher.py              ← file watcher for hot reload
-    │   ├── mermaid.min.js          ← bundled Mermaid renderer
-    │   ── qa-bubble-component.js  ← shared Q&A chat bubble component
-    └── overview_ui/                ← schematic overview dashboard (browser-based)
-        ├── overview.html           ← dashboard UI
-        ├── mermaid-editor-component.js
-        ├── marked.min.js           ← markdown renderer
-        └── purify.min.js           ← HTML sanitiser
-```
-
-## Phases
-
-| # | Phase | Output files | Audit |
+| # | Phase | Output | Gate |
 |---|---|---|---|
-| 0 | Standards Resolution | `.claude/standards.json` (repo) | — |
-| 1 | Objective & ACs | `objective.md`, `research/*.md` | `ac_audit.md` |
-| 2 | Topology | `components/_overview.md` | `topology_audit.md` |
-| 3 | Directory Structure | `objective.md` §Directory | — (artifact gate) |
-| 4 | Contracts & Tests | `components/<class>.md`, traceability matrix | `contract_audit.md` |
-| 5 | Injection DAG | `dag.mmd`, `components/_overview.md` §DAG | — (artifact gate) |
-| 6 | Sequence Diagram | `sequence.mmd`, `components/_overview.md` §Sequence | `sequence_audit.md` + artifact gate |
-| 7 | Tasks | `tasks.md` | `end_to_end_audit.md` |
-| 8 | Implementation | code + `implementation_report.md` | per-task review gate |
-| 9 | Compression | `<archDocsPath>/<feature>.md` + sequence; deletes schematic dir | — (strategy from init) |
+| 0 | Standards Resolution | `.claude/standards.json` | interview / learn-from-codebase |
+| 1 | Objective & Feature ACs | `objective.md`, `research/*.md` | audit + sign-off |
+| 2 | Topology (Class ACs) | `components/_overview.md` | audit + sign-off |
+| 3 | Directory Structure | `objective.md` §Directory | artifact check |
+| 4 | Contracts, Models, Tests | `components/<class>.md`, traceability matrix | audit + sign-off |
+| 5 | Injection DAG | `dag.mmd`, §DAG + §Integration | artifact check + **mermaid validation** |
+| 6 | Sequence Diagram | `sequence.mmd`, §Sequence | audit + artifact check + **mermaid validation** |
+| 7 | Tasks | `tasks.md` | end-to-end audit + sign-off |
+| 8 | Implementation | code + `implementation_report.md` | per-task review verdicts + pristine sweep + e2e gate |
+| 9 | Compression | knowledge merged into repo arch docs | lock, then cleanup |
 
-**Artifact gates** (Phases 3, 5, 6): `schematic phase complete` rejects the lock if the required files/sections don't exist on disk. Prevents "shown in chat but not written" drift.
+Phase 8 runs **manual** (sketch → confirm → implement, per task) or **auto** (user-opted autonomous loop with per-task diff reviews, a batch-until-pristine style sweep, and a master-agent correctness gate). Re-sweeps are incremental: files unchanged since their last clean review are skipped, not re-reviewed.
 
-## CLI Surface
-
-```
-schematic init <name>                                  # scaffold bundle
-schematic status [name]                                # progress view
-schematic validate [name]                              # AC pyramid + xref integrity
-
-schematic phase audit --schematic <name> <N> <result>  # record audit result
-schematic phase sign-off --schematic <name> <N>        # record user sign-off
-schematic phase complete --schematic <name> <N>        # lock phase (enforces audit + sign-off + artifacts)
-
-schematic task next [name] [--peek]                    # claim next task (auto in_progress; --peek to inspect only)
-schematic task show <tag> --schematic <name>           # flatten task + component context
-schematic task status <tag> <status> --schematic <name>  # transition task state
-schematic task review-result <tag> <verdict> --schematic <name>  # record review verdict
-schematic task complete <tag> --schematic <name>       # mark complete (requires clean review)
-schematic task note <tag> "<text>" --schematic <name>  # add agent note
-
-schematic review start [--auto --goal "..."] --schematic <name>  # begin Phase 8
-schematic review sweep --schematic <name>              # diff-only style sweep (batch ≤5 files)
-schematic review batch-result <id> <verdict> --schematic <name>  # record batch result
-schematic review e2e --schematic <name>                # master-agent correctness gate
-schematic review e2e-result <verdict> --schematic <name>  # record e2e result
-schematic review status --schematic <name>             # current review state
-
-schematic mermaid [--file <path>] [name]               # validate .mmd diagrams
-
-schematic-task-done <tag> --matched [y|n] --updated [y|n]  # completion with drift reporting
-```
-
-## Standards Resolution (Phase 0)
-
-Schematic absorbs the standards of the repo it runs in — design, types, styling, and testing conventions are **pluggable per-slot**, and anything unmapped is **learned from the codebase**. Full protocol: `standards_resolution.md`.
-
-**Slots:**
-
-| Slot | Governs |
-|---|---|
-| `architecture` | service layout, directories, models placement, DI, boundaries |
-| `types` | class-suffix / component-type vocabulary |
-| `styling.<language>` | naming, formatting, idioms per language |
-| `testing` | test planning, naming, structure |
-| `review` | code review lenses, gate criteria, report format |
-| `exemplars` | known-good directories to imitate |
-| `schematic.reviewModel` | model used for review subagents (default: `sonnet`) |
-| `schematic.completionCompression` | how schematic knowledge integrates into repo docs post-implementation |
-
-**Resolution order** (at `schematic init`):
-
-```
-repo .claude/standards.json ──exists──► read mapped modules, done
-  └─ else ~/.claude/standards.json ───► propose mapping → confirm → copy into repo
-       └─ else discover skills with metadata.standards-slot ─► interview
-            └─ unresolved slots ──────► LEARN: derive from exemplar code,
-                                        write docs/schematics/_standards/learned_<slot>.md,
-                                        gate it, point the manifest at it
-```
-
-## Output Bundle
-
-Each schematic produces a `docs/schematics/<feature_name>/` directory:
-
-```
-docs/schematics/<feature_name>/
-├── objective.md              ← what + why (context, ACs, decisions, directory)
-├── research/*.md             ← investigation artifacts
-├── research/traces/<name>/   ← execution traces
-├── components/_overview.md   ← summary table, DAG, sequence, traceability
-├── components/<class>.md     ← per-class contract (self-contained)
-├── tasks.md                  ← agent-ready work units
-├── dag.mmd                   ← Mermaid injection DAG
-├── sequence.mmd              ← Mermaid sequence diagram
-└── implementation_report.md  ← divergences, deferred items, commit status
-```
-
-## Enforcement Gates
+## Enforcement gates
 
 | Gate | What it prevents |
 |---|---|
-| `phase complete` artifact checks | Artifacts shown in chat but not written to disk |
-| `task next` auto-claims | Implementation started without kanban state change |
-| `phase complete` audit+sign-off | Phase locked without quality gate |
+| `phase complete` artifact checks | Artifacts shown in chat but never written to disk |
+| `phase complete` mermaid checks (P5/P6) | Locking a DAG or sequence diagram that doesn't parse |
+| `phase complete` audit + sign-off | Locking a phase without its quality gate |
+| `task next` auto-claim | Implementation starting without a kanban state change |
 | `task status` legal transitions | Illegal task state jumps |
-| `schematic-task-done` review check | Task completed without passing review |
-| `schematic validate` | Cross-ref integrity drift (blockers, components, ACs) |
+| `task complete` / `schematic-task-done` review check | Completing a task that never passed review |
+| `schematic-task-done --matched/--updated` | Silent schematic drift — divergence is recorded, always |
+| `schematic validate` | Cross-reference rot (blockers, component files, AC pyramid) |
+| Incremental sweeps | Token burn from re-reviewing already-clean files |
 
-## Visual Tools
+## CLI
 
-**Mermaid Editor** — browser-based live-preview editor with embedded Q&A bubble. Launched by Phase 6 or via `/mermaid-edit`. The Q&A agent receives the diagram content + companion doc (`_overview.md`) + bundle file tree + Feature ACs as context.
+`schematic --help` is the surface of record. Command groups:
 
-```bash
-python3 ~/.claude/skills/schematic/reference/mermaid_edit/bridge.py <path-to.mmd>
+```
+schematic init|status|validate|mermaid            bundle lifecycle + integrity
+schematic phase audit|sign-off|complete           gate state, phases 1-9 (audit: 1,2,4,6,7)
+schematic task next|show|status|note|review-result|complete    task loop
+schematic review start|sweep|batch-result|e2e|e2e-result|status  phase 8 review
+schematic questions / schematic answer            dashboard Q&A relay
+schematic overview                                browser dashboard
+schematic track init|validate|show                execution traces
+schematic-task-done <tag> --matched y|n --updated y|n   completion + drift report
 ```
 
-**Overview Dashboard** — renders the full schematic bundle (objective, components, diagrams, tasks) in a single browser view.
+## Standards manifest (Phase 0)
 
-```bash
-python3 ~/.claude/skills/schematic/scripts/overview.py <schematic-name>
+Schematic absorbs the conventions of the repo it runs in. Each **slot** maps to a module; anything unmapped is **learned** from your codebase's exemplar directories and written back as a reviewed module.
+
+| Slot | Governs | Consumed by |
+|---|---|---|
+| `architecture` | service layout, directories, DI, boundaries | P2, P3, P5 |
+| `types` | class-suffix vocabulary, banned suffixes | P2 + audits |
+| `styling.<language>` | naming, idioms, defensive-code policy | P4, P8 (inlined into sweep prompts) |
+| `testing` | test planning, naming, assertion style | P4, P7, P8 (inlined into sweep prompts) |
+| `review` | review lenses, gate criteria | audits + P8 review prompts |
+| `exemplars` | known-good directories to imitate | learn mode, P8 |
+| `schematic.reviewModel` | model for review subagents (default `sonnet`) | P8 |
+| `schematic.completionCompression` | what survives into repo docs after Phase 9 | P9 |
+
+Resolution order: repo `.claude/standards.json` → global `~/.claude/standards.json` (confirmed + copied in) → discover skills by frontmatter → interview → **learn from the codebase**. `schematic init` prints slot-by-slot coverage so gaps are visible on day one.
+
+## Visual tools
+
+**Overview dashboard** — `schematic overview` renders the full bundle (objective, components, DAG, sequence, tasks, traces) in one browser view.
+
+**Live Mermaid editor** — round-trips any `.mmd` on disk with live preview, zoom/pan, notes, and per-node IDE jump. Ctrl+S saves; **Save & Close** ends the session and hands the file back to the agent. Handles very large diagrams.
+
+**Q&A relay** — both UIs embed a chat bubble. Questions asked there are compiled into fully-contextualised prompts (diagram + bundle tree + Feature ACs + thread) and queued for the main session agent:
+
+```
+schematic questions                    # list unanswered, with full context
+schematic answer overview#0 "<text>"   # reply — the bubble updates live
+```
+
+## Output bundle
+
+```
+docs/schematics/<feature>/
+├── objective.md              what + why: context, ACs, decisions, directory
+├── research/*.md             investigation artifacts
+├── research/traces/<name>/   execution traces through existing code
+├── components/_overview.md   component summary, DAG, sequence, traceability
+├── components/<class>.md     per-class contract — self-contained
+├── tasks.md                  agent-ready work units
+├── dag.mmd · sequence.mmd    Mermaid diagrams (validated at lock)
+└── implementation_report.md  divergences, deferred items, commit status
+```
+
+After Phase 9, the durable knowledge (sequence, core summary, decision log) is compressed into your repo's architecture docs and the bundle is retired.
+
+## Skill layout
+
+```
+schematic/
+├── SKILL.md                        entry point: cross-cutting rules, gates, formats
+├── standards_resolution.md         Phase 0: slot mapping + learn mode
+├── phase_1..9_*.md                 per-phase binding rules
+├── audits/                         background audit prompts + output schema
+├── scripts/                        CLI, dashboard server, trace tool, tests
+└── reference/                      component-type taxonomy, examples,
+                                    mermaid editor, overview UI, Q&A responder
 ```
 
 ## Tests

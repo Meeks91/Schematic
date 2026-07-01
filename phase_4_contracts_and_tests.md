@@ -65,7 +65,7 @@ Rules:
 - Names, params, types, fields, paths, codes → backticks everywhere the eye should snap to a token.
 - New-method signatures live in the New-methods table (`name` · `param: Type` · `Return`), NOT in prose or code fences. Use a code fence ONLY for a multi-line snippet a table genuinely cannot express.
 - No "unchanged" rows. No stray `return` row — the return type is the `Returns` column.
-- `Purpose of change` is hard-capped at 2 bullet lines.
+- `Change Required` is hard-capped at 2 bullet lines.
 
 ### Worked reference
 

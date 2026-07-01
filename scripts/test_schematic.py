@@ -363,6 +363,86 @@ class TestPhaseEnforcement(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 _with_resolved_dir(schematic_dir, _cli._phase_audit, args)
 
+    def test_phase_9_complete_locks_without_audit(self) -> None:
+        # Given phase 9 signed off (compression has no audit hook)
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            state = _cli.load_state(schematic_dir)
+            state["phases"]["9"] = {"signed_off": True}
+            _cli.save_state(schematic_dir, state)
+            # When completing
+            args = _make_args(num=9, schematic="test-feature", override=None)
+            _with_resolved_dir(schematic_dir, _cli._phase_complete, args)
+            # Then phase 9 locks
+            self.assertEqual(_cli.load_state(schematic_dir)["phases"]["9"]["status"], "locked")
+
+    def test_phase_8_complete_rejects_missing_implementation_report(self) -> None:
+        # Given phase 8 signed off but no implementation_report.md on disk
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            state = _cli.load_state(schematic_dir)
+            state["phases"]["8"] = {"signed_off": True}
+            _cli.save_state(schematic_dir, state)
+            # When completing / Then the artifact check rejects
+            args = _make_args(num=8, schematic="test-feature", override=None)
+            with self.assertRaises(SystemExit):
+                _with_resolved_dir(schematic_dir, _cli._phase_complete, args)
+
+    def test_phase_5_complete_rejects_invalid_dag_mermaid(self) -> None:
+        # Given phase 5 signed off with artifacts on disk but a dag.mmd that fails validation
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            (schematic_dir / "components" / "_overview.md").write_text(
+                "# Overview\n## Injection DAG\nedges\n## App Integration\nwiring\n"
+            )
+            (schematic_dir / "dag.mmd").write_text("flowchart TD\nA --> B\n")
+            state = _cli.load_state(schematic_dir)
+            state["phases"]["5"] = {"signed_off": True}
+            _cli.save_state(schematic_dir, state)
+            # When completing / Then the mermaid check rejects
+            args = _make_args(num=5, schematic="test-feature", override=None)
+            with patch.object(_cli, "_validate_mermaid_file", return_value=["line 2: bad edge"]), \
+                 self.assertRaises(SystemExit):
+                _with_resolved_dir(schematic_dir, _cli._phase_complete, args)
+
+    def test_phase_5_complete_locks_when_dag_mermaid_valid(self) -> None:
+        # Given phase 5 signed off with artifacts on disk and a valid dag.mmd
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            (schematic_dir / "components" / "_overview.md").write_text(
+                "# Overview\n## Injection DAG\nedges\n## App Integration\nwiring\n"
+            )
+            (schematic_dir / "dag.mmd").write_text("flowchart TD\nA --> B\n")
+            state = _cli.load_state(schematic_dir)
+            state["phases"]["5"] = {"signed_off": True}
+            _cli.save_state(schematic_dir, state)
+            # When completing
+            args = _make_args(num=5, schematic="test-feature", override=None)
+            with patch.object(_cli, "_validate_mermaid_file", return_value=[]):
+                _with_resolved_dir(schematic_dir, _cli._phase_complete, args)
+            # Then phase 5 locks
+            self.assertEqual(_cli.load_state(schematic_dir)["phases"]["5"]["status"], "locked")
+
+    def test_phase_5_complete_locks_with_override_despite_invalid_mermaid(self) -> None:
+        # Given phase 5 signed off with artifacts on disk but an invalid dag.mmd
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            (schematic_dir / "components" / "_overview.md").write_text(
+                "# Overview\n## Injection DAG\nedges\n## App Integration\nwiring\n"
+            )
+            (schematic_dir / "dag.mmd").write_text("flowchart TD\nA --> B\n")
+            state = _cli.load_state(schematic_dir)
+            state["phases"]["5"] = {"signed_off": True, "audit_result": "clean"}
+            _cli.save_state(schematic_dir, state)
+            # When completing with an override
+            args = _make_args(num=5, schematic="test-feature", override="diagram fix deferred")
+            with patch.object(_cli, "_validate_mermaid_file", return_value=["line 2: bad edge"]):
+                _with_resolved_dir(schematic_dir, _cli._phase_complete, args)
+            # Then phase 5 locks and the override is recorded
+            updated_state = _cli.load_state(schematic_dir)
+            self.assertEqual(updated_state["phases"]["5"]["status"], "locked")
+            self.assertGreaterEqual(len(updated_state["overrides"]), 1)
+
 
 # Fixtures
 
@@ -919,6 +999,197 @@ class TestReviewSweep(unittest.TestCase):
             self._seed_run(schematic_dir)
             with self.assertRaises(SystemExit):
                 self._run_sweep(schematic_dir, [])
+
+
+class TestReviewSweepIncremental(unittest.TestCase):
+
+    def _seed_run(self, schematic_dir: Path) -> None:
+        state = _cli.load_state(schematic_dir)
+        state["run"] = {"mode": "auto", "goal": "g", "base_ref": "BASE", "started_at": "t"}
+        _cli.save_state(schematic_dir, state)
+
+    def _seed_clean_sweep(self, schematic_dir: Path, path_to_diff: dict[str, str]) -> None:
+        state = _cli.load_state(schematic_dir)
+        state["sweeps"] = [{
+            "sweep_id": 1,
+            "batches": [{
+                "batch_id": "1.1",
+                "files": sorted(path_to_diff),
+                "file_hashes": {p: _cli._diff_hash(d) for p, d in path_to_diff.items()},
+                "verdict": "clean",
+                "summary": "ok",
+            }],
+            "pristine": True,
+        }]
+        _cli.save_state(schematic_dir, state)
+
+    def _run_sweep(self, schematic_dir: Path, path_to_diff: dict[str, str]) -> None:
+        args = _make_args(schematic=schematic_dir.name)
+        with patch.object(_cli, "resolve_schematic_dir", return_value=schematic_dir), \
+             patch.object(_cli, "find_project_root", return_value=schematic_dir), \
+             patch.object(_cli, "_cumulative_diff_files", return_value=sorted(path_to_diff)), \
+             patch.object(_cli, "_file_diff", side_effect=lambda p, ref, root: path_to_diff[p]):
+            _cli._review_sweep(args)
+
+    def test_resweep_is_pristine_when_every_file_already_reviewed_clean(self) -> None:
+        # Given a prior clean sweep over the exact same per-file diffs
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            self._seed_run(schematic_dir)
+            path_to_diff = {"src/a.py": "+a", "src/b.py": "+b"}
+            self._seed_clean_sweep(schematic_dir, path_to_diff)
+            # When re-sweeping with nothing re-touched
+            self._run_sweep(schematic_dir, path_to_diff)
+            # Then the new sweep is pristine with zero batches and all files skipped
+            resweep = _cli.load_state(schematic_dir)["sweeps"][1]
+            self.assertTrue(resweep["pristine"])
+            self.assertEqual(resweep["batches"], [])
+            self.assertEqual(resweep["skipped_clean"], ["src/a.py", "src/b.py"])
+
+    def test_resweep_batches_only_retouched_files(self) -> None:
+        # Given a prior clean sweep, then one file re-touched
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            self._seed_run(schematic_dir)
+            self._seed_clean_sweep(schematic_dir, {"src/a.py": "+a", "src/b.py": "+b"})
+            # When re-sweeping with b.py changed
+            self._run_sweep(schematic_dir, {"src/a.py": "+a", "src/b.py": "+b2"})
+            # Then only b.py re-enters a batch and a.py is skipped
+            resweep = _cli.load_state(schematic_dir)["sweeps"][1]
+            self.assertEqual([b["files"] for b in resweep["batches"]], [["src/b.py"]])
+            self.assertEqual(resweep["skipped_clean"], ["src/a.py"])
+
+    def test_findings_batch_files_are_reviewed_again(self) -> None:
+        # Given a prior sweep whose only batch had findings
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            self._seed_run(schematic_dir)
+            path_to_diff = {"src/a.py": "+a"}
+            self._seed_clean_sweep(schematic_dir, path_to_diff)
+            state = _cli.load_state(schematic_dir)
+            state["sweeps"][0]["batches"][0]["verdict"] = "findings"
+            state["sweeps"][0]["pristine"] = False
+            _cli.save_state(schematic_dir, state)
+            # When re-sweeping with the identical diff
+            self._run_sweep(schematic_dir, path_to_diff)
+            # Then the file is reviewed again (findings never earn a skip)
+            resweep = _cli.load_state(schematic_dir)["sweeps"][1]
+            self.assertEqual([b["files"] for b in resweep["batches"]], [["src/a.py"]])
+
+
+class TestStatusOutput(unittest.TestCase):
+
+    def _captured_status(self, schematic_dir: Path) -> str:
+        import contextlib
+        import io
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            _cli._print_status(schematic_dir)
+        return captured.getvalue()
+
+    def test_status_shows_next_phase_over_nine_and_locked_line(self) -> None:
+        # Given phases 1-3 locked
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            state = _cli.load_state(schematic_dir)
+            for phase_num in ("1", "2", "3"):
+                state["phases"][phase_num] = {"status": "locked"}
+            _cli.save_state(schematic_dir, state)
+            # When printing status
+            status_output = self._captured_status(schematic_dir)
+            # Then the current phase is 4/9 and the locked line is paste-ready
+            self.assertIn("phase:     4/9", status_output)
+            self.assertIn("locked:    P1 ✓  P2 ✓  P3 ✓", status_output)
+
+    def test_status_shows_complete_when_phase_nine_locked(self) -> None:
+        # Given phase 9 locked
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            state = _cli.load_state(schematic_dir)
+            state["phases"]["9"] = {"status": "locked"}
+            _cli.save_state(schematic_dir, state)
+            # When printing status
+            status_output = self._captured_status(schematic_dir)
+            # Then the schematic reads complete
+            self.assertIn("phase:     complete", status_output)
+
+    def test_status_shows_dash_when_nothing_locked(self) -> None:
+        # Given no locked phases
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            # When printing status
+            status_output = self._captured_status(schematic_dir)
+            # Then the locked line shows a dash placeholder
+            self.assertIn("phase:     1/9", status_output)
+            self.assertIn("locked:    —", status_output)
+
+
+class TestDashboardQuestions(unittest.TestCase):
+
+    def _seed_questions(self, schematic_dir: Path, stem: str, questions: list[dict],
+                        answers: list[dict] | None = None, requests: list[dict] | None = None) -> None:
+        (schematic_dir / f"{stem}.questions.json").write_text(json.dumps(questions))
+        if answers is not None:
+            (schematic_dir / f"{stem}.answers.json").write_text(json.dumps(answers))
+        if requests is not None:
+            (schematic_dir / f"{stem}.agent-requests.json").write_text(json.dumps(requests))
+
+    def test_pending_questions_lists_only_unanswered(self) -> None:
+        # Given two questions, one already answered
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            self._seed_questions(
+                schematic_dir, "overview",
+                questions=[{"idx": 0, "text": "answered one"}, {"idx": 1, "text": "open one"}],
+                answers=[{"idx": 0, "answer": "done"}],
+                requests=[{"idx": 1, "question": "open one", "prompt": "full ctx prompt"}],
+            )
+            # When collecting pending questions
+            pending = _cli._pending_questions(schematic_dir)
+            # Then only the unanswered question surfaces, with its compiled prompt
+            self.assertEqual(len(pending), 1)
+            self.assertEqual(pending[0]["id"], "overview#1")
+            self.assertEqual(pending[0]["text"], "open one")
+            self.assertEqual(pending[0]["prompt"], "full ctx prompt")
+
+    def test_pending_questions_uses_latest_user_thread_message(self) -> None:
+        # Given a threaded question
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            self._seed_questions(
+                schematic_dir, "sequence",
+                questions=[{"server_idx": 0, "thread": [
+                    {"role": "user", "text": "first ask"},
+                    {"role": "agent", "text": "partial"},
+                    {"role": "user", "text": "follow-up"},
+                ]}],
+            )
+            # When collecting pending questions
+            pending = _cli._pending_questions(schematic_dir)
+            # Then the latest user message is the surfaced text
+            self.assertEqual(pending[0]["text"], "follow-up")
+
+    def test_answer_appends_to_answers_file(self) -> None:
+        # Given an unanswered question
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            self._seed_questions(schematic_dir, "overview", questions=[{"idx": 0, "text": "q"}])
+            # When answering it
+            args = _make_args(id="overview#0", text="the reply", name=schematic_dir.name)
+            with patch.object(_cli, "_resolve_single_or_all", return_value=[schematic_dir]):
+                _cli.cmd_answer(args)
+            # Then the answer lands in the answers file the UI polls
+            answers = json.loads((schematic_dir / "overview.answers.json").read_text())
+            self.assertEqual(answers, [{"idx": 0, "answer": "the reply"}])
+
+    def test_answer_rejects_malformed_id(self) -> None:
+        # Given an id without the <source>#<idx> shape / When answering / Then it exits
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            args = _make_args(id="overview-0", text="reply", name=schematic_dir.name)
+            with patch.object(_cli, "_resolve_single_or_all", return_value=[schematic_dir]), \
+                 self.assertRaises(SystemExit):
+                _cli.cmd_answer(args)
 
 
 class TestReviewBatchResult(unittest.TestCase):

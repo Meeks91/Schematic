@@ -2,7 +2,6 @@ import hashlib
 import json
 import sys
 import threading
-import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -23,6 +22,7 @@ NOTE_DELETE_PATH = "/note-delete"
 QUESTION_PATH = "/question"
 ANSWERS_PATH = "/answers"
 OPEN_PATH = "/open"
+SHUTDOWN_PATH = "/shutdown"
 PATHS_PATH = "/paths"
 COMPANION_PATH = "/companion"
 COMPANION_PATH_ENDPOINT = "/companion-path"
@@ -59,6 +59,7 @@ def _discover_companion(diagram_path: Path) -> Path | None:
     return None
 
 _file_lock = threading.Lock()
+_shutdown_event = threading.Event()
 
 
 class MermaidBridgeHandler(BaseHTTPRequestHandler):
@@ -230,6 +231,11 @@ class MermaidBridgeHandler(BaseHTTPRequestHandler):
             self._respond(content="ok", content_type="text/plain")
             return
 
+        if self.path == SHUTDOWN_PATH:
+            self._respond(content="ok", content_type="text/plain")
+            _shutdown_event.set()
+            return
+
         self.send_response(404)
         self.end_headers()
 
@@ -269,6 +275,8 @@ def launch_editor(diagram_path: Path) -> None:
     print(f"Mermaid editor: {editor_url}", flush=True)
     print(f"Questions file: {MermaidBridgeHandler.questions_path}", flush=True)
     print(f"Answers file: {MermaidBridgeHandler.answers_path}", flush=True)
+    print("Editor questions route to the session agent — list: schematic questions · reply: schematic answer <id> \"<text>\"", flush=True)
+    print("Blocks until Save & Close (Ctrl+S saves without closing).", flush=True)
 
     open_browser = "--no-browser" not in sys.argv
     if open_browser:
@@ -278,13 +286,14 @@ def launch_editor(diagram_path: Path) -> None:
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
 
-    # Watch for questions and answer them using claude CLI
+    # Queue each new UI question as a fully-contextualised agent request
+    # (agent_responder) until Save & Close or Ctrl+C ends the session.
     seen_count = 0
     questions_path = MermaidBridgeHandler.questions_path
     answers_path = MermaidBridgeHandler.answers_path
 
     try:
-        while True:
+        while not _shutdown_event.is_set():
             try:
                 if questions_path.exists():
                     questions = json.loads(questions_path.read_text(encoding=ENCODING))
@@ -318,12 +327,33 @@ def launch_editor(diagram_path: Path) -> None:
                         seen_count = len(questions)
             except (json.JSONDecodeError, KeyError):
                 pass
-            time.sleep(1)
+            _shutdown_event.wait(timeout=1)
     except KeyboardInterrupt:
         pass
     finally:
         server.shutdown()
         print(f"\nSaved: {diagram_path}", flush=True)
+        _report_unanswered(questions_path, answers_path)
+
+
+def _report_unanswered(questions_path: Path, answers_path: Path) -> None:
+    """Exit summary so the session agent knows questions are waiting."""
+    try:
+        questions = json.loads(questions_path.read_text(encoding=ENCODING)) if questions_path.exists() else []
+        answers = json.loads(answers_path.read_text(encoding=ENCODING)) if answers_path.exists() else []
+    except json.JSONDecodeError:
+        return
+    answered_idxs = {a.get("idx") for a in answers}
+    unanswered = [
+        q for i, q in enumerate(questions)
+        if q.get("server_idx", q.get("idx", i)) not in answered_idxs
+    ]
+    if unanswered:
+        print(
+            f"{len(unanswered)} dashboard question(s) still unanswered — "
+            f"run: schematic questions   then: schematic answer <id> \"<text>\"",
+            flush=True,
+        )
 
 
 if __name__ == "__main__":

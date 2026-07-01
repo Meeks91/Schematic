@@ -297,6 +297,9 @@ def launch_overview(schematic_dir: Path) -> None:
 
     print(f"Schematic overview: {url}")
     print(f"Schematic: {schematic_dir.name}")
+    print("Dashboard questions route to the session agent —")
+    print("  list:   schematic questions")
+    print("  reply:  schematic answer <id> \"<text>\"   (bubble updates live)")
     print("Press Ctrl+C to stop")
     webbrowser.open(url)
 

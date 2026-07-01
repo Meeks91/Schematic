@@ -56,13 +56,13 @@ Every class is presented as a **boxed card**. The box surfaces the same surfaces
 
 **Rules (binding):**
 
-1. **Layout:** `###` heading for the blue class title; **ONE** code fence below holding Type + Necessitated by + Responsibility. No blank lines between section labels inside the fence. Never split a class across two fences.
+1. **Layout:** ONE boxed card per class, exactly the shape above — never split a class across two boxes, never collapse a card into a heading + prose. The same card renders in chat and lands in `components/_overview.md`.
 2. **Necessitated-by bullets:** one per Phase 1b ref, **5–10 words**, names *why the feature needs this class* (the dependency), not what the class does. Must fit on one terminal line.
 
    **Direct-necessity rule (binding):** A Feature AC appears under a class's `Necessitated by` ONLY if that AC directly forces a code change inside *this* class. Transitive presence on the runtime chain does NOT count — otherwise every class lists every AC and the field becomes noise.
 
    Worked example: AC `2.C — persisted payload carries a make-it-yours entry` necessitates the Repository (serializer must emit a new key) only. The Service (calls `.persist()` without modification) and the Factory (already returns a domain object that incidentally carries the new field via a different AC) do NOT list `2.C` in their `Necessitated by`, even though both sit on the runtime chain. Without this rule a single AC propagates upstream and downstream and `Necessitated by` becomes meaningless.
-3. **Responsibility bullets:** 2–5 ownership bullets naming *concerns/domains*, not interfaces. Include `Never:` bullets when scope creep is plausible. No conjunctions joining unrelated concerns (`X AND Y` smell = split the class).
+3. **Purpose bullets** (the card's `Purpose:` section): 2–5 ownership bullets naming *concerns/domains*, not interfaces. Include `Never:` bullets when scope creep is plausible. No conjunctions joining unrelated concerns (`X AND Y` smell = split the class).
 4. **No Phase 4 leakage:** Class ACs MUST NOT name method names, URL paths, model/return types, exception class names, HTTP verbs, status codes, or headers. Replace with the concern they represent (e.g. `"/api/v1/auth/google"` → `"auth HTTP surface"`).
 
 **Self-check:** read the ACs aloud. If you could write the `# API:` section from them, you've leaked Phase 4. ACs describe *purpose*, not *interface*.

@@ -19,11 +19,14 @@ are the long-term record. This phase bridges one to the other.
 ```
 1. Read strategy from standards.json → schematic.completionCompression.strategy
 2. Read archDocsPath from config
-3. Execute each integration instruction in the strategy:
+3. Execute the integration instructions in the strategy:
    a. Sequence integration
    b. Business logic / decision integration
-   c. Cleanup (delete or preserve schematic dir per config)
 4. Record completion: `schematic phase complete --schematic <name> 9`
+   (BEFORE cleanup — the state file lives inside the schematic dir)
+5. Cleanup: delete or preserve the schematic dir per config. Deletion is
+   destructive — propose the exact `rm -rf` command for the user to run,
+   or use the IDE/tooling delete the user has sanctioned.
 ```
 
 ## Default strategy (reference — what gets written if user accepts defaults)

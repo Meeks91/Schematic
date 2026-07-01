@@ -72,7 +72,7 @@ Blocked by: <tag>, <tag>   (or "—" if none)
 **Test files (NEW):** <paths or "none — <reason>">
 ```
 
-- **Heading MUST be H2 (`## <tag> | <Action> | <Target>`).** The CLI parser is `^## ([a-z]\.\d+) \| (\w+) \| (.+)$` — H3 (`###`) does NOT match and the task becomes invisible to `schematic task next/show/status`. `<Action>` must be a single word (`\w+`): `Create`/`Modify`/`Rename`/`Delete`/`Wire`/`Add`/`Split`. Task H2s sit beneath the `## Detailed Task Blocks` H2 — that section header has no ` | ` so the parser skips it.
+- **Heading MUST be H2 (`## <tag> | <Action> | <Target>`).** The CLI parser is `^## ([a-z]\.\d+) \| (\w+) \| (.+)$` — H3 (`###`) does NOT match and the task becomes invisible to `schematic task next/show/status`. `<Action>` must be a single word (`\w+`) from the canonical verb list in `SKILL.md` → Cross-reference naming rule (`Create`/`Modify`/`Rename`/`Tighten`/`Delete`/`Wire`/`Add`/`Split`). Task H2s sit beneath the `## Detailed Task Blocks` H2 — that section header has no ` | ` so the parser skips it.
 - **`Status: pending`** is mandatory — the CLI flips it to `complete` and refuses to operate on blocks missing it.
 - **`Component file:`** (CLI key, bare — not `**Contract:**`) gives the agent its contract card and is existence-checked by `schematic validate`. OMIT the line for tasks with no card (migrations, deletions, composition root, smoke test) — a dangling path fails validate.
 - **`Blocked by:`** (CLI key, bare) drives `schematic task next` ordering; list the dependency tags or `—`. Must mirror the graph's Deps column exactly. Tags here that aren't real task tags fail validate.

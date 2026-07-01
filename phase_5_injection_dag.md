@@ -7,7 +7,9 @@
 
 Write DAG edge inventory and app integration to `<schematic_dir>/components/_overview.md`. Write the mermaid diagram to `<schematic_dir>/dag.mmd`.
 
-> **Gate enforcement:** `schematic phase complete` will reject if `components/_overview.md` does not contain `## Injection DAG` and `## App Integration`. Write to disk before locking.
+> **Gate enforcement:** `schematic phase complete` will reject if `components/_overview.md` does not contain `## Injection DAG` and `## App Integration`, **or if `dag.mmd` fails mermaid validation** — the diagram must parse before the phase can lock.
+
+> **Surface the visual tools (mandatory, once per phase):** when presenting the DAG gate, tell the user the diagram is viewable and hand-editable right now — `schematic overview` renders it in the dashboard (Diagrams tab), and the bundled live editor opens it directly: `python3 <skill_dir>/reference/mermaid_edit/bridge.py <schematic_dir>/dag.mmd`. Don't leave these discoverable-only.
 
 ## Section A: Injection DAG
 
@@ -57,6 +59,7 @@ Required structural rules:
 5. No fill colour for styled nodes — border-only (`stroke-width`, `stroke-dasharray`).
 6. Edge labels only when they add information.
 7. **Driving AC ref per node** — annotate each NEW node with the Feature AC that necessitated it (Mermaid: a `%% <AC>` comment or node-label suffix; ASCII: a trailing `← <AC>`). Keeps the *why* present so the DAG isn't a wiring diagram floating free of intent.
+8. **Dashboard theme compatibility** — the schematic dashboard is dark by default; any explicit Mermaid colours must be dark-mode safe. Do not use light `rect rgb(...)`, light node fills, or pale backgrounds that wash out dark-theme text. Prefer no explicit fills unless the user asks for them.
 
 **ASCII DAG rules (when ≤8 nodes):**
 - All arrows point DOWN (or down-diagonal). No upward arrows, no horizontal.

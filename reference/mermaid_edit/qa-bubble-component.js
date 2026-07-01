@@ -177,8 +177,10 @@ class QABubble {
   _startPolling() {
     if (this.pollTimer) clearTimeout(this.pollTimer);
     const POLL_INTERVAL = 2000;
-    const MAX_POLL_TIME = 125000;
+    const RELAY_HINT_AFTER = 15000;   // tell the user the question routed to the session agent
+    const MAX_POLL_TIME = 600000;     // the agent may be mid-task; keep listening for 10 min
     const startTime = Date.now();
+    let hintShown = false;
 
     const poll = async () => {
       const answer = await this.pollAnswers(this.serverIdx);
@@ -186,11 +188,20 @@ class QABubble {
         this.appendAgentMessage(answer);
         return;
       }
-      if (Date.now() - startTime > MAX_POLL_TIME) {
+      const elapsed = Date.now() - startTime;
+      if (!hintShown && elapsed > RELAY_HINT_AFTER) {
+        hintShown = true;
+        const pending = this.threadEl.querySelector('.qa-msg.pending');
+        if (pending) {
+          pending.insertAdjacentHTML('beforeend',
+            '<div style="margin-top:3px;color:var(--text-dim,#7f849c);font-style:normal">Routed to your Claude Code session — the agent replies here when it picks it up.</div>');
+        }
+      }
+      if (elapsed > MAX_POLL_TIME) {
         const pending = this.threadEl.querySelector('.qa-msg.pending');
         if (pending) {
           pending.className = 'qa-msg agent';
-          pending.innerHTML = '<span class="qa-role" style="color:var(--text-dim)">System</span>Agent timed out — try again or ask a simpler question.';
+          pending.innerHTML = '<span class="qa-role" style="color:var(--text-dim)">System</span>No reply yet — in your Claude Code session run <code>schematic questions</code>, then <code>schematic answer &lt;id&gt; "..."</code>.';
         }
         return;
       }

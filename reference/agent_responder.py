@@ -1,14 +1,19 @@
 """Shared agent responder — builds prompts for the session agent to answer questions from the UI.
 
-Runtime-agnostic: does NOT shell out to any CLI (claude, kiro, etc). Instead, writes
-the prompt + context to the answers file for the main session agent to pick up and respond to,
-or for the overview server to relay back to the user.
+Runtime-agnostic: does NOT shell out to any CLI (claude, kiro, etc). Each UI question is
+compiled into a fully-contextualised prompt (diagram + bundle tree + Feature ACs + thread)
+and queued in `<stem>.agent-requests.json` for the main session agent. The agent drains the
+queue with `schematic questions` and replies with `schematic answer <id> "<text>"`, which
+writes to `<stem>.answers.json` — the UI bubble polls that file and renders the reply live.
+The answers file is NEVER written here: a raw prompt must never surface in the user's bubble.
 """
 import json
 import threading
 from pathlib import Path
 
 ENCODING = "utf-8"
+ANSWERS_SUFFIX = ".answers.json"
+AGENT_REQUESTS_SUFFIX = ".agent-requests.json"
 
 
 def _build_bundle_context(bundle_dir: Path, companion_path: Path | None) -> str:
@@ -99,15 +104,26 @@ def answer_question(
         history=history,
         companion_path=companion_path,
     )
+    if diagram_path:
+        prompt += (
+            f"\n\nIf you edit the diagram, write the updated mermaid content to: {diagram_path} "
+            f"(the editor hot-reloads it), then answer with what changed."
+        )
 
-    answer_text = (
-        f"[AGENT_REQUEST]\n{prompt}\n[/AGENT_REQUEST]\n\n"
-        f"The session agent should process this prompt and reply. "
-        f"If editing a diagram, write the updated mermaid content to: {diagram_path}"
+    requests_path = _agent_requests_path(answers_path)
+    _append_agent_request(
+        requests_path=requests_path,
+        server_idx=server_idx,
+        question_text=question_text,
+        prompt=prompt,
+        file_lock=file_lock,
     )
-
-    _write_answer(answers_path, server_idx, answer_text, file_lock)
-    print(f"Queued q#{server_idx} for session agent: {question_text[:60]}", flush=True)
+    question_id = f"{requests_path.name[: -len(AGENT_REQUESTS_SUFFIX)]}#{server_idx}"
+    print(
+        f"Question {question_id} queued for the session agent: {question_text[:60]}\n"
+        f"  answer with: schematic answer {question_id} \"<text>\"",
+        flush=True,
+    )
 
 
 def spawn_answer(
@@ -142,16 +158,24 @@ def _format_history(history: list[dict[str, str]] | None) -> str:
     return "Conversation so far:\n" + "\n".join(lines)
 
 
-def _write_answer(
-    answers_path: Path,
+def _agent_requests_path(answers_path: Path) -> Path:
+    """`sequence.answers.json` → `sequence.agent-requests.json` (same stem, sibling file)."""
+    stem = answers_path.name[: -len(ANSWERS_SUFFIX)] if answers_path.name.endswith(ANSWERS_SUFFIX) else answers_path.stem
+    return answers_path.parent / f"{stem}{AGENT_REQUESTS_SUFFIX}"
+
+
+def _append_agent_request(
+    requests_path: Path,
     server_idx: int,
-    answer_text: str,
+    question_text: str,
+    prompt: str,
     file_lock: threading.Lock | None = None,
 ) -> None:
     def _do_write() -> None:
-        existing = json.loads(answers_path.read_text(encoding=ENCODING)) if answers_path.exists() else []
-        existing.append({"idx": server_idx, "answer": answer_text})
-        answers_path.write_text(json.dumps(existing, indent=2), encoding=ENCODING)
+        existing = json.loads(requests_path.read_text(encoding=ENCODING)) if requests_path.exists() else []
+        existing = [r for r in existing if r.get("idx") != server_idx]
+        existing.append({"idx": server_idx, "question": question_text, "prompt": prompt})
+        requests_path.write_text(json.dumps(existing, indent=2), encoding=ENCODING)
 
     if file_lock:
         with file_lock:

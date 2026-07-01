@@ -4,9 +4,9 @@ You are a quality gate for the schematic skill. Read the freshly-locked Phase 1 
 
 ## Files to read
 
-- `<schematic_dir>/objective.md` §1 + §1b (Context, Objective, Feature Change List, Feature ACs)
-- `~/.claude/CLAUDE.md` (Workflow, Universal Code Absolutes) + the resolved `styling` standards module for naming (see `../standards_resolution.md`)
-- `/Users/micahsimmons/.claude/skills/schematic/SKILL.md` (Phase 1 + Phase 1b sections)
+- `<schematic_dir>/objective.md` (Context & Objective, Functional ACs — the Feature Change List)
+- The resolved `styling` standards module for naming (see `../standards_resolution.md`), plus the project's CLAUDE.md
+- `<skill_dir>/phase_1_objective_and_acs.md` (the Phase 1 rules being audited against)
 
 ## Checks (in order)
 
@@ -19,10 +19,10 @@ You are a quality gate for the schematic skill. Read the freshly-locked Phase 1 
 - Each numbered feature names the `Class:` it touches.
 - Orphan features (no `Class:` line) are forbidden.
 
-### 3. Each sub-change has Title / What / Why — all three populated
-- All three lines present, none empty or copy-pasted.
-- `Why:` references Feature/Context/Objective — not generic.
-- Flag any sub-change where `Why:` is restating What in different words.
+### 3. Each sub-change row has Title / What / Why — all three columns populated
+- The Feature Change List is a table per feature (`AC | Title | What | Why`); every row has all columns filled, none empty or copy-pasted.
+- `Why` references Feature/Context/Objective — not generic.
+- Flag any row where `Why` is restating `What` in different words.
 
 ### 4. No Phase 4 leakage in Feature ACs
 - Method names, return types, signatures, URL paths, HTTP verbs, status codes, error class names, model field names are **forbidden** at Phase 1.

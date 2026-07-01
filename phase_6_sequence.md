@@ -8,7 +8,9 @@
 
 Write ASCII sequence to `<schematic_dir>/components/_overview.md`. Write Mermaid to `<schematic_dir>/sequence.mmd`.
 
-> **Gate enforcement:** `schematic phase complete` will reject if `sequence.mmd` does not exist or `components/_overview.md` does not contain `## Sequence Diagram`. Write to disk before locking.
+> **Gate enforcement:** `schematic phase complete` will reject if `sequence.mmd` does not exist, if `components/_overview.md` does not contain `## Sequence Diagram`, **or if `sequence.mmd` fails mermaid validation** — the diagram must parse before the phase can lock.
+
+> **Surface the visual tools (mandatory, once per phase):** when presenting the sequence gate, tell the user the diagram is viewable and hand-editable right now — `schematic overview` renders it in the dashboard (Diagrams tab), and the live editor below round-trips it on disk. Don't leave these discoverable-only.
 
 Produce the sequence diagram in **two formats**:
 
@@ -16,6 +18,12 @@ Produce the sequence diagram in **two formats**:
 2. **Mermaid** — output as a fenced `mermaid` code block for visual editor paste
 
 If the user edits the Mermaid and pastes it back, that becomes the new source of truth.
+
+## Mermaid Theme Requirements
+
+- The schematic dashboard is dark by default; Mermaid diagrams must render correctly in dark mode.
+- Do not use light `rect rgb(...)`, light node fills, or pale backgrounds that wash out dark-theme text.
+- Prefer Mermaid's default dark theme styling. If grouping frames or custom colours are necessary, use dark fills with sufficient contrast.
 
 ## Visual round-trip editor (bundled)
 
@@ -26,14 +34,18 @@ disk, so the saved version is picked up automatically.
 
 ```
 1. Write the diagram to <schematic_dir>/sequence.mmd (you already do this).
-2. Launch the editor — it serves the page, opens the browser, blocks until Save:
+2. Launch the editor — it serves the page, opens the browser, blocks until Save & Close:
 
      python3 <skill_dir>/reference/mermaid_edit/bridge.py <schematic_dir>/sequence.mmd
 
-   Run it backgrounded (it blocks until the user clicks "Save & Close"); you are
-   notified on exit, which prints "Saved: <path>".
+   Run it backgrounded (Ctrl+S in the editor saves without closing; the "Save &
+   Close" button ends the session). You are notified on exit, which prints
+   "Saved: <path>" plus a count of any unanswered editor questions.
 3. Re-read <schematic_dir>/sequence.mmd — it now holds the user's edits. That is
    the new source of truth. Re-run `schematic mermaid` to validate it.
+4. Drain any questions the user asked in the editor's Q&A bubble:
+   `schematic questions` lists them with full design context;
+   `schematic answer <id> "<text>"` replies into the UI live.
 ```
 
 The editor handles **very large** sequence diagrams: mermaid `maxTextSize` is

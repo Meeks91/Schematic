@@ -34,7 +34,7 @@ Already absorbed from session:
 
 Then proceed from the earliest phase that still needs user sign-off — skipping phases that are already locked.
 
-**Confirm: y/comment**
+**Confirm: y/comment** *(this entry gate applies to the ABSORB path only — it confirms the crystallised starting point. The fresh-GRILL path has no entry gate; its first gate is the Phase 1b change list below.)*
 
 ---
 

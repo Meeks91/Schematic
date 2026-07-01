@@ -12,7 +12,8 @@ in this phase keep that delivery honest:
    cross-cutting concerns. Read it before touching code.
 2. **Implemented code passes a standards review before it can complete.**
    Moving a task to `review` emits a review request; the implementing agent
-   launches it as a Sonnet subagent scoped to the task's git diff (see
+   launches it as a review-model subagent (`schematic.reviewModel` in
+   `standards.json`, default `sonnet`) scoped to the task's git diff (see
    "Review gate" below). Findings are resolved and a `clean` verdict recorded
    before completion — the CLI hard-blocks `complete` without it.
 3. **Completion is reported through the CLI, not narrated free-text.** The
@@ -70,7 +71,7 @@ For each task in `tasks.md`, in order:
 5. Run tests (the new tests for this class AND the full suite at milestones)
 6. Move the task to REVIEW — this emits the review request:
        schematic task status <tag> review --schematic <name>
-   Launch the printed prompt as a Sonnet subagent (Agent tool), then record
+   Launch the printed prompt as a review-model subagent (Agent tool), then record
    the verdict:
        schematic task review-result <tag> clean|findings --summary "<one line>" --schematic <name>
    See "Review gate" below. The task CANNOT complete until the recorded
@@ -100,7 +101,7 @@ schematic task status <tag> review --schematic <name>
 
 **Dispatch model: the CLI is the gatekeeper, the session agent is the
 dispatcher.** On that transition the CLI records a `review_request` and prints
-the review prompt; the **implementing agent** launches it as a Sonnet subagent
+the review prompt; the **implementing agent** launches it as a review-model subagent
 via its Agent tool (in-session — so the dispatcher can prepend known
 sanctioned patterns and prior false-positive rulings to the prompt). The CLI
 never spawns `claude -p` itself.
@@ -110,15 +111,17 @@ never spawns `claude -p` itself.
 spec, and reviews **only added/modified lines**. Pre-existing code — even in
 the same file, even verbatim-moved code — is out of scope and must never be
 flagged: findings on unchanged code are false flags by definition. Primary
-lens is the resolved standards modules (styling + testing for the task's
-language, plus the project's CLAUDE.md). The review runs on Sonnet (scoped +
-cheap), not the session's planning model.
+lens is the resolved standards modules — the CLI resolves and lists their
+exact paths in the printed prompt (styling + testing for the task's language,
+the `review` module if mapped, plus the project's CLAUDE.md, which overrides
+on conflict). The review runs on the configured review model
+(`schematic.reviewModel`, default `sonnet`), not the session's planning model.
 
 Protocol:
 
 1. **Request** — `task status <tag> review` records a `review_request`
    (status: pending) and prints the diff-scoped review prompt.
-2. **Dispatch** — the implementing agent launches the prompt as a Sonnet
+2. **Dispatch** — the implementing agent launches the prompt as a review-model
    subagent (Agent tool). Never skip; never review your own code inline
    instead.
 3. **Findings land as notes** — the review agent records each finding via
@@ -152,7 +155,7 @@ while `schematic task next` returns a task:
   2. implement the task directly — no sketch, no confirm
   3. run its tests + the full suite at milestones
   4. per-task review gate, diff-scoped to THIS task only:
-       schematic task status <tag> review        → dispatch Sonnet subagent on the task's diff
+       schematic task status <tag> review        → dispatch review-model subagent on the task's diff
        schematic task review-result <tag> clean|findings --summary "..."
      fix findings, re-dispatch until clean
   5. schematic-task-done <tag> --matched [y|n] --updated [y|n]
@@ -165,7 +168,7 @@ task's diff. Auto mode only removes the sketch step in front of implementation.
 
 Once the board is drained, the feature diff goes through two review passes:
 
-1. **Diff-only style sweep** (Sonnet subagents, loop-until-pristine) — standards compliance on changed lines only
+1. **Diff-only style sweep** (review-model subagents, loop-until-pristine) — standards compliance on changed lines only
 2. **E2e correctness gate** (master agent, inline) — integration, wiring, contract fidelity using full schematic context
 
 #### Pass 1: Diff-only style sweep
@@ -177,7 +180,7 @@ schematic review sweep --schematic <name>
 Each sweep computes the cumulative diff since `base_ref` (feature files only —
 the `docs/schematics/` planning tree is excluded), shards it into batches of at
 most **5 files**, and prints one review prompt per batch. For each batch the
-implementing agent launches a Sonnet subagent (Agent tool) on the printed
+implementing agent launches a review-model subagent (Agent tool) on the printed
 prompt.
 
 **Diff-only prompts — agents see diff hunks, not full files.** The CLI inlines
@@ -201,6 +204,11 @@ schematic review batch-result <batch_id> clean|findings --summary "<one line>" -
 
 Fix every finding, then **re-run `review sweep`** — a fresh sweep over the new
 diff. Repeat until a sweep reports `PRISTINE` (every batch clean).
+
+**Re-sweeps are incremental (token discipline):** a file whose diff is
+byte-identical to one already reviewed `clean` in a prior sweep is skipped and
+logged — only re-touched files re-enter batches. A re-sweep where every file is
+skipped reports PRISTINE immediately.
 
 #### Pass 2: E2e correctness gate (master agent)
 

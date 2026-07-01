@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 
 import argparse
+import hashlib
 import json
 import re
 import subprocess
 import sys
 import textwrap
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -36,7 +38,9 @@ VALID_RUN_MODES = {RUN_MODE_MANUAL, RUN_MODE_AUTO}
 SWEEP_STATUS_PRISTINE = "pristine"
 REVIEW_SLOT_KEY = "review"
 
-VALID_PHASES = set(range(1, 8))
+FINAL_PHASE = 9
+PLANNING_FINAL_PHASE = 7  # phases 1-7 plan; 8 implements; 9 compresses
+VALID_PHASES = set(range(1, FINAL_PHASE + 1))
 PHASES_REQUIRING_AUDIT = {1, 2, 4, 6, 7}
 PHASE_ARTIFACT_CHECKS: dict[int, list[tuple[str, str]]] = {
     3: [("objective.md", "## Directory Structure")],
@@ -44,9 +48,16 @@ PHASE_ARTIFACT_CHECKS: dict[int, list[tuple[str, str]]] = {
         ("components/_overview.md", "## App Integration")],
     6: [("sequence.mmd", ""),
         ("components/_overview.md", "## Sequence Diagram")],
+    8: [("implementation_report.md", "")],
+}
+PHASE_MERMAID_CHECKS: dict[int, list[str]] = {
+    5: ["dag.mmd"],
+    6: ["sequence.mmd"],
 }
 PHASE_STATUS_LOCKED = "locked"
 PHASE_AUDIT_CLEAN = "clean"
+
+STANDARDS_SLOTS = ("architecture", "types", "styling", "testing", "review", "exemplars")
 
 TASK_HEADER_RE = re.compile(r"^## ([a-z]\.\d+) \| (\w+) \| (.+)$")
 FEATURE_AC_RE = re.compile(r"(\d+\.[A-Z])\b")
@@ -152,6 +163,37 @@ def _cumulative_diff_files(base_ref: str, project_root: Path) -> list[str]:
     return sorted(path for path in all_changed if not path.startswith(SCHEMATICS_BASE + "/"))
 
 
+def _file_diff(path: str, base_ref: str, project_root: Path) -> str:
+    """Diff hunks for one file since base_ref; untracked files render as fully-added hunks."""
+    tracked = _run_git_raw(["diff", base_ref, "--", path], project_root)
+    if tracked:
+        return tracked
+    # `git diff base_ref` is empty for untracked files — synthesize the all-added diff.
+    completed = subprocess.run(
+        ["git", "diff", "--no-index", "--", "/dev/null", path],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+    )
+    return completed.stdout
+
+
+def _diff_hash(diff_content: str) -> str:
+    return hashlib.sha256(diff_content.encode("utf-8")).hexdigest()
+
+
+def _clean_reviewed_file_hashes(state: dict) -> dict[str, set[str]]:
+    """Per file: the diff hashes that already passed a clean batch review in any prior sweep."""
+    path_to_hashes: dict[str, set[str]] = {}
+    for sweep in state.get("sweeps", []):
+        for batch in sweep.get("batches", []):
+            if batch.get("verdict") != REVIEW_VERDICT_CLEAN:
+                continue
+            for path, diff_hash in batch.get("file_hashes", {}).items():
+                path_to_hashes.setdefault(path, set()).add(diff_hash)
+    return path_to_hashes
+
+
 def _shard_diff_into_batches(changed_files: list[str], max_files_per_batch: int) -> list[list[str]]:
     """Split changed files into ordered batches of at most max_files_per_batch each."""
     return [
@@ -177,12 +219,32 @@ def _resolve_review_model(project_root: Path) -> str:
     return schematic_config.get(REVIEW_MODEL_KEY, REVIEW_MODEL_DEFAULT)
 
 
-def _resolve_review_lens(project_root: Path) -> str:
-    """Review lens for sweep prompts: the manifest's `review` module if mapped, else styling+testing."""
-    review_source = _load_standards_manifest(project_root).get(REVIEW_SLOT_KEY)
-    if review_source:
-        return f"the resolved review module ({review_source})"
-    return "the resolved styling + testing standards modules for each file's language"
+def _resolve_source_path(source: str, project_root: Path) -> Path | None:
+    """Resolve a manifest source ('skill:<name>' or 'file:<path>') to a readable path."""
+    if source.startswith("skill:"):
+        return _resolve_skill_path(source)
+    if source.startswith("file:"):
+        candidate = project_root / source[len("file:"):]
+        return candidate if candidate.exists() else None
+    return None
+
+
+def _resolved_slot_paths(project_root: Path) -> dict[str, Path]:
+    """Every mapped manifest slot resolved to its module path (styling flattened per language)."""
+    manifest = _load_standards_manifest(project_root)
+    slot_to_path: dict[str, Path] = {}
+    for slot in STANDARDS_SLOTS:
+        source = manifest.get(slot)
+        if slot == "styling" and isinstance(source, dict):
+            for lang, lang_source in source.items():
+                path = _resolve_source_path(lang_source, project_root)
+                if path:
+                    slot_to_path[f"styling.{lang}"] = path
+        elif isinstance(source, str):
+            path = _resolve_source_path(source, project_root)
+            if path:
+                slot_to_path[slot] = path
+    return slot_to_path
 
 
 # ── standards content resolution (for inline review prompts) ─────────────────
@@ -221,25 +283,26 @@ def _resolve_standards_content_for_batch(batch_files: list[str], project_root: P
         if lang:
             languages_in_batch.add(lang)
 
-    # Collect unique module sources to read: styling per language + testing.
+    # Collect unique module sources to read: styling per language + testing + review lens.
     sources_to_read: dict[str, str] = {}
     styling_map = manifest.get("styling", {})
     for lang in sorted(languages_in_batch):
         source = styling_map.get(lang) if isinstance(styling_map, dict) else None
         if source:
             sources_to_read[f"styling.{lang}"] = source
-    testing_source = manifest.get("testing")
-    if testing_source:
-        sources_to_read["testing"] = testing_source
+    for slot in ("testing", REVIEW_SLOT_KEY):
+        source = manifest.get(slot)
+        if isinstance(source, str):
+            sources_to_read[slot] = source
 
     if not sources_to_read:
         return ""
 
     sections: list[str] = []
     for slot_label, source in sources_to_read.items():
-        skill_path = _resolve_skill_path(source)
-        if skill_path and skill_path.exists():
-            content = skill_path.read_text().strip()
+        module_path = _resolve_source_path(source, project_root)
+        if module_path:
+            content = module_path.read_text().strip()
             sections.append(f"── {slot_label} ({source}) ──\n{content}")
 
     if not sections:
@@ -425,14 +488,81 @@ _SEQUENCE_STUB = "sequenceDiagram\n"
 
 
 def _report_standards_manifest(project_root: Path) -> None:
+    """Slot-by-slot manifest coverage — the onboarding cue for Phase 0."""
     repo_manifest = project_root / STANDARDS_MANIFEST_RELPATH
     global_manifest = Path.home() / STANDARDS_MANIFEST_RELPATH
-    if repo_manifest.exists():
-        print(f"standards: {repo_manifest.relative_to(project_root)} (repo manifest)")
-    elif global_manifest.exists():
-        print(f"standards: {global_manifest} (global default — Phase 0 confirms + copies it to {STANDARDS_MANIFEST_RELPATH})")
-    else:
-        print("standards: NONE — run Phase 0 (standards_resolution.md) before Phase 1")
+
+    if not repo_manifest.exists() and not global_manifest.exists():
+        print("standards: NO MANIFEST FOUND")
+        print("  Phase 0 onboards you (standards_resolution.md):")
+        print("    1. map slots to skills you already have (architecture/types/styling/testing/review), or")
+        print("    2. LEARN — derive each unmapped slot from your codebase's exemplar directories.")
+        print("  These modules feed every stage: topology + contracts (plan), sketches (implement),")
+        print("  diff sweeps + audits (review). Run Phase 0 before Phase 1.")
+        return
+
+    source_label = (
+        f"{repo_manifest.relative_to(project_root)} (repo manifest)"
+        if repo_manifest.exists()
+        else f"{global_manifest} (global default — Phase 0 confirms + copies it into the repo)"
+    )
+    print(f"standards: {source_label}")
+
+    manifest = _load_standards_manifest(project_root)
+    slot_paths = _resolved_slot_paths(project_root)
+    unmapped: list[str] = []
+    for slot in STANDARDS_SLOTS:
+        if slot == "exemplars":
+            exemplars = manifest.get("exemplars", [])
+            status = ", ".join(exemplars) if exemplars else "—"
+            print(f"  exemplars:    {status}")
+            continue
+        if slot == "styling":
+            styling_paths = {k: v for k, v in slot_paths.items() if k.startswith("styling.")}
+            if styling_paths:
+                for lang_slot, path in sorted(styling_paths.items()):
+                    print(f"  {lang_slot + ':':<13} {path}")
+            else:
+                unmapped.append("styling")
+                print("  styling:      UNMAPPED")
+            continue
+        if slot in slot_paths:
+            print(f"  {slot + ':':<13} {slot_paths[slot]}")
+        else:
+            unmapped.append(slot)
+            print(f"  {slot + ':':<13} UNMAPPED")
+    if unmapped:
+        print(f"  → Phase 0 resolves unmapped slots ({', '.join(unmapped)}): map an existing")
+        print("    module or LEARN it from the codebase (standards_resolution.md → Learn mode).")
+
+
+_ANSI_CYAN = "\033[36m"
+_ANSI_BOLD = "\033[1m"
+_ANSI_DIM = "\033[2m"
+_ANSI_RESET = "\033[0m"
+_BANNER_LINE_DELAY_SECONDS = 0.05
+_BANNER_TICK_DELAY_SECONDS = 0.04
+
+
+def _print_init_banner(feature_name: str) -> None:
+    """Blueprint-style intro. Animated on a TTY; plain single print otherwise."""
+    is_tty = sys.stdout.isatty()
+    cyan, bold, dim, reset = (
+        (_ANSI_CYAN, _ANSI_BOLD, _ANSI_DIM, _ANSI_RESET) if is_tty else ("", "", "", "")
+    )
+    banner_lines = [
+        f"{cyan}┌───────────────────────────────────────────────────────┐{reset}",
+        f"{cyan}│{reset}  {bold}S C H E M A T I C{reset}                                    {cyan}│{reset}",
+        f"{cyan}│{reset}  {dim}the design is the contract{reset}                           {cyan}│{reset}",
+        f"{cyan}│{reset}  {dim}spec → topology → contracts → DAG → tasks → build{reset}    {cyan}│{reset}",
+        f"{cyan}└───────────────────────────────────────────────────────┘{reset}",
+        f"  {bold}drafting:{reset} {feature_name}",
+        "",
+    ]
+    for line in banner_lines:
+        print(line, flush=True)
+        if is_tty:
+            time.sleep(_BANNER_LINE_DELAY_SECONDS)
 
 
 def cmd_init(args: argparse.Namespace) -> None:
@@ -440,6 +570,8 @@ def cmd_init(args: argparse.Namespace) -> None:
     schematic_dir = root / SCHEMATICS_BASE / args.name
     if schematic_dir.exists():
         _exit_error(f"schematic '{args.name}' already exists at {schematic_dir}")
+
+    _print_init_banner(args.name)
 
     components_dir = schematic_dir / "components"
     components_dir.mkdir(parents=True)
@@ -453,10 +585,14 @@ def cmd_init(args: argparse.Namespace) -> None:
     (components_dir / "_overview.md").write_text(_OVERVIEW_STUB)
     save_state(schematic_dir, {"feature": args.name, "phases": {}, "tasks": {}, "overrides": []})
 
+    is_tty = sys.stdout.isatty()
     print(f"created: {schematic_dir.relative_to(root)}")
     for name in ["objective.md", "tasks.md", "dag.mmd", "sequence.mmd",
                  "components/_overview.md", "research/", STATE_FILENAME]:
-        print(f"  {name}")
+        print(f"  ✏︎ {name}", flush=True)
+        if is_tty:
+            time.sleep(_BANNER_TICK_DELAY_SECONDS)
+    print()
     _report_standards_manifest(project_root=root)
 
 # ── status command ─────────────────────────────────────────────────────────────
@@ -471,10 +607,12 @@ def _print_status(schematic_dir: Path) -> None:
     state = load_state(schematic_dir)
     tasks = parse_tasks(schematic_dir / "tasks.md")
 
-    locked_phases = [int(k) for k, v in state["phases"].items() if v.get("status") == PHASE_STATUS_LOCKED]
-    all_phases_locked = max(locked_phases, default=0) >= 7
-    current_phase = 7 if all_phases_locked else max(locked_phases, default=0) + 1
-    phase_label = "complete" if all_phases_locked else f"{current_phase}/7"
+    locked_phases = sorted(int(k) for k, v in state["phases"].items() if v.get("status") == PHASE_STATUS_LOCKED)
+    highest_locked = max(locked_phases, default=0)
+    all_phases_locked = highest_locked >= FINAL_PHASE
+    current_phase = min(highest_locked + 1, FINAL_PHASE)
+    phase_label = "complete" if all_phases_locked else f"{current_phase}/{FINAL_PHASE}"
+    locked_line = "  ".join(f"P{n} ✓" for n in locked_phases) if locked_phases else "—"
 
     by_status: dict[str, list[str]] = {
         TASK_STATUS_COMPLETE: [],
@@ -494,6 +632,7 @@ def _print_status(schematic_dir: Path) -> None:
 
     print(f"schematic: {schematic_dir.name}")
     print(f"phase:     {phase_label}")
+    print(f"locked:    {locked_line}")
     if state.get("overrides"):
         print(f"overrides: {len(state['overrides'])} (run validate to review)")
 
@@ -857,12 +996,33 @@ def _phase_complete(args: argparse.Namespace) -> None:
                     f"--override \"<reason>\""
                 )
 
+    for mmd_name in PHASE_MERMAID_CHECKS.get(args.num, []):
+        mmd_path = schematic_dir / mmd_name
+        mermaid_findings = _validate_mermaid_file(mmd_path) if mmd_path.exists() else [f"{mmd_name} missing"]
+        if mermaid_findings:
+            if args.override:
+                record_override(state, context, args.override)
+                break
+            findings_text = "\n".join(f"    {finding}" for finding in mermaid_findings)
+            _exit_error(
+                f"phase {args.num} mermaid check failed — {mmd_name} does not validate:\n"
+                f"{findings_text}\n"
+                f"  fix the diagram (schematic mermaid --file {mmd_path}), then re-lock.\n"
+                f"  or:  schematic phase complete {args.num} --schematic {args.schematic} "
+                f"--override \"<reason>\""
+            )
+
     state["phases"].setdefault(str(args.num), {})["status"] = PHASE_STATUS_LOCKED
     save_state(schematic_dir, state)
     print(f"phase {args.num} locked ✓")
-    next_phase = args.num + 1
-    if next_phase <= 7:
-        print(f"next phase: {next_phase}")
+    if args.num < PLANNING_FINAL_PHASE:
+        print(f"next phase: {args.num + 1}")
+    elif args.num == PLANNING_FINAL_PHASE:
+        print(f"planning complete — next: schematic review start --schematic {args.schematic}  (Phase 8)")
+    elif args.num == 8:
+        print("next phase: 9 (compression — lock BEFORE deleting the schematic dir)")
+    else:
+        print("schematic complete ✓ — bundle compressed into repo docs")
 
 # ── task commands ──────────────────────────────────────────────────────────────
 
@@ -952,6 +1112,21 @@ def _emit_review_request(schematic_dir: Path, tag: str, task: dict) -> None:
     target = task.get("target", "unknown")
     component_spec = task.get("component_file") or "the task's component spec"
 
+    slot_paths = _resolved_slot_paths(project_root)
+    if slot_paths:
+        module_lines = "\n".join(f"     - {slot}: {path}" for slot, path in sorted(slot_paths.items()))
+        lens_block = (
+            f"PRIMARY lens — read these resolved standards modules, then verify the\n"
+            f"changed lines against them (plus the project's CLAUDE.md, which\n"
+            f"overrides on conflict):\n{module_lines}\n"
+        )
+    else:
+        lens_block = (
+            f"PRIMARY lens: verify the changed lines against the project's CLAUDE.md\n"
+            f"conventions (naming, suffixes, file layout, model placement, class\n"
+            f"size, typing, tests, cascading).\n"
+        )
+
     review_prompt = (
         f"Review ONLY the git-diff changes written for task '{tag}' (target: {target}).\n"
         f"Scope (HARD RULES — violations produce false flags):\n"
@@ -962,9 +1137,7 @@ def _emit_review_request(schematic_dir: Path, tag: str, task: dict) -> None:
         f"     diff. Pre-existing code — even in the same file, even moved code\n"
         f"     whose content is unchanged — is OUT of scope. Never flag it.\n"
         f"  3. Do NOT read or review files outside the diff.\n\n"
-        f"PRIMARY lens: verify the changed lines against the project's CLAUDE.md\n"
-        f"conventions and resolved standards modules (naming, suffixes, file\n"
-        f"layout, model placement, class size, typing, tests, cascading).\n"
+        f"{lens_block}"
         f"Record each finding as a note (do NOT complete the task — completion\n"
         f"stays with the implementing agent):\n"
         f"  schematic task note {tag} \"<finding>\" --schematic {schematic_dir.name}\n"
@@ -1094,6 +1267,96 @@ def _task_note(args: argparse.Namespace) -> None:
     print(f"note added to {args.tag}: {args.text}")
 
 
+# ── dashboard Q&A relay (questions asked in the browser UIs) ─────────────────────
+
+QUESTIONS_SUFFIX = ".questions.json"
+ANSWERS_SUFFIX = ".answers.json"
+AGENT_REQUESTS_SUFFIX = ".agent-requests.json"
+
+
+def _load_json_list(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    try:
+        return json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return []
+
+
+def _pending_questions(schematic_dir: Path) -> list[dict]:
+    """Unanswered UI questions across the bundle: [{id, source, idx, text, prompt}]."""
+    pending: list[dict] = []
+    for questions_path in sorted(schematic_dir.glob(f"*{QUESTIONS_SUFFIX}")):
+        stem = questions_path.name[: -len(QUESTIONS_SUFFIX)]
+        answered_idxs = {
+            a.get("idx") for a in _load_json_list(schematic_dir / f"{stem}{ANSWERS_SUFFIX}")
+        }
+        idx_to_prompt = {
+            r.get("idx"): r.get("prompt", "")
+            for r in _load_json_list(schematic_dir / f"{stem}{AGENT_REQUESTS_SUFFIX}")
+        }
+        for position, question in enumerate(_load_json_list(questions_path)):
+            idx = question.get("server_idx", question.get("idx", position))
+            if idx in answered_idxs:
+                continue
+            user_msgs = [m.get("text", "") for m in question.get("thread", []) if m.get("role") == "user"]
+            text = user_msgs[-1] if user_msgs else question.get("text", "")
+            if not text:
+                continue
+            pending.append({
+                "id": f"{stem}#{idx}",
+                "source": stem,
+                "idx": idx,
+                "text": text,
+                "context": question.get("context", ""),
+                "prompt": idx_to_prompt.get(idx, ""),
+            })
+    return pending
+
+
+def cmd_questions(args: argparse.Namespace) -> None:
+    total_pending = 0
+    for schematic_dir in _resolve_single_or_all(args.name):
+        pending = _pending_questions(schematic_dir)
+        if not pending:
+            continue
+        total_pending += len(pending)
+        print(f"schematic: {schematic_dir.name} — {len(pending)} unanswered dashboard question(s)\n")
+        for question in pending:
+            print(f"── {question['id']}  ({question['context'] or 'dashboard'}) ──")
+            if question["prompt"]:
+                print(question["prompt"])
+            else:
+                print(f"  User: {question['text']}")
+            print()
+        print(f"answer with: schematic answer <id> \"<text>\" {schematic_dir.name}")
+        print("  (the dashboard bubble picks the answer up live)")
+    if total_pending == 0:
+        print("no unanswered dashboard questions")
+
+
+def cmd_answer(args: argparse.Namespace) -> None:
+    if "#" not in args.id:
+        _exit_error(f"invalid question id '{args.id}' — expected <source>#<idx> (e.g. overview#0, sequence#2)")
+    stem, _, idx_text = args.id.partition("#")
+    if not idx_text.isdigit():
+        _exit_error(f"invalid question id '{args.id}' — idx must be a number")
+    idx = int(idx_text)
+
+    schematic_dirs = _resolve_single_or_all(args.name)
+    for schematic_dir in schematic_dirs:
+        questions_path = schematic_dir / f"{stem}{QUESTIONS_SUFFIX}"
+        if not questions_path.exists():
+            continue
+        answers_path = schematic_dir / f"{stem}{ANSWERS_SUFFIX}"
+        answers = _load_json_list(answers_path)
+        answers.append({"idx": idx, "answer": args.text})
+        answers_path.write_text(json.dumps(answers, indent=2) + "\n")
+        print(f"answer delivered to {args.id} ({schematic_dir.name}) — the dashboard picks it up within ~2s")
+        return
+    _exit_error(f"no question source '{stem}' found ({stem}{QUESTIONS_SUFFIX} missing in the schematic dir)")
+
+
 # ── review (auto-mode driver + batch-until-pristine sweep) ───────────────────────
 
 def cmd_review(args: argparse.Namespace) -> None:
@@ -1144,45 +1407,74 @@ def _review_sweep(args: argparse.Namespace) -> None:
     diff_files = _cumulative_diff_files(run["base_ref"], project_root)
     if not diff_files:
         _exit_error(f"no changes since base_ref {run['base_ref'][:12]} — nothing to sweep")
-    batches = _shard_diff_into_batches(diff_files, MAX_FILES_PER_REVIEW_BATCH)
+
+    # Token efficiency: a file whose diff is byte-identical to one already reviewed
+    # clean in a prior sweep needs no re-review — only re-touched files re-enter.
+    file_to_diff = {
+        path: _file_diff(path, run["base_ref"], project_root)
+        for path in diff_files
+    }
+    clean_file_hashes = _clean_reviewed_file_hashes(state)
+    files_to_review = [
+        path for path in diff_files
+        if _diff_hash(file_to_diff[path]) not in clean_file_hashes.get(path, set())
+    ]
+    skipped_clean = sorted(set(diff_files) - set(files_to_review))
+
     sweep_id = len(state["sweeps"]) + 1
+    if not files_to_review:
+        state["sweeps"].append({
+            "sweep_id": sweep_id, "batches": [], "pristine": True,
+            "skipped_clean": skipped_clean,
+        })
+        save_state(schematic_dir, state)
+        print(f"sweep {sweep_id}: PRISTINE ✓ — all {len(skipped_clean)} changed file(s) "
+              f"unchanged since their last clean review")
+        print(f"  next: schematic review e2e --schematic {args.schematic}")
+        return
+
+    batches = _shard_diff_into_batches(files_to_review, MAX_FILES_PER_REVIEW_BATCH)
     sweep_record = {
         "sweep_id": sweep_id,
         "batches": [
-            {"batch_id": f"{sweep_id}.{index + 1}", "files": batch, "verdict": "pending", "summary": None}
+            {
+                "batch_id": f"{sweep_id}.{index + 1}",
+                "files": batch,
+                "file_hashes": {path: _diff_hash(file_to_diff[path]) for path in batch},
+                "verdict": "pending",
+                "summary": None,
+            }
             for index, batch in enumerate(batches)
         ],
         "pristine": False,
+        "skipped_clean": skipped_clean,
     }
     state["sweeps"].append(sweep_record)
     save_state(schematic_dir, state)
 
-    # Collect per-batch diff hunks and resolved standards content.
-    batch_diffs: dict[str, str] = {}
-    for batch in sweep_record["batches"]:
-        diff_content = _run_git_raw(
-            ["diff", run["base_ref"], "--"] + batch["files"],
-            project_root,
-        )
-        batch_diffs[batch["batch_id"]] = diff_content
-
-    standards_content = _resolve_standards_content_for_batch(diff_files, project_root)
-    _emit_sweep_prompts(schematic_dir, sweep_record, batch_diffs, standards_content, run["base_ref"], review_model)
+    batch_diffs = {
+        batch["batch_id"]: "".join(file_to_diff[path] for path in batch["files"])
+        for batch in sweep_record["batches"]
+    }
+    if skipped_clean:
+        print(f"skipped {len(skipped_clean)} file(s) unchanged since last clean review: "
+              f"{', '.join(skipped_clean)}")
+    _emit_sweep_prompts(schematic_dir, sweep_record, batch_diffs, review_model)
 
 
 def _emit_sweep_prompts(
     schematic_dir: Path,
     sweep_record: dict,
     batch_diffs: dict[str, str],
-    standards_content: str,
-    base_ref: str,
     review_model: str,
 ) -> None:
     batches = sweep_record["batches"]
+    project_root = find_project_root()
     print(f"sweep {sweep_record['sweep_id']}: {len(batches)} batch(es) — diff-only style review "
           f"(≤{MAX_FILES_PER_REVIEW_BATCH} files each)")
     for batch in batches:
         diff_content = batch_diffs.get(batch["batch_id"], "")
+        standards_content = _resolve_standards_content_for_batch(batch["files"], project_root)
         _emit_batch_review_prompt(schematic_dir, batch, diff_content, standards_content)
     print(f"\n  dispatch each batch as a {review_model} subagent, fix every finding, then record:")
     print(f"    schematic review batch-result <batch_id> clean|findings --summary \"<one line>\" "
@@ -1521,6 +1813,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p_overview = sub.add_parser("overview", help="Launch schematic overview browser")
     p_overview.add_argument("name", nargs="?", help="Schematic name (omit for current)")
 
+    p_questions = sub.add_parser("questions", help="List unanswered dashboard/editor questions")
+    p_questions.add_argument("name", nargs="?", help="Schematic name (omit for all)")
+
+    p_answer = sub.add_parser("answer", help="Answer a dashboard/editor question (UI picks it up live)")
+    p_answer.add_argument("id", help="Question id from `schematic questions` (e.g. overview#0, sequence#2)")
+    p_answer.add_argument("text", help="Answer text shown in the dashboard bubble")
+    p_answer.add_argument("name", nargs="?", help="Schematic name (omit to search all)")
+
     p_setup = sub.add_parser("setup", help="Wire PostToolUse validation hook into .claude/settings.json")
     p_setup.add_argument("--install", action="store_true", help="Write hook (omit for dry run)")
 
@@ -1539,6 +1839,8 @@ def dispatch(args: argparse.Namespace) -> None:
         "review": cmd_review,
         "track": cmd_track,
         "overview": cmd_overview,
+        "questions": cmd_questions,
+        "answer": cmd_answer,
     }
     handlers[args.command](args)  # type: ignore[operator]
 

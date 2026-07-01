@@ -5,16 +5,21 @@ Quality gate for Phase 6. Walk the locked sequence diagrams from this gate and v
 ## Files to read
 
 - `<schematic_dir>/sequence.mmd` (Mermaid — authoritative)
-- `<schematic_dir>/components/_overview.md` §Sequence Diagrams (ASCII rendering — must match)
+- `<schematic_dir>/components/_overview.md` §Sequence Diagram (ASCII rendering — must match)
 - `<schematic_dir>/components/<class>.md` (contracts — referenced by every call in the diagram)
 - `<schematic_dir>/dag.mmd` + `_overview.md` §Injection DAG (validates call direction)
-- `/Users/micahsimmons/.claude/skills/schematic/SKILL.md` (Phase 6 + Phase 6.5/6.6 checkpoints)
+- `<skill_dir>/phase_6_sequence.md` (the Phase 6 rules, quality requirements, and validation checkpoints)
 
 ## Checks (in order)
 
+### 0. Diagrams parse
+Run `schematic mermaid --file <schematic_dir>/sequence.mmd` and `schematic mermaid --file <schematic_dir>/dag.mmd`.
+Any finding is a BLOCKER — a diagram that doesn't parse can't be reviewed or rendered.
+(The `phase complete` gate re-checks this deterministically; flagging it here surfaces it earlier.)
+
 ### 1. Every call exists in a contract
 For each arrow in the sequence (sender → receiver: method(args)):
-- The receiver class must exist in topology (`objective.md` §2).
+- The receiver class must exist in the topology (`components/_overview.md` §Component Summary).
 - The method must appear in the receiver's `components/<receiver>.md` Public API.
 - The args must match the method signature (param names, types).
 - **Flag undocumented calls.** This is the most common drift source.
@@ -49,10 +54,11 @@ For each call `A → B`:
 - If the contract describes idempotency-key replay, the diagram must show the `alt replay hit / else fresh request` branch.
 - Flag if the diagram only shows the happy path.
 
-### 9. Auth + touch_last_seen pattern
-- For every authed endpoint flow, the diagram must show `authenticate` + (if applicable) `touch_last_seen`.
-- Exceptions: logout + account deletion explicitly skip `touch_last_seen` — note must mention why.
-- Flag missing auth steps or missing exception annotations.
+### 9. Project-mandated flow steps (conditional)
+- ONLY if the resolved standards modules or the project's CLAUDE.md mandate steps that every
+  flow of a given kind must show (e.g. an auth step on every endpoint flow, an audit-event
+  emission on every mutation), verify each applicable flow shows them.
+- Skip this check entirely when no such project mandate exists — do NOT invent one.
 
 ## Output
 

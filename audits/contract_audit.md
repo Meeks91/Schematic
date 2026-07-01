@@ -5,9 +5,9 @@ Quality gate for Phase 4. Read the freshly-locked component contract files from 
 ## Files to read
 
 - `<schematic_dir>/components/<class>.md` (one or more — the gate's locked contracts)
-- `<schematic_dir>/objective.md` (for Class AC cross-ref + Feature AC traceability)
+- `<schematic_dir>/objective.md` (Feature AC traceability) + `<schematic_dir>/components/_overview.md` §Component Summary (Class AC cross-ref)
 - The resolved `styling.<language>` + `testing` standards modules (see `../standards_resolution.md`; defaults: `~/.claude/skills/python-standards/SKILL.md`, `~/.claude/skills/writing-tests/SKILL.md`)
-- `/Users/micahsimmons/.claude/skills/schematic/SKILL.md` (Phase 4 Contract Block Format, Function AC Definition, AC Hierarchy)
+- `<skill_dir>/phase_4_contracts_and_tests.md` (Contract Card Format, Function AC Definition) + `<skill_dir>/SKILL.md` §AC Hierarchy
 
 ## Checks (in order)
 
@@ -59,7 +59,7 @@ MUST be flagged in the contract with `⚠️ USER SIGN-OFF REQUIRED` per the ski
 - Comments explaining WHAT — flag, only WHY is acceptable.
 
 ### 9. Cross-reference integrity
-- Constructor deps match topology in `objective.md` §2.
+- Constructor deps match the topology in `components/_overview.md` §Component Summary.
 - Type names match models defined in `<class>.md` or imported from another `components/*.md`. Flag dangling type refs.
 
 ## Output

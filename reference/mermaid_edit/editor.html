@@ -283,6 +283,7 @@
       <textarea id="src" spellcheck="false"></textarea>
     </div>
     <div id="bar">
+      <button id="save-only">Save</button>
       <button class="primary" id="save">Save &amp; Close</button>
       <button id="zoomout">&minus;</button><button id="zoomin">+</button><button id="zoomreset">fit</button>
       <button id="fullscreen-btn">expand</button>
@@ -330,7 +331,7 @@
   <div id="shortcuts">
     <h3>Keyboard Shortcuts</h3>
     <table>
-      <tr><td><span class="key">Ctrl</span>+<span class="key">S</span></td><td>Save &amp; Close</td></tr>
+      <tr><td><span class="key">Ctrl</span>+<span class="key">S</span></td><td>Save (session stays open)</td></tr>
       <tr><td><span class="key">Ctrl</span>+<span class="key">F</span></td><td>Search in source</td></tr>
       <tr><td><span class="key">Ctrl</span>+<span class="key">Shift</span>+<span class="key">F</span></td><td>Toggle fullscreen preview</td></tr>
       <tr><td><span class="key">Ctrl</span>+<span class="key">+</span>/<span class="key">-</span></td><td>Zoom in/out</td></tr>
@@ -556,12 +557,23 @@ document.getElementById("zoomin").onclick = () => { scale = Math.min(scale * 1.2
 document.getElementById("zoomout").onclick = () => { scale = Math.max(scale / 1.25, 0.05); applyScale(); setStatus(""); };
 document.getElementById("zoomreset").onclick = () => { scale = 1; applyScale(); setStatus(""); };
 
-// Save
-async function saveAndClose() {
+// Save (Ctrl+S — keeps the editor session alive for further edits)
+async function save() {
   await fetch("/save", { method:"POST", body: src.value });
   setStatus("saved ✓");
   showToast("Diagram saved ✓");
 }
+// Save & Close — saves, then ends the bridge session so the agent picks the file up
+async function saveAndClose() {
+  await save();
+  try { await fetch("/shutdown", { method:"POST", body: "" }); } catch(e) {}
+  showToast("Saved — session closed, back to your agent");
+  document.getElementById("save").disabled = true;
+  document.getElementById("save-only").disabled = true;
+  setStatus("session closed — you can close this tab");
+  setTimeout(() => { try { window.close(); } catch(e) {} }, 800);
+}
+document.getElementById("save-only").addEventListener("click", () => save());
 document.getElementById("save").addEventListener("click", () => saveAndClose());
 
 // Fullscreen
@@ -933,7 +945,7 @@ document.addEventListener("keydown", (e) => {
   if (e.target.matches(".qa-reply-bar input, .qa-reply-bar textarea") || e.target === noteInput || e.target === src) {
     if (e.key === "Escape") { notepanel.style.display = "none"; }
     if (e.target === noteInput && e.key === "Enter" && !e.shiftKey) { e.preventDefault(); document.getElementById("note-submit").click(); }
-    if (e.ctrlKey && e.key === "s") { e.preventDefault(); saveAndClose(); }
+    if (e.ctrlKey && e.key === "s") { e.preventDefault(); save(); }
     return;
   }
   if (e.key === "Escape") {
@@ -945,7 +957,7 @@ document.addEventListener("keydown", (e) => {
   }
   if (e.key === "?") { toggleShortcuts(); return; }
   if (e.ctrlKey && e.key === "z") { e.preventDefault(); undoDeleteNote(); return; }
-  if (e.ctrlKey && e.key === "s") { e.preventDefault(); saveAndClose(); }
+  if (e.ctrlKey && e.key === "s") { e.preventDefault(); save(); }
   if (e.ctrlKey && e.key === "f") { e.preventDefault(); openSearch(); }
   if (e.ctrlKey && e.shiftKey && e.key === "F") { e.preventDefault(); document.body.classList.toggle("fullscreen"); }
   if (e.ctrlKey && (e.key === "=" || e.key === "+")) { e.preventDefault(); scale = Math.min(scale * 1.25, 8); applyScale(); }
@@ -1070,7 +1082,8 @@ function initNotePanelFocusTrap() {
 initNotePanelFocusTrap();
 
 function addShortcutHints() {
-  document.getElementById("save").title = "Save & Close (Ctrl+S)";
+  document.getElementById("save-only").title = "Save (Ctrl+S) — session stays open";
+  document.getElementById("save").title = "Save & Close — ends the editor session, agent picks up the file";
   document.getElementById("fullscreen-btn").title = "Toggle fullscreen (Ctrl+Shift+F)";
   document.getElementById("zoomin").title = "Zoom in (Ctrl++)";
   document.getElementById("zoomout").title = "Zoom out (Ctrl+-)";
@@ -1306,9 +1319,9 @@ function initContentPolling() {
 initContentPolling();
 
 // Update lastKnownHash on save
-const origSaveAndClose = saveAndClose;
-saveAndClose = async function() {
-  await origSaveAndClose();
+const origSave = save;
+save = async function() {
+  await origSave();
   try { const h = await (await fetch("/content-hash")).json(); lastKnownHash = h.hash; } catch(e) {}
 };
 

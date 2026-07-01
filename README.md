@@ -1,34 +1,46 @@
 # Schematic
 
-**An agentic development kit for Claude Code.** Schematic integrates the disparate arms of the development process — planning, implementation, review, per-repo standards, and knowledge compression — into one agent-first pipeline, so you stop orchestrating separate tools for each part of the flow. It turns "build me X" into a locked, cross-referenced engineering blueprint — feature ACs, class topology, per-class contracts with tests, an injection DAG, a sequence diagram, agent-ready tasks — then drives implementation against that blueprint with hard gates a language model cannot talk its way past.
+```text
+███████╗ ██████╗██╗  ██╗███████╗███╗   ███╗ █████╗ ████████╗██╗ ██████╗
+██╔════╝██╔════╝██║  ██║██╔════╝████╗ ████║██╔══██╗╚══██╔══╝██║██╔════╝
+███████╗██║     ███████║█████╗  ██╔████╔██║███████║   ██║   ██║██║
+╚════██║██║     ██╔══██║██╔══╝  ██║╚██╔╝██║██╔══██║   ██║   ██║██║
+███████║╚██████╗██║  ██║███████╗██║ ╚═╝ ██║██║  ██║   ██║   ██║╚██████╗
+╚══════╝ ╚═════╝╚═╝  ╚═╝╚══════╝╚═╝     ╚═╝╚═╝  ╚═╝   ╚═╝   ╚═╝ ╚═════╝
 
-It is maximised for two things:
+              t h e   d e s i g n   i s   t h e   c o n t r a c t
 
-- **Highly visual planning.** Boxed component cards, dependency grids, interactive DAG and sequence diagrams, a browser dashboard, a live diagram editor. Structure exposes design flaws that prose hides.
-- **Trustworthiness.** The mental model you sign off during planning is what exists at the end. Instead of relying on one model doing the right thing, Schematic scrubs the code clean as it goes with incremental, continuous, automated review — background audits on every planning phase, a diff-scoped review on every task before it can complete, a batch-until-pristine sweep over the whole feature diff, and a master-agent correctness gate — each verdict recorded in state the agent cannot forge. Drift doesn't accumulate; it gets caught at the gate where it's cheapest to fix.
+   spec ─▶ topology ─▶ contracts ─▶ DAG ─▶ sequence ─▶ tasks ─▶ build ─▶ compress
+   └────────────────── audit ▸ sign-off ▸ lock at every gate ───────────────────┘
+```
 
-Standards are **modular**: each slot (architecture, component types, styling per language, testing, review) points at a module you choose — your own skills for the conventions you already like, or modules **learned from your codebase's exemplar directories**. That makes it fit greenfield sites (bring your style) and brownfield sites (absorb the existing one) with the same mechanism.
+**An agentic development kit for Claude Code.** One agent-first pipeline for the arms of development you currently orchestrate separately — planning, implementation, review, standards, knowledge compression. "Build me X" becomes a locked, cross-referenced blueprint; implementation is driven against it through gates a language model cannot talk its way past.
 
-Because a schematic is plain markdown + Mermaid living in the repo, **it's shareable by default**: teammates pull the branch, read `objective.md` in two minutes, review contracts and diagrams in the PR, and open the same dashboard locally. Design review and sign-off become team activities on a durable artifact — not a scrollback in one person's agent session.
+**The design is the contract.** Code that diverges is corrected — or the schematic is amended with sign-off. Nothing lands silently: the mental model you approved during planning is what exists at the end.
 
-**Built to run as a goal — a loop within a loop.** Long builds belong inside a persistence loop (a goal runner that re-invokes the agent until the work is done). Schematic is designed for exactly that nesting: the outer goal loop guarantees the agent doesn't give up; Schematic's inner gates and review loops guarantee every iteration does *verified* work. All state lives on disk, so each re-entry is `schematic status` → next unblocked task — no context to reconstruct, no progress to take on faith.
+## The kit
 
-The premise is simple: **the design is the contract.** Code that diverges from the schematic is corrected — or the schematic is amended with sign-off. Nothing lands silently.
+| Arm | What you get |
+|---|---|
+| **Plan** | Feature ACs → class topology → per-class contracts + tests → injection DAG → sequence diagram → agent-ready tasks. Boxed cards, dependency grids, interactive diagrams — structure exposes design flaws that prose hides. |
+| **Implement** | Task-by-task execution against the blueprint: CLI-driven kanban, sketch gates (manual) or an autonomous driver loop (auto), drift receipts on every completion. |
+| **Review** | Continuous automated scrubbing, not one model doing the right thing: phase audits, a diff-scoped review on every task, a batch-until-pristine sweep, a master e2e gate — every verdict recorded in state the agent cannot forge. |
+| **Standards** | Modular slots — architecture, component types, styling per language, testing, review. Point them at skills you already like, or **learn** them from your codebase's exemplars. Greenfield (bring your style) and brownfield (absorb the existing one) with the same mechanism. |
+| **Compress** | Durable knowledge (sequence, decisions, core summary) merges into your repo's arch docs; the planning bundle retires clean. |
+
+## Why trust it
+
+- **Every decision traces.** Feature AC → Class AC → Function AC → AC Test. A traceability matrix proves the pyramid is complete before a line of code is written.
+- **Gates are enforced by a CLI, not by discipline.** Phases can't lock without a recorded audit + sign-off + on-disk artifacts; diagrams can't lock if they don't parse; tasks can't complete without a clean review verdict.
+- **Audits are background agents with a muzzle.** Strict output schema, severity gates, a do-not-flag list — signal, not a 20-bullet wall. Reviewers see only diff hunks, so false flags on pre-existing code are structurally impossible.
+- **A team artifact, not a scrollback.** The bundle is plain markdown + Mermaid in the repo — teammates read `objective.md` in two minutes, review contracts in the PR, open the same dashboard locally, and sign off on a durable artifact.
+- **A loop within a loop.** Run long builds under a goal runner: the outer loop guarantees the agent doesn't give up; Schematic's inner gates guarantee every iteration does *verified* work. State lives on disk — re-entry is `schematic status` → next unblocked task, never memory.
 
 ![Schematic overview dashboard — one browser view over the whole bundle: objective, component contracts, diagrams, research, and execution state](docs/assets/dashboard.png)
 
 ![Live Mermaid editor — source and rendered sequence diagram side by side, with the Q&A input routing questions to the session agent](docs/assets/editable-diagram-with-chat.png)
 
 ![Interactive diagram view in the dashboard — rendered sequence flow with AC-labelled frames](docs/assets/interactive-diagram.png)
-
-## Why
-
-Agent-written features fail in predictable ways: responsibilities drift between classes, contracts change mid-implementation, tests assert what the code does rather than what was agreed, and "done" is narrated rather than verified. Schematic attacks each failure structurally:
-
-- **Every decision traces.** Feature AC → Class AC → Function AC → AC Test. A traceability matrix proves the pyramid is complete before a line of code is written.
-- **Every gate is enforced by a CLI, not by discipline.** Phases can't lock without a recorded audit + user sign-off + on-disk artifacts. Tasks can't complete without a clean review verdict. Diagrams can't lock if they don't parse.
-- **Every audit is a background agent** with a strict output schema, severity gates, and a do-not-flag list — signal, not a 20-bullet wall.
-- **Standards are pluggable.** The skill absorbs *your* conventions per slot (architecture, component types, styling per language, testing, review) and quotes them back at every phase. No manifest? It onboards you — or learns the conventions from your own codebase.
 
 ## Install
 

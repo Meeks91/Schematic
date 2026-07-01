@@ -14,7 +14,7 @@
    └────────────────── audit ▸ sign-off ▸ lock at every gate ───────────────────┘
 ```
 
-**An agentic development kit for Claude Code.** One agent-first pipeline for the arms of development you currently orchestrate separately — planning, implementation, review, standards, knowledge compression. "Build me X" becomes a locked, cross-referenced blueprint; implementation is driven against it through gates a language model cannot talk its way past.
+**An agentic development kit** — built for Claude Code, tied to no runtime (see [Portability](#portability)). One agent-first pipeline for the arms of development you currently orchestrate separately — planning, implementation, review, standards, knowledge compression. "Build me X" becomes a locked, cross-referenced blueprint; implementation is driven against it through gates a language model cannot talk its way past.
 
 **The design is the contract.** Code that diverges is corrected — or the schematic is amended with sign-off. Nothing lands silently: the mental model you approved during planning is what exists at the end.
 
@@ -163,6 +163,21 @@ Resolution order: repo `.claude/standards.json` → global `~/.claude/standards.
 schematic questions                    # list unanswered, with full context
 schematic answer overview#0 "<text>"   # reply — the bubble updates live
 ```
+
+## Portability
+
+Schematic ships as a Claude Code skill, but the machinery is runtime-agnostic by design — nothing shells out to `claude` or any vendor binary:
+
+| Piece | Coupling |
+|---|---|
+| CLI (gates, state, kanban, validate) | Plain stdlib Python — any agent or human runs it |
+| Bundle (`objective.md`, contracts, `.mmd`) | Markdown + Mermaid — any model reads and writes it |
+| **Review loop** | The CLI is the gatekeeper, the session agent is the dispatcher: prompts are *printed*, verdicts are *recorded* (`task review-result`, `review batch-result`). Sweep prompts inline the diff hunks + standards content so the reviewer needs **zero file access** — any subagent, any model, any harness |
+| Audits | Same pattern — self-contained prompt files, results recorded via `phase audit` |
+| Dashboard + Mermaid editor | Stdlib HTTP servers + vanilla JS in a browser; Q&A relays through JSON files (`schematic questions` / `answer`) |
+| Skill packaging (`SKILL.md`, phase files) | The only Claude Code-specific part — and it's just instructions. Feed the same files to any harness that follows system-prompt-style rules |
+
+Practically: another runtime (or a plain human) drives the same pipeline by running the CLI, dispatching the printed prompts to whatever model it has, and recording the verdicts. The gates neither know nor care who's on the other end.
 
 ## Output bundle
 

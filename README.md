@@ -6,6 +6,10 @@ The premise is simple: **the design is the contract.** Code that diverges from t
 
 ![Schematic overview dashboard — one browser view over the whole bundle: objective, component contracts, diagrams, research, and execution state](docs/assets/dashboard.png)
 
+![Live Mermaid editor — source and rendered sequence diagram side by side, with the Q&A input routing questions to the session agent](docs/assets/editable-diagram-with-chat.png)
+
+![Interactive diagram view in the dashboard — rendered sequence flow with AC-labelled frames](docs/assets/interactive-diagram.png)
+
 ## Why
 
 Agent-written features fail in predictable ways: responsibilities drift between classes, contracts change mid-implementation, tests assert what the code does rather than what was agreed, and "done" is narrated rather than verified. Schematic attacks each failure structurally:
@@ -128,11 +132,7 @@ Resolution order: repo `.claude/standards.json` → global `~/.claude/standards.
 
 **Overview dashboard** — `schematic overview` renders the full bundle (objective, components, DAG, sequence, tasks, traces) in one browser view.
 
-**Live Mermaid editor** — round-trips any `.mmd` on disk with live preview, zoom/pan, notes, and per-node IDE jump. Ctrl+S saves; **Save & Close** ends the session and hands the file back to the agent. Handles very large diagrams.
-
-![Live Mermaid editor — source and rendered sequence diagram side by side, with the Q&A input routing questions to the session agent](docs/assets/editable-diagram-with-chat.png)
-
-![Interactive diagram view in the dashboard — rendered sequence flow with AC-labelled frames](docs/assets/interactive-diagram.png)
+**Live Mermaid editor** — round-trips any `.mmd` on disk with live preview, zoom/pan, notes, and per-node IDE jump. Ctrl+S saves; **Save & Close** ends the session and hands the file back to the agent. Handles very large diagrams. *(Pictured at the top.)*
 
 **Q&A relay** — both UIs embed a chat bubble. Questions asked there are compiled into fully-contextualised prompts (diagram + bundle tree + Feature ACs + thread) and queued for the main session agent:
 

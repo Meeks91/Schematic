@@ -551,11 +551,18 @@ def _print_init_banner(feature_name: str) -> None:
         (_ANSI_CYAN, _ANSI_BOLD, _ANSI_DIM, _ANSI_RESET) if is_tty else ("", "", "", "")
     )
     banner_lines = [
-        f"{cyan}┌───────────────────────────────────────────────────────┐{reset}",
-        f"{cyan}│{reset}  {bold}S C H E M A T I C{reset}                                    {cyan}│{reset}",
-        f"{cyan}│{reset}  {dim}the design is the contract{reset}                           {cyan}│{reset}",
-        f"{cyan}│{reset}  {dim}spec → topology → contracts → DAG → tasks → build{reset}    {cyan}│{reset}",
-        f"{cyan}└───────────────────────────────────────────────────────┘{reset}",
+        f"{cyan}███████╗ ██████╗██╗  ██╗███████╗███╗   ███╗ █████╗ ████████╗██╗ ██████╗{reset}",
+        f"{cyan}██╔════╝██╔════╝██║  ██║██╔════╝████╗ ████║██╔══██╗╚══██╔══╝██║██╔════╝{reset}",
+        f"{cyan}███████╗██║     ███████║█████╗  ██╔████╔██║███████║   ██║   ██║██║{reset}",
+        f"{cyan}╚════██║██║     ██╔══██║██╔══╝  ██║╚██╔╝██║██╔══██║   ██║   ██║██║{reset}",
+        f"{cyan}███████║╚██████╗██║  ██║███████╗██║ ╚═╝ ██║██║  ██║   ██║   ██║╚██████╗{reset}",
+        f"{cyan}╚══════╝ ╚═════╝╚═╝  ╚═╝╚══════╝╚═╝     ╚═╝╚═╝  ╚═╝   ╚═╝   ╚═╝ ╚═════╝{reset}",
+        "",
+        f"        {dim}t h e   d e s i g n   i s   t h e   c o n t r a c t{reset}",
+        "",
+        f" {dim}spec ─▶ topology ─▶ contracts ─▶ DAG ─▶ sequence ─▶ tasks ─▶ build ─▶ compress{reset}",
+        f" {dim}└────────────────── audit ▸ sign-off ▸ lock at every gate ───────────────────┘{reset}",
+        "",
         f"  {bold}drafting:{reset} {feature_name}",
         "",
     ]

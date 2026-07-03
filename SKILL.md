@@ -36,7 +36,7 @@ description: Multi-phase feature planning skill. Grills the user to produce a fe
 > [!NOTE]
 > ## On entry: notify the user (once per session).
 >
-> 1. **Standards config check:** if `.claude/standards.json` does NOT exist at the repo root, tell the user: _"No standards manifest found. Run `schematic init` to configure your project's coding conventions (component types, styling, testing). The skill uses your resolved standards to shape every phase."_ Offer to onboard them: map slots to skills they already have, or LEARN unmapped slots from their codebase's exemplar directories (`standards_resolution.md` → Learn mode).
+> 1. **Standards config check:** if no repo manifest exists (`.schematic/standards.json`, else `.claude/standards.json`), tell the user: _"No standards manifest found. Run `schematic init` to configure your project's coding conventions (component types, styling, testing). The skill uses your resolved standards to shape every phase."_ Offer to onboard them: map slots to skills they already have, or LEARN unmapped slots from their codebase's exemplar directories (`standards_resolution.md` → Learn mode).
 > 2. **Visual tools available:** _"You can request `schematic overview` to launch the interactive dashboard (objective, components, DAG + sequence diagrams, tasks in one view), or the bundled live Mermaid editor to hand-edit any diagram. Both have a Q&A bubble that routes questions to me."_
 > 3. **Long builds run as a goal (loop within a loop):** if the user has a goal/persistence runner, recommend wrapping Phase 8 in it. The outer goal loop guarantees the agent returns until the board is drained; schematic's inner gates and review loops guarantee each return does verified work. The bundle + `.schematic-state.json` are the durable state — every re-entry starts with `schematic status` → `schematic task next`, never from memory.
 >
@@ -47,7 +47,7 @@ description: Multi-phase feature planning skill. Grills the user to produce a fe
 >
 > Before any phase, proposal, directory tree, class name, file path, or "where should X live?" question:
 >
-> 1. **RESOLVE** the standards manifest — repo `.claude/standards.json`, else `~/.claude/standards.json`, else the Phase 0 discovery/learn flow. Full protocol: `standards_resolution.md` (run at `schematic init`). Legacy fallback when no manifest exists: the project's `CLAUDE.md` (root + nested) + the user's `~/.claude/CLAUDE.md` ARE the standards.
+> 1. **RESOLVE** the standards manifest — lookup chain `./.schematic/standards.json` → `./.claude/standards.json` → `~/.schematic/standards.json` → `~/.claude/standards.json`, else the Phase 0 discovery/learn flow. Full protocol: `standards_resolution.md` (run at `schematic init`). Legacy fallback when no manifest exists: the project's `CLAUDE.md` (root + nested) + the user's `~/.claude/CLAUDE.md` ARE the standards.
 > 2. **READ** every resolved module the phase consumes (architecture / types / styling.<language> / testing — consumption table in `standards_resolution.md`), plus the project's `CLAUDE.md` (always — it overrides modules on conflict).
 > 3. **APPLY** the conventions verbatim — naming, suffix vocabulary, file layout, model placement, service organisation, class size, comment policy, test conventions, cascading style.
 > 4. **QUOTE** the rule you are applying — and its source module — when you present the result (`python-standards: "NEVER default parameters"`). Cite it; do not paraphrase, do not "interpret".

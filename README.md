@@ -71,7 +71,7 @@ Invoke `/schematic` in Claude Code, or ask to architect a feature end-to-end bef
 
 | # | Phase | Output | Gate |
 |---|---|---|---|
-| 0 | Standards Resolution | `.claude/standards.json` | interview / learn-from-codebase |
+| 0 | Standards Resolution | `.schematic/standards.json` | interview / learn-from-codebase |
 | 1 | Objective & Feature ACs | `objective.md`, `research/*.md` | audit + sign-off |
 | 2 | Topology (Class ACs) | `components/_overview.md` | audit + sign-off |
 | 3 | Directory Structure | `objective.md` §Directory | artifact check |
@@ -149,7 +149,7 @@ Schematic absorbs the conventions of the repo it runs in. Each **slot** maps to 
 | `schematic.reviewModel` | model for review subagents (default `sonnet`) | P8 |
 | `schematic.completionCompression` | what survives into repo docs after Phase 9 | P9 |
 
-Resolution order: repo `.claude/standards.json` → global `~/.claude/standards.json` (confirmed + copied in) → discover skills by frontmatter → interview → **learn from the codebase**. `schematic init` prints slot-by-slot coverage so gaps are visible on day one.
+Resolution order: repo `.schematic/standards.json` (else `.claude/standards.json`, back-compat) → user-global `~/.schematic/standards.json` (else `~/.claude/standards.json`; confirmed + copied in) → discover skills by frontmatter → interview → **learn from the codebase**. `schematic init` prints slot-by-slot coverage so gaps are visible on day one.
 
 ## Visual tools
 

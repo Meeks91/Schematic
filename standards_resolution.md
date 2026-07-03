@@ -24,7 +24,14 @@ which is why init reports slot-by-slot coverage and Phase 0 closes the gaps (map
 
 ## Manifest
 
-`.claude/standards.json` at the repo root. User-global default: `~/.claude/standards.json` (repo manifest overrides it).
+Canonical location: **`.schematic/standards.json`** — harness-neutral and framework-owned (the dir names whose schema it is, like `.github/` or `.cargo/`). Lookup chain, first hit wins:
+
+```
+./.schematic/standards.json   ← canonical (repo)
+./.claude/standards.json      ← back-compat (repo)
+~/.schematic/standards.json   ← canonical (user-global)
+~/.claude/standards.json      ← back-compat (user-global)
+```
 
 ```json
 {
@@ -54,15 +61,15 @@ which is why init reports slot-by-slot coverage and Phase 0 closes the gaps (map
 | Kind | Resolves to |
 |---|---|
 | `skill:<name>` | `.claude/skills/<name>/SKILL.md` (repo) → else `~/.claude/skills/<name>/SKILL.md` |
-| `file:<path>` | repo-relative markdown file |
+| `file:<path>` | markdown file — repo-relative, absolute, or `~`-prefixed |
 | `learn` | derive from codebase exemplars → `learned_<slot>.md` (see Learn mode) |
 
 ## Resolution algorithm
 
 ```
-1. repo .claude/standards.json exists ──────────────► read it, READ each resolved module
-2. else ~/.claude/standards.json exists ────────────► present proposed slot mapping (gated)
-                                                      on y: COPY to repo .claude/standards.json
+1. repo manifest exists (.schematic/, else .claude/) ► read it, READ each resolved module
+2. else user-global manifest exists (same order) ────► present proposed slot mapping (gated)
+                                                      on y: COPY to repo .schematic/standards.json
 3. else DISCOVER: scan repo + user skills dirs for
    frontmatter `metadata.standards-slot` ───────────► propose found modules per slot (gated);
                                                       interview per unmatched slot (Question/Why)

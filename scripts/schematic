@@ -14,6 +14,7 @@ from pathlib import Path
 # ── constants ──────────────────────────────────────────────────────────────────
 
 SCHEMATICS_BASE = "docs/schematics"
+STANDARDS_MANIFEST_RELPATH_CANONICAL = ".schematic/standards.json"
 STANDARDS_MANIFEST_RELPATH = ".claude/standards.json"
 ARCHIVE_SUBDIR = "_archive"
 STATE_FILENAME = ".schematic-state.json"
@@ -203,10 +204,14 @@ def _shard_diff_into_batches(changed_files: list[str], max_files_per_batch: int)
 
 
 def _load_standards_manifest(project_root: Path) -> dict:
-    """Repo manifest if present, else the global default, else empty."""
-    repo_manifest = project_root / STANDARDS_MANIFEST_RELPATH
-    global_manifest = Path.home() / STANDARDS_MANIFEST_RELPATH
-    for manifest_path in (repo_manifest, global_manifest):
+    """Canonical .schematic/ manifest, else .claude/ (back-compat) — repo first, then user-global; else empty."""
+    manifest_paths = (
+        project_root / STANDARDS_MANIFEST_RELPATH_CANONICAL,
+        project_root / STANDARDS_MANIFEST_RELPATH,
+        Path.home() / STANDARDS_MANIFEST_RELPATH_CANONICAL,
+        Path.home() / STANDARDS_MANIFEST_RELPATH,
+    )
+    for manifest_path in manifest_paths:
         if manifest_path.exists():
             return json.loads(manifest_path.read_text())
     return {}

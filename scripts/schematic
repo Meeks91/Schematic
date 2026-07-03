@@ -57,7 +57,7 @@ PHASE_MERMAID_CHECKS: dict[int, list[str]] = {
 PHASE_STATUS_LOCKED = "locked"
 PHASE_AUDIT_CLEAN = "clean"
 
-STANDARDS_SLOTS = ("architecture", "types", "styling", "testing", "review", "exemplars")
+STANDARDS_SLOTS = ("architecture", "types", "common", "styling", "testing", "review", "exemplars")
 
 TASK_HEADER_RE = re.compile(r"^## ([a-z]\.\d+) \| (\w+) \| (.+)$")
 FEATURE_AC_RE = re.compile(r"(\d+\.[A-Z])\b")
@@ -224,7 +224,8 @@ def _resolve_source_path(source: str, project_root: Path) -> Path | None:
     if source.startswith("skill:"):
         return _resolve_skill_path(source)
     if source.startswith("file:"):
-        candidate = project_root / source[len("file:"):]
+        raw_path = Path(source[len("file:"):]).expanduser()
+        candidate = raw_path if raw_path.is_absolute() else project_root / raw_path
         return candidate if candidate.exists() else None
     return None
 
@@ -290,7 +291,7 @@ def _resolve_standards_content_for_batch(batch_files: list[str], project_root: P
         source = styling_map.get(lang) if isinstance(styling_map, dict) else None
         if source:
             sources_to_read[f"styling.{lang}"] = source
-    for slot in ("testing", REVIEW_SLOT_KEY):
+    for slot in ("common", "testing", REVIEW_SLOT_KEY):
         source = manifest.get(slot)
         if isinstance(source, str):
             sources_to_read[slot] = source
@@ -1040,6 +1041,7 @@ def cmd_task(args: argparse.Namespace) -> None:
         "complete": _task_complete,
         "next": _task_next,
         "note": _task_note,
+        "decision": _task_decision,
         "review-result": _task_review_result,
     }
     task_handlers[args.task_command](args)
@@ -1145,6 +1147,10 @@ def _emit_review_request(schematic_dir: Path, tag: str, task: dict) -> None:
         f"     whose content is unchanged — is OUT of scope. Never flag it.\n"
         f"  3. Do NOT read or review files outside the diff.\n\n"
         f"{lens_block}"
+        f"SECONDARY lens — task-level correctness of the changed lines against the\n"
+        f"component spec's promised behaviour. Core: wrong conditionals, unhandled edge\n"
+        f"cases, swallowed exceptions, async bugs, shared-state mutation, silent-success\n"
+        f"paths. Full checklist: the resolved review module above.\n"
         f"Record each finding as a note (do NOT complete the task — completion\n"
         f"stays with the implementing agent):\n"
         f"  schematic task note {tag} \"<finding>\" --schematic {schematic_dir.name}\n"
@@ -1274,6 +1280,32 @@ def _task_note(args: argparse.Namespace) -> None:
     print(f"note added to {args.tag}: {args.text}")
 
 
+def _task_decision(args: argparse.Namespace) -> None:
+    schematic_dir = resolve_schematic_dir(args.schematic)
+    state = load_state(schematic_dir)
+    task_state = state["tasks"].setdefault(args.tag, {})
+    decisions = task_state.setdefault("decisions", [])
+    decisions.append({"text": args.text, "ts": datetime.now(tz=timezone.utc).isoformat()})
+    save_state(schematic_dir, state)
+    print(f"decision recorded for {args.tag}: {args.text}")
+
+
+def _print_decision_ledger(state: dict) -> None:
+    """Print every recorded autonomous decision so the master folds them into implementation_report.md."""
+    tag_to_decisions = {
+        tag: task_state["decisions"]
+        for tag, task_state in state["tasks"].items()
+        if task_state.get("decisions")
+    }
+    if not tag_to_decisions:
+        return
+    print()
+    print("AUTONOMOUS DECISIONS (fold into implementation_report.md § Autonomous decisions):")
+    for tag, decisions in sorted(tag_to_decisions.items()):
+        for decision in decisions:
+            print(f"  {tag}: {decision['text']}")
+
+
 # ── dashboard Q&A relay (questions asked in the browser UIs) ─────────────────────
 
 QUESTIONS_SUFFIX = ".questions.json"
@@ -1396,6 +1428,8 @@ def _review_start(args: argparse.Namespace) -> None:
     print(f"run started: mode={mode} base_ref={base_ref[:12]}")
     if mode == RUN_MODE_AUTO:
         print(f"  goal: {args.goal}")
+        print("  MANDATE: record every decision the schematic doesn't answer, AT THE MOMENT IT'S MADE:")
+        print(f"    schematic task decision <tag> \"<what> — <why>\" --schematic {args.schematic}")
         print("  drive the board; per-task reviews run diff-scoped as you go, then:")
         print(f"  schematic review sweep --schematic {args.schematic}")
 
@@ -1597,6 +1631,12 @@ def _review_e2e(args: argparse.Namespace) -> None:
     print("  3. Verify contracts: implementation matches the locked schematic component specs.")
     print("  4. Verify test coverage: every schematic AC test exists and tests the right behaviour.")
     print("  5. Verify integration: cross-component call flows are correct (sequence diagram vs code).")
+    print("  6. Verify correctness: wrong conditionals, edge cases, swallowed exceptions, async bugs,")
+    print("     shared-state mutation, silent-success paths — full checklist in the resolved review module.")
+    print("  7. Verify blast radius: for each changed public signature/behaviour, grep dependents +")
+    print("     derived-key sites (cache/memo/dedupe/etag/hash/__eq__) — every result-determining input")
+    print("     must appear in every derived key. Full checklist in the resolved review module.")
+    _print_decision_ledger(state)
     print()
     if run["mode"] == RUN_MODE_AUTO:
         print("AUTO MODE: fix any findings silently, then record the result. No user gate required —")
@@ -1772,6 +1812,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_tnote.add_argument("tag", help="Task tag (e.g. a.1)")
     p_tnote.add_argument("text", help="Note text")
     p_tnote.add_argument("--schematic", required=True, metavar="NAME")
+
+    p_tdecision = task_sub.add_parser("decision", help="Record an autonomous decision (auto mode — mandatory at the moment it's made; ledger prints at the e2e gate)")
+    p_tdecision.add_argument("tag", help="Task tag (e.g. a.1)")
+    p_tdecision.add_argument("text", help='Decision text: "<what was decided> — <why it was needed>"')
+    p_tdecision.add_argument("--schematic", required=True, metavar="NAME")
 
     p_review = sub.add_parser("review", help="Auto-mode driver + batch-until-pristine diff sweep")
     review_sub = p_review.add_subparsers(dest="review_command", required=True)

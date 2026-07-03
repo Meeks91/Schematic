@@ -83,6 +83,12 @@ For each task in `tasks.md`, in order:
 9. Move to next task
 ```
 
+**Blast-radius trigger (binding):** if the task modified an EXISTING public contract
+(new or changed result-determining input), run the Integration & Blast Radius lens
+(resolved review module) BEFORE requesting review — grep dependents + derived-key
+sites (cache/memo/dedupe/etag/hash/`__eq__`); every determining input must appear in
+every derived key. Applies in both modes; greenfield tasks skip it.
+
 Steps 1, 6, and 8 are binding. Starting implementation without `task next` having
 moved the task to `in_progress`, completing a task that never passed through
 `review`, or completing by any mechanism other than the CLI (editing tasks.md
@@ -94,6 +100,9 @@ directly, narrating "✓ done"), is forbidden.
 
 Moving a task to `review` is the gate between "code written" and "task done".
 It exists to verify the **written code adheres to the resolved standards** before it locks.
+The gate runs TWO lenses: (1) standards conformance, (2) task-level correctness against the
+component spec — checklist content comes from the manifest-resolved modules (`review` slot),
+never restated here.
 
 ```
 schematic task status <tag> review --schematic <name>
@@ -164,6 +173,12 @@ while `schematic task next` returns a task:
 The per-task review here is the same gate as manual mode — scoped to that one
 task's diff. Auto mode only removes the sketch step in front of implementation.
 
+**Decision ledger (mandatory):** every decision the schematic doesn't answer is
+recorded at the moment it's made — `schematic task decision <tag> "<what> — <why>"`.
+The e2e gate prints the collected ledger; the master folds it into
+`implementation_report.md` § **Autonomous decisions**. A decision not in the
+ledger didn't happen — silent improvisation is forbidden.
+
 ### Final review — two-pass (diff-only style sweep → master e2e correctness gate)
 
 Once the board is drained, the feature diff goes through two review passes:
@@ -226,6 +241,8 @@ feedback — reviews all changed files for correctness. This is NOT a style revi
 2. **Contracts** — implementation matches the locked schematic component specs
 3. **Test coverage** — every schematic AC test exists and tests the right behaviour
 4. **Integration** — cross-component call flows are correct (sequence diagram vs code)
+5. **Correctness** — the Correctness & Bugs lens from the resolved review module, over changed lines
+6. **Blast radius** — the Integration & Blast Radius lens from the resolved review module: dependents of changed signatures, derived-key completeness (cache/memo/dedupe/etag/hash)
 
 **In auto mode:** fix findings silently, record the result — no user gate. The
 implementation report notes the e2e verdict.

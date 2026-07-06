@@ -89,7 +89,8 @@ Flag deviations to the user. This catches "looks right in isolation but doesn't 
 The sequence audit fires **once at the end of Phase 6** — the final per-flow `Confirm: y/comment` that closes the phase. Earlier sequence sub-gates do NOT trigger an audit; they only gate user content sign-off on each flow.
 
 1. Dispatch `audits/sequence_audit.md` per `audits/README.md`. Wait for return. Surface findings above sigil.
-2. Record: `schematic phase audit --schematic <name> 6 "clean" | "<findings>"`
+2. **Blind-spot pass (post-sequence):** dispatch a SEPARATE agent per `audits/_blind_spot_discovery.md` on the same P6 dispatch — injected with `sequence.mmd` + the full schematic + codebase access. Now the full runtime flow is drawn, it assesses **blast radius** over entry points, callers, and touched state. Surface candidates above the sigil; each is dispositioned (promote → task / deferral **via the Change Propagation Guide in `SKILL.md`**, or dismiss) as part of this sign-off. Advisory, non-gating, stateless.
+3. Record: `schematic phase audit --schematic <name> 6 "clean" | "<findings>"`
 
 **Confirm: y/comment**
 

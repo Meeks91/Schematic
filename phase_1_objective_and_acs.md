@@ -15,6 +15,8 @@ This phase writes the human frame of `<schematic_dir>/objective.md`: Context & O
 **If this is a fresh planning session or the current context has shared understanding gaps:** PROCEED TO GRILL.
 Interview the user relentlessly about every aspect of this feature until reaching shared understanding. Walk down **every branch** of the design tree, resolving dependencies between decisions one-by-one. For each question, provide your recommended answer. Ask questions **one at a time**. If a question can be answered by exploring the codebase, explore the codebase instead.
 
+**Grill aim (binding cue):** our aim is also to uncover all **unknown knowns** we hadn't considered — to establish an exhaustive understanding of impact and what we must plan for, so we never reach **unknown unknowns** during implementation. Search and discover up front; the post-grill blind-spot pass (below) then confirms rather than discovers cold.
+
 **If picking up with existing context (resuming a build, working from a prior plan, mid-conversation):** ABSORB AND ACCELERATE.
 The understanding already exists in the session. Do NOT re-derive it phase by phase. Instead:
 
@@ -79,7 +81,8 @@ Rules:
 ### Audit hook (mandatory)
 
 1. Dispatch `audits/ac_audit.md` per `audits/README.md`. Wait for return. Surface findings above sigil.
-2. Record: `schematic phase audit --schematic <name> 1 "clean" | "<findings>"`
+2. **Blind-spot pass (post-grill):** dispatch a SEPARATE agent per `audits/_blind_spot_discovery.md` on the same P1 dispatch — injected with the drafted ACs + schematic + codebase access. Now the known-knowns are locked, it hunts **unknown knowns** (missed scope, consumers, constraints). Surface candidates above the sigil; each is dispositioned (promote → Feature AC / Key Finding / Decision Log, or dismiss) as part of this sign-off. Advisory, non-gating, stateless.
+3. Record: `schematic phase audit --schematic <name> 1 "clean" | "<findings>"`
 
 **Confirm: y/comment**
 

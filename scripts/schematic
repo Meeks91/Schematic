@@ -1818,7 +1818,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_tnote.add_argument("text", help="Note text")
     p_tnote.add_argument("--schematic", required=True, metavar="NAME")
 
-    p_tdecision = task_sub.add_parser("decision", help="Record an autonomous decision (auto mode — mandatory at the moment it's made; ledger prints at the e2e gate)")
+    p_tdecision = task_sub.add_parser("decision", help="Record an independent decision the schematic didn't answer (both modes — mandatory at the moment it's made; signed off at end-of-impl)")
     p_tdecision.add_argument("tag", help="Task tag (e.g. a.1)")
     p_tdecision.add_argument("text", help='Decision text: "<what was decided> — <why it was needed>"')
     p_tdecision.add_argument("--schematic", required=True, metavar="NAME")

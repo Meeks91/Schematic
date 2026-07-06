@@ -22,6 +22,10 @@ Audits fire **once per phase, at phase completion** — the final sub-gate that 
 
 Phase 3 (Directory Structure) and Phase 5 (DAG + App Integration) do not have dedicated audits — they are mechanical artifacts derived from Phase 2 + 4 + 6, and any drift there is caught by the topology / contract / sequence audits.
 
+## Blind-spot passes (distinct from conformance audits)
+
+Two **blind-spot passes** ride the P1 and P6 dispatches — a SEPARATE agent hunting **unknown knowns** (blast radius, missed consumers, integration points) rather than rule violations. They are NOT conformance audits: **advisory not gating**, evidence-gated candidates the user dispositions at the phase sign-off, **stateless** (no `schematic phase audit` record). Full spec — charter, output contract, disposition: `audits/_blind_spot_discovery.md`.
+
 ## Dispatch protocol (binding for the schematic skill)
 
 At each gate-end, BEFORE printing the `Confirm: y/comment` sigil:

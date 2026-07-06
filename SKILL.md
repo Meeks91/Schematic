@@ -205,6 +205,17 @@ Why this exists: across sessions, banned suffixes, mis-classified Services, orph
 
 ---
 
+## Blind-Spot Passes (unknown-knowns — cross-cutting)
+
+Two **blind-spot passes** ride the P1 and P6 dispatches — a separate agent hunting **unknown knowns** (facts the codebase/domain holds that the plan is blind to) by assessing **blast radius**. Advisory, not gating: evidence-gated candidates the user dispositions at the phase sign-off; stateless.
+
+- **P1 (post-grill)** — what scope did we miss? → candidate Feature ACs / Key Findings / Decision Log.
+- **P6 (post-sequence)** — what does the drawn flow perturb? → candidate tasks / deferrals via the Change Propagation Guide.
+
+Full spec: `audits/_blind_spot_discovery.md`.
+
+---
+
 ## Reference index
 
 Detailed examples and taxonomies that the phase files link to:

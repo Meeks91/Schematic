@@ -27,6 +27,11 @@ in this phase keep that delivery honest:
    narrated. Reviews get one line ("Pristine — <rounds>"), not a ledger.
    **Link it from the top of `objective.md`** (one blockquote line) — the
    dashboard renders the bundle, and an unlinked report is invisible there.
+5. **Independent decisions are logged, then signed off at the end.** Any decision
+   made during implementation that the schematic didn't answer AND that no user
+   sketch gate approved is recorded to the decision ledger the moment it's made.
+   At end-of-impl these are presented as a batch for user sign-off and folded into
+   the completion record. See "Decision ledger (both modes)" below.
 
 > [!CAUTION]
 > ## Manual mode NEVER auto-implements. Auto mode is opt-in ONLY.
@@ -93,6 +98,29 @@ Steps 1, 6, and 8 are binding. Starting implementation without `task next` havin
 moved the task to `in_progress`, completing a task that never passed through
 `review`, or completing by any mechanism other than the CLI (editing tasks.md
 directly, narrating "✓ done"), is forbidden.
+
+---
+
+## Decision ledger (both modes — binding)
+
+Every decision the schematic doesn't answer **and** that no user sketch gate
+approved is recorded at the moment it's made:
+
+```
+schematic task decision <tag> "<what> — <why>"
+```
+
+- **Manual mode** — the sketch gate covers most choices; the ledger captures the
+  residue (calls the sketch didn't cover, made independently of the user).
+- **Auto mode** — captures every unanswered decision.
+
+**End-of-impl sign-off (manual):** before the feature is done, present the ledger as
+a batch with `Confirm: y/comment`; the user signs off each decision, folded into
+`implementation_report.md` § **Autonomous decisions** (strategic entries →
+`objective.md` § Decision Log). Auto mode folds it in at the e2e gate — no
+per-decision gate.
+
+A decision not in the ledger didn't happen — silent improvisation is forbidden.
 
 ---
 
@@ -173,11 +201,10 @@ while `schematic task next` returns a task:
 The per-task review here is the same gate as manual mode — scoped to that one
 task's diff. Auto mode only removes the sketch step in front of implementation.
 
-**Decision ledger (mandatory):** every decision the schematic doesn't answer is
-recorded at the moment it's made — `schematic task decision <tag> "<what> — <why>"`.
-The e2e gate prints the collected ledger; the master folds it into
-`implementation_report.md` § **Autonomous decisions**. A decision not in the
-ledger didn't happen — silent improvisation is forbidden.
+**Decision ledger (mandatory):** see "Decision ledger (both modes)" above — auto
+mode records every unanswered decision via `schematic task decision <tag> "<what> —
+<why>"`. The e2e gate prints the collected ledger; the master folds it into
+`implementation_report.md` § **Autonomous decisions**.
 
 ### Final review — two-pass (diff-only style sweep → master e2e correctness gate)
 

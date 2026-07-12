@@ -55,7 +55,7 @@ Part of change set: <max 2 lines — answers "what are we working on?" at a glan
                      NOT a list of features. A casual one-breath description of the umbrella work>
 
 ### 1. <Feature heading — present-tense outcome, no method names>
-Class: <ClassName>  (or: <ClassA> + <ClassB> + <ClassC> if multi-class)
+Class: <ClassName>  (brownfield only; multi-class allowed. OMIT for new-build features)
 
 | AC | Title | What | Why |
 |---|---|---|---|
@@ -70,7 +70,7 @@ Notes (non-AC):
 
 Rules:
 - **Change-set header mandatory**: anchors the numbered features in their umbrella context.
-- **Class-anchored**: every feature change must name the class(es) it touches. Orphan changes are not allowed.
+- **Class-anchored (brownfield only)**: name the existing class(es) touched — orphan changes forbidden. New-build features name NO classes (Phase 2 topology) unless user requested; their ACs stay abstract.
 - **Table mandatory**: one row per sub-change; AC / Title / What / Why columns all populated. Keep What/Why cells to one or two sentences — if a cell needs a paragraph, the sub-change is too big; split it.
 - **Notes (non-AC) section**: wiring/composition consequences live here as bullets, never disguised as ACs and never buried in a Why cell.
 - **No method names, no return types, no signatures**: those are Phase 4 (contracts). Feature lines describe outcomes, not interfaces.

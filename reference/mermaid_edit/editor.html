@@ -431,46 +431,12 @@ function highlightNodeInSource(nodeId) {
 }
 
 // Render
+// Overlays (.qa-bubble / .sticky-note) are direct children of #preview and
+// survive re-render untouched — render() only replaces #out's innerHTML.
 let renderTimer;
-
-function snapshotOverlays() {
-  const overlays = [];
-  preview.querySelectorAll(".qa-bubble").forEach(el => {
-    overlays.push({ type: "bubble", left: el.style.left, top: el.style.top, idx: el.dataset.idx, html: el.innerHTML, width: el.style.width, height: el.style.height });
-  });
-  preview.querySelectorAll(".sticky-note").forEach(el => {
-    overlays.push({ type: "note", left: el.style.left, top: el.style.top, idx: el.dataset.idx, html: el.innerHTML });
-  });
-  return overlays;
-}
-
-function restoreOverlays(overlays) {
-  overlays.forEach(ov => {
-    if (ov.type === "bubble") {
-      const el = document.createElement("div");
-      el.className = "qa-bubble";
-      el.style.left = ov.left;
-      el.style.top = ov.top;
-      el.dataset.idx = ov.idx;
-      if (ov.width) el.style.width = ov.width;
-      if (ov.height) el.style.height = ov.height;
-      el.innerHTML = ov.html;
-      preview.appendChild(el);
-    } else if (ov.type === "note") {
-      const el = document.createElement("div");
-      el.className = "sticky-note";
-      el.style.left = ov.left;
-      el.style.top = ov.top;
-      el.dataset.idx = ov.idx;
-      el.innerHTML = ov.html;
-      preview.appendChild(el);
-    }
-  });
-}
 
 async function render() {
   err.textContent = "";
-  const savedOverlays = snapshotOverlays();
   try {
     renderCount++;
     if (renderCount === 1) out.classList.add("first-render");
@@ -514,12 +480,10 @@ async function render() {
     });
     applyScale();
     attachNodeClickHandlers();
-    restoreOverlays(savedOverlays);
     setStatus("");
     status.innerHTML = `<span class="badge badge-ok">OK</span> ` + status.textContent;
   } catch (e) {
     err.textContent = String(e.message || e);
-    restoreOverlays(savedOverlays);
     setStatus("");
     status.innerHTML = `<span class="badge badge-err">ERR</span> ` + status.textContent;
   }

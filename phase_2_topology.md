@@ -7,6 +7,34 @@
 
 Define what each class OWNS — produce Class ACs. Write the Component Summary to `<schematic_dir>/components/_overview.md` (NOT objective.md — that stays human-only). Max 3 classes per gate.
 
+## Phase 2 entry — Topology Roster (BINDING — before any card)
+
+The FIRST gate of Phase 2 is a one-shot roster of the ENTIRE proposed topology — classes AND storage — so the user sees the complete set before any 1-by-1 card batch. Without it, redundant nodes and invisible surfaces (e.g. an undesigned table) slip through batch-by-batch presentation.
+
+**Format — vertically stacked feature composites**, one strip per Phase-1 feature, in feature order. The stack IS the top-down view of the whole topology:
+
+```
+F4 — <feature title>                                        (4.A 4.B 4.C)
+│
+├─ <ClassName>              <Type>         [NEW|MOD]  <one-line role>
+├─ ↩ <ClassName> (F1)                                 ← back-ref, no one-liner
+└─ ⛁ <table name>           Table          [NEW|SHARED|FORK OPEN]  <one-line>
+```
+
+Rules:
+- **Node one-liner on FIRST appearance only**; a node a later feature reuses appears as a bare back-ref (`↩ Name (Fn)`) — no duplication; the back-refs render cross-feature sharing visible.
+- **Storage rows (⛁) mandatory**: any feature that persists anything must show its table(s). A persisting strip with no ⛁ row is a gate-blocking hole. Unresolved storage forks are marked `[FORK OPEN]` — never silently decided.
+- **Edges are loose "uses" indentation, not wiring** — the roster promises the SET, not the arrows (the P5 DAG owns edges).
+- **Names are predictions**: locking the roster locks the inventory, not designs. Nodes still die/merge/split/rename during card batches — but only via the amendment rule below, never silently.
+
+**Draft semantics (BINDING):** the roster is a ONE-SHOT DRAFT surfaced for rapid feedback — it is NOT a design sign-off and the agent MUST NOT internalise it as commitment. The user's `y` on the roster gate means only "the set looks complete enough to start carding". The file carries a `status: DRAFT` banner until Phase 2 completes. The agent must not defend its own predictions during feedback — user edits win by default; every prediction is expected to be cheap to overturn at its card. (The roster is built inline by the planning agent — session context beats a cold subagent — but is treated as external draft input, not as the agent's design position.)
+
+**Editable artifact (interactive-first):** render the roster as `<schematic_dir>/roster.mmd` — one Mermaid subgraph per feature, vertically stacked (chain subgraphs with invisible `~~~` links), classes as boxes, storage as cylinders, classDefs for locked/new/mod/storage/fork-open/back-ref — and **launch the visual editor on it** (`python3 <skill_dir>/reference/mermaid_edit/bridge.py <path>`, backgrounded). The round-trip IS the feedback loop: user edits (rename/kill/add nodes), hits Save & Close → re-read the file and **echo the delta back as absorbed decisions** ("killed X, renamed Y→Z, added table W to F6") before locking. Never absorb an edit silently. `components/_roster.md` holds only the status banner, legend, and the amendments log — never a duplicate of the diagram.
+
+**Amendment rule (post-lock):** any add/kill/merge/rename discovered during card batches = an explicit `Roster amendment: <delta>` line at that gate AND an edit to `_roster.md`. The phase-end audit checks card-set ≡ roster + amendments.
+
+The roster is its own gate — end it with **Confirm: y/comment**.
+
 **Component Summary grouping (binding):** never one flat table mixing services, repos, and utils. One `###` sub-heading per logical group — a service plus the internals that change with it — Service row first, then its internals; groups ordered by the feature's flow. Template: `SKILL.md` → `components/_overview.md`.
 
 ## Component Card Format (BINDING — every class)
@@ -68,6 +96,25 @@ Every class is presented as a **boxed card**. The box surfaces the same surfaces
 **Self-check:** read the ACs aloud. If you could write the `# API:` section from them, you've leaked Phase 4. ACs describe *purpose*, not *interface*.
 
 For **modified** existing classes: state what changes and why. For **deleted** classes: list with rationale.
+
+## Storage Card Format (BINDING — every table)
+
+Tables are topology nodes: they have ownership, relationships, and consumers, exactly like classes. Every [NEW] table — or any storage fork (new table vs shared table vs column addition) — gets its own boxed card in the SAME batch as the Repository that owns it. **A Repository card cannot lock while its storage card is undecided.**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ S.N  <table_name>                          [NEW | SHARED | MOD] │
+├─────────────────────────────────────────────────────────────────┤
+│ One row is:   <identity in domain terms — no column DDL>        │
+│ Owned by:     <Repository>          Written by: <pipeline/svc>  │
+│ Read by:      <consumers>                                       │
+│ Relates to:   <FK-level relationships, in words>                │
+│ Semantics:    <cadence / retention / anchor model>              │
+│ Fork:         <options considered + decision — or OPEN>         │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Layer split (mirrors class cards):** Phase 2 owns existence, identity (what one row IS), ownership, relationships, population/read semantics, and the fork decision. Column DDL, types, nullability, indexes, partitioning, and migrations stay in Phase 4 models. Storage forks are presented as options with a recommendation, gated like everything else. Storage cards land in `components/_overview.md` under a §Storage section.
 
 **Component types vocabulary:** see `reference/component_types.md` for the full taxonomy (Service / PipelineService / RequestPipelineService / Controller / Router / Factory / Repository / Validator / Resolver / Client / `<Noun><Verb>er`).
 

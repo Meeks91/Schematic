@@ -4,6 +4,7 @@ Quality gate for Phase 2. Read the freshly-locked classes from this gate (and th
 
 ## Files to read
 
+- `<schematic_dir>/components/_roster.md` (the locked topology roster — inventory of record)
 - `<schematic_dir>/components/_overview.md` §Component Summary (the locked-so-far class blocks/tables)
 - `<schematic_dir>/components/*.md` (if any exist — for cross-reference orphan checks)
 - The resolved `types` + `architecture` standards modules (see `../standards_resolution.md`; defaults: `~/.claude/skills/component-types/SKILL.md`, `~/.claude/skills/architecture-standards/SKILL.md`; bundled fallback: `../reference/component_types.md`)
@@ -54,6 +55,15 @@ Worked example of what NOT to flag:
 
 ### 8. Banned class names (project-specific)
 - `<Anything>Loader`, `<Anything>Helper`, `<Anything>Handler` → flag with suggested vocabulary-compliant rename.
+
+### 9. Roster integrity (card-set ≡ roster + amendments)
+Compare the locked cards in `_overview.md` against `components/_roster.md`:
+- Every carded class/table MUST appear in the roster, or have an explicit `Roster amendment:` recorded. Flag silent additions.
+- Every roster node MUST end the phase carded, or amended away. Flag silent drops.
+
+### 10. Storage cards (repos never lock table-less)
+- Every Repository card MUST have a locked Storage card for its table(s) in `_overview.md` §Storage. Flag any Repository whose storage was decided implicitly (a table named only in prose/bullets).
+- Any storage fork still marked `[FORK OPEN]` at phase end → flag as gate-blocking.
 
 ## Output
 

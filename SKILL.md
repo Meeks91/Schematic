@@ -26,7 +26,9 @@ description: Multi-phase feature planning skill. Grills the user to produce a fe
 >
 > **Edit any `.mmd` visually (on request, any phase):** launch the bundled live-preview editor — `python3 <skill_dir>/reference/mermaid_edit/bridge.py <path-to.mmd>` (backgrounded; blocks until the user clicks Save & Close, then re-read the file — Ctrl+S in the editor saves without closing). Handles very large diagrams. See `phase_6_sequence.md` → "Visual round-trip editor".
 >
-> **Dashboard/editor questions reach YOU:** questions the user asks in any browser UI queue for this session. After a UI session (or when the user says they asked something there), run `schematic questions` and reply with `schematic answer <id> "<text>"` — the bubble updates live. Never leave the queue undrained.
+> **Launching the editor MUST be paired with arming the Q&A watcher (BINDING):** in the same moment you background bridge.py, also background `python3 <skill_dir>/reference/mermaid_edit/watcher.py <same-path.mmd>`. It exits the instant an unanswered bubble question lands — the exit is your wake-up call: drain (`schematic questions`), reply (`schematic answer <id> "<text>"`), then RE-ARM the watcher (same command, backgrounded). An editor without a watcher is dead air — the user's bubble questions queue silently until they give up.
+>
+> **Dashboard/editor questions reach YOU:** questions the user asks in any browser UI queue for this session. The watcher (above) wakes you for editor bubbles; after any dashboard session (or when the user says they asked something there), also run `schematic questions` and reply with `schematic answer <id> "<text>"` — the bubble updates live. Never leave the queue undrained.
 >
 > **Binding workflow per gate:** dispatch audit → record audit result via CLI
 > → present to user → on `y` reply, record sign-off via CLI → lock with

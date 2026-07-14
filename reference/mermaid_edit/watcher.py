@@ -1,57 +1,61 @@
-"""Watch for questions in the mermaid editor and answer them.
+"""Editor Q&A wake-up watcher — exits the moment an unanswered question lands.
 
-Called by Claude after launching bridge.py. This script:
-1. Polls questions.json for new entries
-2. Prints new questions to stdout (Claude reads and answers)
-3. Claude posts answers via /self-answer
+Run BACKGROUNDED alongside bridge.py. Background tasks notify the agent on
+process EXIT, not on output — so this script exits (rather than looping
+forever) the first time the queue holds an unanswered question. The exit IS
+the wake-up call. On wake:
+1. Drain the queue:   schematic questions
+2. Reply:             schematic answer <id> "<text>"
+3. Re-arm:            relaunch this script (same command, backgrounded)
 
-Usage from Claude session:
-  python3 watcher.py <mmd_file> --port <port>
-  # Prints new questions as JSON lines to stdout
-  # Claude reads stdout, generates answer, calls /self-answer
+Usage: python3 watcher.py <mmd_file> [poll_seconds]
 """
 import json
 import sys
 import time
 from pathlib import Path
 
+_DEFAULT_POLL_SECONDS = 2.0
 
-def watch(mmd_path: Path, poll_interval: float = 1.0) -> None:
+
+def _load_entries(path: Path) -> list:
+    try:
+        return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def _pending_count(questions: list, answers: list) -> int:
+    answered_ids = {answer.get("idx") for answer in answers}
+    pending = 0
+    for position, question in enumerate(questions):
+        question_id = question.get("server_idx", position)
+        if question_id not in answered_ids:
+            pending += 1
+    return pending
+
+
+def watch_until_pending(mmd_path: Path, poll_seconds: float) -> None:
     questions_path = mmd_path.with_suffix(".questions.json")
     answers_path = mmd_path.with_suffix(".answers.json")
-    seen_count = 0
-
-    if questions_path.exists():
-        seen_count = len(json.loads(questions_path.read_text()))
-
-    print(json.dumps({"status": "watching", "questions_file": str(questions_path)}), flush=True)
-
     while True:
-        try:
-            if questions_path.exists():
-                questions = json.loads(questions_path.read_text())
-                if len(questions) > seen_count:
-                    for i in range(seen_count, len(questions)):
-                        q = questions[i]
-                        user_messages = [m["text"] for m in q.get("thread", []) if m.get("role") == "user"]
-                        latest_question = user_messages[-1] if user_messages else ""
-                        answered = False
-                        if answers_path.exists():
-                            answers = json.loads(answers_path.read_text())
-                            answered = any(a.get("idx") == q.get("server_idx") for a in answers)
-                        if not answered and latest_question:
-                            print(json.dumps({
-                                "type": "question",
-                                "server_idx": q["server_idx"],
-                                "text": latest_question,
-                                "x": q.get("x"),
-                                "y": q.get("y"),
-                            }), flush=True)
-                    seen_count = len(questions)
-        except (json.JSONDecodeError, KeyError):
-            pass
-        time.sleep(poll_interval)
+        pending = _pending_count(
+            questions=_load_entries(questions_path),
+            answers=_load_entries(answers_path),
+        )
+        if pending:
+            print(
+                f"NEW EDITOR QUESTION(S): {pending} pending — drain with"
+                f" 'schematic questions', reply with 'schematic answer <id> ...',"
+                f" then re-arm this watcher.",
+                flush=True,
+            )
+            return
+        time.sleep(poll_seconds)
 
 
 if __name__ == "__main__":
-    watch(mmd_path=Path(sys.argv[1]))
+    watch_until_pending(
+        mmd_path=Path(sys.argv[1]),
+        poll_seconds=float(sys.argv[2]) if len(sys.argv) > 2 else _DEFAULT_POLL_SECONDS,
+    )

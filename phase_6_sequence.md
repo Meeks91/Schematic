@@ -41,9 +41,16 @@ disk, so the saved version is picked up automatically.
    Run it backgrounded (Ctrl+S in the editor saves without closing; the "Save &
    Close" button ends the session). You are notified on exit, which prints
    "Saved: <path>" plus a count of any unanswered editor questions.
-3. Re-read <schematic_dir>/sequence.mmd — it now holds the user's edits. That is
+3. ARM THE Q&A WATCHER in the same moment (BINDING — see SKILL.md):
+
+     python3 <skill_dir>/reference/mermaid_edit/watcher.py <schematic_dir>/sequence.mmd
+
+   Also backgrounded. It exits when an unanswered bubble question lands — on
+   that wake-up: `schematic questions` → `schematic answer <id> "<text>"` →
+   re-arm the watcher. Without it, bubble questions sit unanswered (dead air).
+4. Re-read <schematic_dir>/sequence.mmd — it now holds the user's edits. That is
    the new source of truth. Re-run `schematic mermaid` to validate it.
-4. Drain any questions the user asked in the editor's Q&A bubble:
+5. Drain any remaining questions from the editor's Q&A bubble:
    `schematic questions` lists them with full design context;
    `schematic answer <id> "<text>"` replies into the UI live.
 ```

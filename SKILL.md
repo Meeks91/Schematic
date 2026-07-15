@@ -266,7 +266,9 @@ Confirm: y/comment
 
 You may write to disk freely during the phase — writing is not the gate. **The gate is moving forward.** Before moving to the next phase, the most recent message you sent MUST have ended with `Confirm: y/comment` AND you MUST have received a `y` in reply that referenced that sigil.
 
-If you wrote artifacts and need approval, list them with paths so the user can review on disk before answering:
+**Gated content renders IN the chat message (binding):** every artifact a sigil asks the user to approve — cards, trees, tables, diagrams-as-text — is shown IN FULL in the gate message itself. A disk path is a supplement, never a substitute: "written to disk, see `<path>`" + summary + sigil is a VIOLATION — the user must never have to open a file to know what they're approving. If the artifact exceeds the iteration caps, split it across gates; never compress it onto disk. (Mermaid `.mmd` files viewed live in the editor are the one exception — the editor render IS the presentation.)
+
+The paths list supplements the rendered content so the user can also review on disk:
 
 ```
 Written this phase:

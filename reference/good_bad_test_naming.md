@@ -4,25 +4,29 @@ For full test-writing standards (Given/When/Then, fixtures, factory naming, obje
 
 ## Test name format (Phase 4 binding)
 
-Pattern: `test_<outcome>_when/for/on_<condition>`
+Pattern: `test_<scenario>` — the scenario is the event under test plus its qualifying state
 
 - Lowercase, underscore-separated.
-- `<outcome>` describes the asserted user/domain result (verb phrase) — not the refactor mechanism, collaborator, or model source; the test class/file already says what's under test.
-- `<condition>` names the precise input/state that triggers it — omit only when the behaviour is unconditional.
-- The name reads as a sentence: "test outcome when condition."
+- A feature test asserts the scenario's FULL contract in one test — return shape AND every state mutation — so the name never enumerates individual outcomes.
+- Include the event unless the enclosing class already scopes to exactly it (no redundant prefixes).
+- Two scenarios of the same event differ by their `when_<condition>` clause — numbered suffixes (`_1`, `_2`) are banned.
+- Omit the condition only when behaviour is unconditional.
 
 ### Good
 
-- `test_creates_user_and_issues_session`
-- `test_raises_token_expired_when_past_ttl`
-- `test_rolls_back_on_settings_update_failure`
+- `test_successful_submission`
+- `test_submission_when_slot_limit_reached`
+- `test_raises_token_expired_when_past_ttl` — class scopes the event; the raise IS the scenario.
 
 ### Bad
 
-- `test_login` — no outcome, just the method name.
-- `test_returns_response_from_repository` — names collaborator plumbing instead of the behaviour.
+- `test_compute_1` — a numeral is not a scenario.
+- `test_works` / `test_empty` — no event.
+- `test_post_authenticates_then_adds_entry` — mechanism chain; internal steps are not the scenario.
+- `test_submit_returns_subscription` — outcome slice; the scenario's full contract belongs in ONE test.
 - `test_LoginFlow` — CamelCase; not Python convention.
-- `test_does_things` — vague outcome.
+
+Existing test names in the repo do NOT override this standard — never copy a live naming idiom that conflicts with it.
 
 ## Test pairing rule
 

@@ -39,7 +39,7 @@ Any Function AC that mentions:
 MUST be flagged in the contract with `⚠️ USER SIGN-OFF REQUIRED` per the skill's Rules. Flag any swallowed exception without the sign-off marker.
 
 ### 5. AC Test naming + coverage
-- Test names follow `test_<outcome>_when/for/on_<condition>` (underscore-separated, lowercase; outcome-focused verb phrase, NO method-name prefix — the test class/file says what's under test; condition omitted only when unconditional). Flag CamelCase, method-name prefixes, or vague names.
+- Test names follow `test_<scenario>` (underscore-separated, lowercase; scenario = the event under test + qualifying `when_<condition>` clause, e.g. `test_successful_submission`, `test_submission_when_slot_limit_reached`; the event is omitted only when the test class scopes to exactly it; numbered suffixes banned). Flag CamelCase, mechanism-chain names (`X_then_Y`), outcome-slice fragmentation, or vague names.
 - Every Function AC has ≥1 AC Test. Flag uncovered ACs.
 - Each test name is unambiguous about outcome AND condition. Flag "test_works" or similar.
 

@@ -15,9 +15,7 @@ Write DAG edge inventory and app integration to `<schematic_dir>/components/_ove
 
 Shows the constructor injection graph. `A -> B` means `A` is constructor-injected into `B`. The graph must be a complete DAG — no cycles.
 
-**Defaults by node count:**
-- **≤8 nodes:** inline ASCII (vertical/diagonal arrows, top-down flow).
-- **>8 nodes:** Mermaid file (`dag.mmd`). The schematic references it.
+**Presentation (BINDING — user rule 2026-07-15):** ALWAYS create the Mermaid diagram (`dag.mmd`, validated) and AUTO-OPEN it in the schematic editor — no asking (`python3 <skill_dir>/reference/mermaid_edit/bridge.py <schematic_dir>/dag.mmd`, backgrounded, + arm the Q&A watcher). The user reviews the diagram in the editor BEFORE the gate's Confirm. Never hand-draw ASCII graph art in chat.
 
 **Mermaid DAG rules (binding for the `dag.mmd` file):**
 

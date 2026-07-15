@@ -12,12 +12,7 @@ Write ASCII sequence to `<schematic_dir>/components/_overview.md`. Write Mermaid
 
 > **Surface the visual tools (mandatory, once per phase):** when presenting the sequence gate, tell the user the diagram is viewable and hand-editable right now — `schematic overview` renders it in the dashboard (Diagrams tab), and the live editor below round-trips it on disk. Don't leave these discoverable-only.
 
-Produce the sequence diagram in **two formats**:
-
-1. **ASCII** — rendered in the terminal for immediate review
-2. **Mermaid** — output as a fenced `mermaid` code block for visual editor paste
-
-If the user edits the Mermaid and pastes it back, that becomes the new source of truth.
+**Presentation (BINDING — user rule 2026-07-15):** ALWAYS create the Mermaid diagram (`sequence.mmd`, validated) and AUTO-OPEN it in the schematic editor — no asking (`python3 <skill_dir>/reference/mermaid_edit/bridge.py <schematic_dir>/sequence.mmd`, backgrounded, + arm the Q&A watcher). The user reviews the diagram in the editor BEFORE the gate's Confirm — never present a diagram gate the user hasn't been shown. Never hand-draw ASCII graph art in chat. The on-disk `.mmd` is the source of truth; editor saves round-trip to it.
 
 ## Mermaid Theme Requirements
 

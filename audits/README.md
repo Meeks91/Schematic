@@ -30,7 +30,7 @@ Two **blind-spot passes** ride the P1 and P6 dispatches — a SEPARATE agent hun
 
 At each gate-end, BEFORE printing the `Confirm: y/comment` sigil:
 
-1. Write all this-gate artifacts to disk.
+1. Write all this-gate artifacts to disk. **For live-editable artifacts (P5/P6 diagrams): the user's editor review comes FIRST — dispatch the audit (and any blind-spot pass) only on the final, user-reviewed artifact, never on a pre-review draft.**
 2. Dispatch the audit:
    ```
    Agent({

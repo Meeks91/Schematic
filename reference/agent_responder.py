@@ -7,6 +7,8 @@ queue with `schematic questions` and replies with `schematic answer <id> "<text>
 writes to `<stem>.answers.json` — the UI bubble polls that file and renders the reply live.
 The answers file is NEVER written here: a raw prompt must never surface in the user's bubble.
 """
+from __future__ import annotations
+
 import json
 import threading
 from pathlib import Path

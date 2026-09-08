@@ -23,7 +23,7 @@ F4 — <feature title>                                        (4.A 4.B 4.C)
 
 Rules:
 - **Node one-liner on FIRST appearance only**; a node a later feature reuses appears as a bare back-ref (`↩ Name (Fn)`) — no duplication; the back-refs render cross-feature sharing visible.
-- **Storage rows (⛁) mandatory**: any feature that persists anything must show its table(s). A persisting strip with no ⛁ row is a gate-blocking hole. Unresolved storage forks are marked `[FORK OPEN]` — never silently decided.
+- **Storage rows (⛁) mandatory**: any feature that persists anything must show its table(s). A persisting strip with no ⛁ row is a gate-blocking hole. **Forks are resolved BEFORE the roster** (Question/Why + recommendation, gated, logged in the Decision Log) — a `[FORK OPEN]` node on the roster is forbidden; and **every node label is plain English a reader understands cold** (what it is / what it answers), never internal shorthand like "rostered predicate".
 - **Edges are loose, labelled "uses" arrows, not wiring** — every strip draws `A -->|"what A asks of B"| B` between its nodes, including into its `↩` back-refs, so the reader sees how the bundle connects; a strip of unconnected boxes is a gate-blocking hole. The arrows are predictions the P5 DAG re-derives (P5 owns injection edges); locking the roster locks the SET, not the arrows.
 - **Names are predictions**: locking the roster locks the inventory, not designs. Nodes still die/merge/split/rename during card batches — but only via the amendment rule below, never silently.
 

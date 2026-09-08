@@ -18,7 +18,7 @@ F4 — <feature title>                                        (4.A 4.B 4.C)
 │
 ├─ <ClassName>              <Type>         [NEW|MOD]  <one-line role>
 ├─ ↩ <ClassName> (F1)                                 ← back-ref, no one-liner
-└─ ⛁ <table name>           Table          [NEW|SHARED|FORK OPEN]  <one-line>
+└─ ⛁ <table name>           Table          [NEW|SHARED|MOD]  <one-line>
 ```
 
 Rules:

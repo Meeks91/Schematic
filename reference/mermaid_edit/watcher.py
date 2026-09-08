@@ -1,10 +1,10 @@
-"""Editor Q&A wake-up watcher — exits the moment an unanswered question lands.
+"""Editor wake-up watcher — exits the moment an unanswered question OR a new sticky note lands.
 
 Run BACKGROUNDED alongside bridge.py. Background tasks notify the agent on
 process EXIT, not on output — so this script exits (rather than looping
-forever) the first time the queue holds an unanswered question. The exit IS
-the wake-up call. On wake:
-1. Drain the queue:   schematic questions
+forever) the first time the queue holds an unanswered question or a note lands
+that was not present when the watcher armed. The exit IS the wake-up call. On wake:
+1. Drain the queue:   schematic questions   (and read new notes from <diagram>.notes.json)
 2. Reply:             schematic answer <id> "<text>"
 3. Re-arm:            relaunch this script (same command, backgrounded)
 
@@ -38,16 +38,20 @@ def _pending_count(questions: list, answers: list) -> int:
 def watch_until_pending(mmd_path: Path, poll_seconds: float) -> None:
     questions_path = mmd_path.with_suffix(".questions.json")
     answers_path = mmd_path.with_suffix(".answers.json")
+    notes_path = mmd_path.with_suffix(".notes.json")
+    note_count_at_arm = len(_load_entries(notes_path))
     while True:
         pending = _pending_count(
             questions=_load_entries(questions_path),
             answers=_load_entries(answers_path),
         )
-        if pending:
+        new_note_count = len(_load_entries(notes_path)) - note_count_at_arm
+        if pending or new_note_count > 0:
             print(
-                f"NEW EDITOR QUESTION(S): {pending} pending — drain with"
-                f" 'schematic questions', reply with 'schematic answer <id> ...',"
-                f" then re-arm this watcher.",
+                f"NEW EDITOR ACTIVITY: {pending} pending question(s),"
+                f" {new_note_count} new note(s) — drain with 'schematic questions',"
+                f" reply with 'schematic answer <id> ...', read new notes from"
+                f" '<diagram>.notes.json', then re-arm this watcher.",
                 flush=True,
             )
             return

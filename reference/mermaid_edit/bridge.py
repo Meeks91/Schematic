@@ -291,6 +291,7 @@ def launch_editor(diagram_path: Path) -> None:
     seen_count = 0
     questions_path = MermaidBridgeHandler.questions_path
     answers_path = MermaidBridgeHandler.answers_path
+    notes_path = MermaidBridgeHandler.notes_path
 
     try:
         while not _shutdown_event.is_set():
@@ -334,6 +335,17 @@ def launch_editor(diagram_path: Path) -> None:
         server.shutdown()
         print(f"\nSaved: {diagram_path}", flush=True)
         _report_unanswered(questions_path, answers_path)
+        _report_notes(notes_path)
+
+
+def _report_notes(notes_path: Path) -> None:
+    """Exit summary so the session agent sees every sticky note the user left."""
+    notes = json.loads(notes_path.read_text(encoding=ENCODING)) if notes_path.exists() else []
+    if not notes:
+        print("NOTES: none", flush=True)
+        return
+    for note in notes:
+        print(f"NOTE (x={note['x']},y={note['y']}): {note['text']}", flush=True)
 
 
 def _report_unanswered(questions_path: Path, answers_path: Path) -> None:

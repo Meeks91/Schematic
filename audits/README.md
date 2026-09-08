@@ -10,7 +10,7 @@ Audit hooks are background Sonnet agents dispatched at gate-end checkpoints. The
 
 ## When audits run
 
-Audits fire **once per phase, at phase completion** — the final sub-gate that closes the phase. Earlier sub-gates within a phase (e.g. each ≤3-class batch in Phase 2 or 4) do NOT trigger an audit; they only gate user content sign-off on that batch.
+Audits fire **once per phase, at phase completion** — the final sub-gate that closes the phase. Earlier sub-gates within a phase (e.g. each ≤3-class batch in Phase 4) do NOT trigger an audit; they only gate user content sign-off on that batch.
 
 | Audit | Phase | When |
 |---|---|---|

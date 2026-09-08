@@ -41,40 +41,40 @@ The roster is its own gate — end it with **Confirm: y/comment**.
 
 Every class is presented as a **boxed card**. The box surfaces the same surfaces every time so the user can scan a card cold and immediately see (1) what changes, (2) why, (3) what the class does, (4) where it fails loud. Apply the same shape to the in-chat presentation AND the on-disk `components/_overview.md` block.
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────┐
-│ 3.N  <ClassName>                                     [NEW]      │
+│ 3.N  <ClassName>                                          [NEW] │
 ├─────────────────────────────────────────────────────────────────┤
-│ Type:               <NounVerber | Service | Factory | ...>      │
-│ Lives in:           <path/relative/to/src>                      │
+│ Type:        <NounVerber | Service | Factory | ...>             │
+│ Lives in:    <path/relative/to/src>                             │
 ├─────────────────────────────────────────────────────────────────┤
 │ Necessitated by:                                                │
-│   • 1.A — <one-line of the Feature AC text, for context>        │
-│   • 1.C — <one-line of the Feature AC text, for context>        │
+│   1.A · <one-line of the Feature AC text, for context>          │
+│   1.C · <one-line of the Feature AC text, for context>          │
 ├─────────────────────────────────────────────────────────────────┤
 │ Purpose:                                                        │
-│   • <ownership bullet — concern/domain, not interface>          │
-│   • <ownership bullet>                                          │
-│   • <ownership bullet>                                          │
+│   · <ownership bullet — concern/domain, not interface>          │
+│   · <ownership bullet>                                          │
+│   · <ownership bullet>                                          │
 ├─────────────────────────────────────────────────────────────────┤
-│ Failure modes:        (omit section if N/A)                     │
-│   • <how the class fails loud — what raises, what propagates>   │
-│   • <invariant that triggers a raise>                           │
+│ Failure modes:                            (omit section if N/A) │
+│   · <how the class fails loud — what raises, what propagates>   │
+│   · <invariant that triggers a raise>                           │
 ├─────────────────────────────────────────────────────────────────┤
 │ Service Classification Gate:                                    │
-│   Domain owner:           yes | no — <one-line rationale>       │
-│   Other-Service consumer: yes | no — <one-line rationale>       │
-│   Decision:               <NounVerber internal | Service | ...> │
+│   Domain owner:            yes | no — <one-line rationale>      │
+│   Other-Service consumer:  yes | no — <one-line rationale>      │
+│   Decision:                <NounVerber internal | Service ...>  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 **Status badges (top-right):** `[NEW]`, `[MODIFIED]`, `[DELETED]`. For `[MODIFIED]`, the `Purpose:` section splits into:
-```
+```text
 │ Purpose:                                                        │
 │   Existing:                                                     │
-│     • <unchanged ownership>                                     │
+│     · <unchanged ownership>                                     │
 │   Added:                                                        │
-│     • <what this change brings>                                 │
+│     · <what this change brings>                                 │
 ```
 
 **Fields (binding):** Name · Component type · Necessitated by (refs + inline AC text) · Purpose (ownership bullets) · Failure modes (if any) · Service Classification Gate.
@@ -101,16 +101,27 @@ For **modified** existing classes: state what changes and why. For **deleted** c
 
 Tables are topology nodes: they have ownership, relationships, and consumers, exactly like classes. Every [NEW] table — or any storage fork (new table vs shared table vs column addition) — gets its own boxed card in the SAME batch as the Repository that owns it. **A Repository card cannot lock while its storage card is undecided.**
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────┐
 │ S.N  <table_name>                          [NEW | SHARED | MOD] │
 ├─────────────────────────────────────────────────────────────────┤
-│ One row is:   <identity in domain terms — no column DDL>        │
-│ Owned by:     <Repository>          Written by: <pipeline/svc>  │
-│ Read by:      <consumers>                                       │
-│ Relates to:   <FK-level relationships, in words>                │
-│ Semantics:    <cadence / retention / anchor model>              │
-│ Fork:         <options considered + decision — or OPEN>         │
+│ One row is:                                                     │
+│   <identity in domain terms — no column DDL>                    │
+├─────────────────────────────────────────────────────────────────┤
+│ Owned by:    <Repository>                                       │
+│ Written by:  <pipeline / svc>                                   │
+├─────────────────────────────────────────────────────────────────┤
+│ Read by:                                                        │
+│   <consumers>                                                   │
+├─────────────────────────────────────────────────────────────────┤
+│ Relates to:                                                     │
+│   <FK-level relationships, in words>                            │
+├─────────────────────────────────────────────────────────────────┤
+│ Semantics:                                                      │
+│   <cadence / retention / anchor model>                          │
+├─────────────────────────────────────────────────────────────────┤
+│ Fork:                                                           │
+│   <options considered + decision — or OPEN>                     │
 └─────────────────────────────────────────────────────────────────┘
 ```
 

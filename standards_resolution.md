@@ -47,6 +47,7 @@ Canonical location: **`.schematic/standards.json`** — harness-neutral and fram
   "unresolved": "learn",
   "schematic": {
     "reviewModel": "sonnet",
+    "correctnessModel": "<inherit or a model name>",
     "completionCompression": {
       "archDocsPath": "docs/architecture/",
       "strategy": "On schematic completion: 1. Sequence diagram: if an existing architecture sequence diagram exists at <archDocsPath>, integrate the schematic's sequence into it (merge participants and flows). If no existing sequence exists, create a new feature sequence doc at <archDocsPath>/<feature>.mmd. 2. Business logic & decisions: integrate the core summary (from objective.md) and decision log into existing feature documentation. If no existing docs exist, create <archDocsPath>/<feature>.md containing the objective, core summary, decision log, and a reference to the sequence diagram. 3. Schematic dir: delete docs/schematics/<feature>/ in full.",
@@ -63,6 +64,15 @@ Canonical location: **`.schematic/standards.json`** — harness-neutral and fram
 | `skill:<name>` | `.claude/skills/<name>/SKILL.md` (repo) → else `~/.claude/skills/<name>/SKILL.md` |
 | `file:<path>` | markdown file — repo-relative, absolute, or `~`-prefixed |
 | `learn` | derive from codebase exemplars → `learned_<slot>.md` (see Learn mode) |
+
+A slot may also map to an **ordered list** of sources (`["file:~/…/review-lenses.md", "file:.schematic/review_lenses.md"]`) when several modules fill one slot — each is inlined into review prompts under its own header, in list order. A mapped source that is not on disk is refused; a slot left out of the manifest is simply UNMAPPED.
+
+**Model settings** (`schematic` block):
+
+| Key | What it selects |
+|---|---|
+| `reviewModel` | the model that runs the diff-scoped standards reviews (per-task gate, Pass 1 sweep). Default `sonnet`. |
+| `correctnessModel` | the model that runs the Pass-3 adversarial correctness read (one reviewer per entry point + the reconciler). Omit the key to inherit the session's planning model — it is deliberately NOT `reviewModel`, because Pass 3 reads the whole system rather than a diff. |
 
 ## Resolution algorithm
 

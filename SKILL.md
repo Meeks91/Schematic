@@ -18,9 +18,9 @@ description: Multi-phase feature planning skill. Grills the user to produce a fe
 > ```
 > schematic init|status|validate|mermaid          # bundle lifecycle + integrity
 > schematic phase audit|sign-off|complete         # gate state per phase 1-9 (audit: 1,2,4,6,7 only)
-> schematic task next|show|status|note|review-result|complete   # phase 8 task loop
+> schematic task next|show|status|note|ask|decision|review-result|complete  # phase 8 task loop
 > schematic review start|sweep|batch-result|e2e|e2e-result|status  # phase 8 review
-> schematic questions / schematic answer          # dashboard/editor Q&A relay
+> schematic questions / schematic answer          # Q&A relay: dashboard, editor, AND `task ask`
 > schematic overview / schematic track            # dashboard + execution traces
 > ```
 >
@@ -252,6 +252,35 @@ AC tags MUST carry their one-line title here — no bare refs. Abbreviate with `
 
 `Locked:` is printed verbatim by `schematic status` (the `locked:` line) — paste it, don't hand-maintain it. Phase files never restate this template; they inherit it.
 
+**Absorption rule (mandatory, binding):**
+
+Decisions locked in an earlier phase — roster, topology cards, Decision Log entries, diagram/editor Q&A answers — are ABSORBED into later-phase artifacts as fixed facts, cited by source (`Decision Log 2026-07-15`, `card 3.13`). Never re-open them as gate questions or option tables. A gate question is legitimate ONLY for a decision the locked record does not answer — before asking, check the roster, Decision Log, and topology cards; if the answer is there, apply it silently and cite it.
+
+**A note is not a state (mandatory, binding):**
+
+An agent that hits a decision the design does not answer has exactly one move: file a
+question and let the CLI hold the task. Writing the gap into a card, a report, or a commit
+message and continuing is forbidden — prose no gate reads is not an escalation, and it is
+how a known-wrong build reaches `complete` with a reviewer's PASS on it.
+
+```
+pending ──▶ in_progress ──▶ review ──▶ complete
+                 │             │
+                 ├─────────────┘
+                 ▼
+            pendingInput          schematic task ask <tag> "<question>"    (agent, any mode)
+                 │
+                 └──▶ in_progress  schematic answer <id> "<text>"          (user, same relay)
+```
+
+| rule | enforced by |
+|---|---|
+| `task ask` files the question in the bundle's Q&A relay and moves the task to `pendingInput` | CLI |
+| `task complete` and `task status <tag> review` are refused while any question on the task is unanswered — `--override` does not close one | CLI |
+| `task decision` is limited to `--kind naming\|placement`; a contract change, a caveat, or an unspecified value must be `task ask` | CLI |
+| `validate` fails on any task in `pendingInput`, any unanswered question, and any "awaiting ratification" / "needs sign-off" prose in a card or ledger with no question behind it | CLI |
+| an open question in scope is a reviewer FAIL, never a note; auto mode stops on `pendingInput` | `phase_8_implementation_loop.md` |
+
 **Approval gate (mandatory, binding):**
 
 NEVER move past a phase or section without explicit content approval.
@@ -299,7 +328,6 @@ schematic phase complete --schematic <name> <N>
 >
 > Applies to **every** list the user is asked to confirm:
 > - Phase 1b Functional ACs entries
-> - Phase 2 topology blocks (classes)
 > - Phase 4 contract blocks (classes)
 > - Phase 7 **task graph** overview (the grouped dependency tables — gated once). The detailed task blocks beneath it are NOT gated: they are auto-written in one pass because every AC/contract/test they cite was already locked in Phases 1–6 (see `phase_7_tasks.md`).
 > - Any other gated list
@@ -512,7 +540,7 @@ Feature AC → Class AC → Function AC → AC Test
 # Tasks
 
 ## <tag> | <Action> | <Target>
-Status: pending | in_progress | complete
+Status: pending | in_progress | pendingInput | review | complete
 
 Feature ACs: <ref> — <title>, <ref> — <title>
 Class AC: <from objective.md summary>

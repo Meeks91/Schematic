@@ -7,7 +7,7 @@ For full test-writing standards (Given/When/Then, fixtures, factory naming, obje
 Pattern: `test_<scenario>` — the scenario is the event under test plus its qualifying state
 
 - Lowercase, underscore-separated.
-- A feature test asserts the scenario's FULL contract in one test — return shape AND every state mutation — so the name never enumerates individual outcomes.
+- A feature test asserts the scenario's FULL contract in one test — return shape AND every state mutation — so the name always carries its outcome: the specific one when it is one simple thing (`..._is_found`, `..._returns_none`), `_succeeds` / `_fails` when it cannot be reduced; never `_is_correct` / `_works` (every test asserts correctness — they say nothing).
 - Include the event unless the enclosing class already scopes to exactly it (no redundant prefixes).
 - Two scenarios of the same event differ by their `when_<condition>` clause — numbered suffixes (`_1`, `_2`) are banned.
 - Omit the condition only when behaviour is unconditional.
@@ -23,7 +23,7 @@ Pattern: `test_<scenario>` — the scenario is the event under test plus its qua
 - `test_compute_1` — a numeral is not a scenario.
 - `test_works` / `test_empty` — no event.
 - `test_post_authenticates_then_adds_entry` — mechanism chain; internal steps are not the scenario.
-- `test_submit_returns_subscription` — outcome slice; the scenario's full contract belongs in ONE test.
+- `test_submit_returns_subscription` — outcome slice (submit also charges and activates); the scenario's full contract belongs in ONE test.
 - `test_LoginFlow` — CamelCase; not Python convention.
 
 Existing test names in the repo do NOT override this standard — never copy a live naming idiom that conflicts with it.

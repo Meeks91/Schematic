@@ -21,10 +21,10 @@ in this phase keep that delivery honest:
    schematic and (if not) whether the schematic was patched to reflect
    reality. No silent "done" allowed.
 4. **The phase keeps a MINIMAL completion record: `implementation_report.md`
-   at the bundle root.** Record ONLY what required user sign-off: divergences
-   from the locked schematic (one dated bullet each), deferred items awaiting
-   decision, and commit status — success on everything else is assumed, not
-   narrated. Reviews get one line ("Pristine — <rounds>"), not a ledger.
+   at the bundle root.** It holds only what the user must know to ship the
+   feature — the functional and behavioural changes that diverged from the
+   locked schematic (one dated bullet each), deferred items awaiting decision,
+   and commit status; never run history, review rounds, or the CLI's own ledger.
    **Link it from the top of `objective.md`** (one blockquote line) — the
    dashboard renders the bundle, and an unlinked report is invisible there.
 5. **Independent decisions are logged, then signed off at the end.** Any decision
@@ -32,13 +32,30 @@ in this phase keep that delivery honest:
    sketch gate approved is recorded to the decision ledger the moment it's made.
    At end-of-impl these are presented as a batch for user sign-off and folded into
    the completion record. See "Decision ledger (both modes)" below.
+6. **A note is not a state.** A decision the design does not answer is not resolved by
+   annotating a card, a report, or a commit message. The agent files a question and the
+   CLI holds the task:
+
+   ```
+   schematic task ask <tag> "<question> — why: <what is blocked>"
+   ```
+
+   That moves the task to `pendingInput` and files the question in the same Q&A relay
+   the dashboard bubble uses. The user answers with `schematic answer <id> "<text>"`,
+   which returns the task to `in_progress`. The CLI refuses `task complete` and
+   `task status <tag> review` while any question on the task is unanswered — and
+   `--override` does NOT close one. `validate` fails on any task in `pendingInput`,
+   on any unanswered question, and on ratification prose ("awaiting ratification",
+   "needs sign-off") sitting in a card or ledger with no question behind it.
 
 > [!CAUTION]
 > ## Manual mode NEVER auto-implements. Auto mode is opt-in ONLY.
 >
 > In **manual mode** (the default) every task goes through the full Plan→Sketch→Confirm→Implement loop from `~/.claude/CLAUDE.md`. **Forbidden:** writing implementation code without first presenting a sketch and receiving explicit user confirmation. "The schematic approved the shape" is not consent for the implementation.
 >
-> **Auto mode** suspends the per-task sketch gate — but ONLY because the user explicitly entered it via `schematic review start --auto`. It is the single context in which an agent writes implementation code without a per-task sketch. Even then, every task is tested and diff-reviewed as it goes, and the entire feature diff is swept until pristine before the feature is done. **An agent must never select auto mode on its own initiative.**
+> **Auto mode** suspends the per-task sketch gate — but ONLY because the user explicitly entered it via `schematic review start --auto`. It is the single context in which an agent writes implementation code without a per-task sketch. Even then, every task is tested and diff-reviewed as it goes, each task group is standards-swept to PRISTINE as it drains, and the whole feature diff gets a final consistency pass and entry-point tracing before the feature is done. **An agent must never select auto mode on its own initiative.**
+>
+> **Auto mode STOPS on `pendingInput`.** Auto suspends confirmation gates, never the need for a human where the design is silent. The moment a task hits a decision the schematic does not answer and that is not a bare naming or placement choice, the agent runs `schematic task ask` and that task is done being worked. Auto continues on OTHER unblocked tasks; it never guesses on the held one, never marks it complete, and never resumes it by writing its own answer. If every remaining task is held, auto surfaces the open questions and stops — exactly as it already stops on `schematic questions`.
 
 ---
 
@@ -49,12 +66,12 @@ Phase 8 runs in one of two modes, recorded by `schematic review start`:
 | Mode | Entry | Per-task delivery | Final pass |
 |---|---|---|---|
 | **manual** (default) | `schematic review start --schematic <name>` | Plan→Sketch→Confirm→Implement — sketch gate mandatory | per-task review gate |
-| **auto** | `schematic review start --auto --goal "<goal>" --schematic <name>` | implement→test→diff-scoped review→fix, no sketch gate | batch-until-pristine sweep over the whole feature diff |
+| **auto** | `schematic review start --auto --goal "<goal>" --schematic <name>` | implement→test→diff-scoped review→fix, no sketch gate | per-group standards sweep → consistency → e2e entry-point tracing |
 
 Manual is the default and the safe path. Auto is the user's explicit opt-in to
 autonomous implementation; an agent never self-selects it. The per-task protocol
 and review gate below apply to **both** modes — manual adds the sketch step in
-front; auto omits it and adds the final sweep (see "Auto mode").
+front; auto omits it and adds the per-group standards sweep, the consistency pass, and entry-point tracing (see "Auto mode").
 
 ---
 
@@ -94,6 +111,19 @@ For each task in `tasks.md`, in order:
 sites (cache/memo/dedupe/etag/hash/`__eq__`); every determining input must appear in
 every derived key. Applies in both modes; greenfield tasks skip it.
 
+**Meeting-point inventory (binding):** a ruling or a task that touches an identity,
+a casing/canonical form, a time bound, or a state vocabulary must carry a
+grep-derived inventory of EVERY site that mints or compares that value — writers,
+readers, and the source the value comes from — written BEFORE its test list. No
+inventory, no test list: an agreement fixed on one side only is the defect this
+catches, and each side's own unit tests pass while it is broken.
+
+**Ship-ready rule (binding):** a task may be submitted for review only with **zero open
+questions** and zero as-built amendments awaiting anything. "Built, but X is still open"
+is not a reviewable state — it is a `pendingInput` state. Ask, get the answer, then
+submit. The CLI enforces this: `task status <tag> review` is refused while a question on
+the task is unanswered.
+
 Steps 1, 6, and 8 are binding. Starting implementation without `task next` having
 moved the task to `in_progress`, completing a task that never passed through
 `review`, or completing by any mechanism other than the CLI (editing tasks.md
@@ -107,8 +137,20 @@ Every decision the schematic doesn't answer **and** that no user sketch gate
 approved is recorded at the moment it's made:
 
 ```
-schematic task decision <tag> "<what> — <why>"
+schematic task decision <tag> "<what> — <why>" --kind naming|placement
 ```
+
+**The ledger's scope is narrow, and the CLI enforces it.** `task decision` takes
+`--kind naming|placement` and accepts nothing else. Those are the only choices an agent
+may take alone: what to call a thing, and where to put it. Anything that
+
+- changes a signed contract (signature, model field, error, return shape), or
+- adds a caveat, a known-wrong path, or a "works except when…", or
+- picks a value the card did not specify (a threshold, a window, a page size, a key)
+
+is **not a decision — it is a question.** Use `schematic task ask`. Recording such a
+choice as a decision and continuing is the exact failure this rule exists to stop: the
+task reaches `complete` carrying a defect the design never sanctioned.
 
 - **Manual mode** — the sketch gate covers most choices; the ledger captures the
   residue (calls the sketch didn't cover, made independently of the user).
@@ -173,12 +215,20 @@ Protocol:
    `schematic-task-done` hard-block without a clean verdict (`--override` /
    `--force` are the explicit, recorded escape hatches).
 
+**Reviewer rule — an open question is a FAIL, never a note (binding).** If a reviewer
+finds, anywhere in scope, an unanswered question, a caveat, a "pending ratification" /
+"needs sign-off" annotation, or a known-wrong path the card does not sanction, the verdict
+is `VERDICT: findings` — not a clean verdict with a remark attached. A reviewer that
+passes work while recording the caveat has converted a blocking defect into prose, which
+is the failure mode this gate exists to prevent. The correct resolution is
+`schematic task ask`, by the implementing agent, before the task returns to review.
+
 The review gate verifies standards; `schematic-task-done` records schematic
 drift. Both run — neither replaces the other.
 
 ---
 
-## Auto mode — driver loop + batch-until-pristine sweep
+## Auto mode — driver loop + per-group standards sweep + final review (consistency · entry-point tracing)
 
 Entered by `schematic review start --auto --goal "<goal>" --schematic <name>`,
 which records the mode and pins `base_ref` to the current HEAD. An agent never
@@ -206,30 +256,48 @@ mode records every unanswered decision via `schematic task decision <tag> "<what
 <why>"`. The e2e gate prints the collected ledger; the master folds it into
 `implementation_report.md` § **Autonomous decisions**.
 
-### Final review — two-pass (diff-only style sweep → master e2e correctness gate)
+### Four review layers (auto mode)
 
-Once the board is drained, the feature diff goes through two review passes:
+```
+#1  per-task review      one task's diff        standards + correctness   loops to clean       per task (driver loop above)
+#2  standards sweep      a group's files, ≤5s   standards                 loops to PRISTINE    per GROUP boundary
+#3  consistency sweep    whole diff, one agent  duplication/redundancy    single pass, NO loop feature end
+#4  entry-point tracing  per entry point        correctness (ACs)         no loop              feature end
+```
 
-1. **Diff-only style sweep** (review-model subagents, loop-until-pristine) — standards compliance on changed lines only
-2. **E2e correctness gate** (master agent, inline) — integration, wiring, contract fidelity using full schematic context
+`#1` is the driver loop's per-task gate above. `#2` runs each time a task group
+completes; `#3` and `#4` run once the board is drained.
 
-#### Pass 1: Diff-only style sweep
+### #2 — per-group standards sweep
+
+As each task GROUP (`a.`, `b.`, `c.`, …) drains, run the sweep over what that group touched:
 
 ```
 schematic review sweep --schematic <name>
 ```
 
-Each sweep computes the cumulative diff since `base_ref` (feature files only —
-the `docs/schematics/` planning tree is excluded), shards it into batches of at
-most **5 files**, and prints one review prompt per batch. For each batch the
-implementing agent launches a review-model subagent (Agent tool) on the printed
-prompt.
+The sweep computes the cumulative diff since `base_ref` (feature files only — the
+`docs/schematics/` planning tree is excluded), shards it into batches of at most
+**5 files**, and prints one **STYLE + STANDARDS** review prompt per batch, with the
+resolved standards modules inlined. **Per-group scoping falls out of timing + the skip,
+not a flag:** at group `a`'s boundary the cumulative diff is only `a`'s files; at group
+`b`'s boundary the skip drops `a`'s already-clean files and only `b`'s new files re-enter
+batches. No `--group` argument — the CLI can't map a group to file paths (task targets are
+prose), and it doesn't need to.
 
 **Diff-only prompts — agents see diff hunks, not full files.** The CLI inlines
 `git diff base_ref -- <batch files>` and the resolved standards module content
 (styling + testing for the batch's languages) directly into the prompt. Agents
 receive all input inline and do NOT read any files. This structurally eliminates
 false positives from pre-existing code — agents literally cannot see it.
+
+**Triggered lenses.** A resolved review module may carry a lens scoped to part of the
+codebase, declared by a `Triggers:` line of path globs directly under its heading. The CLI
+does no matching — it inlines every resolved review module, in manifest order, under its
+own `── review (<source>) ──` header. The reviewing agent applies a triggered lens **only
+when a path in its batch matches that lens's globs**, and applies its FAIL conditions
+verbatim when it does. (The same lenses fire at planning time from the Phase 7 audit,
+against task target paths instead of diff paths.)
 
 Every prompt carries three HARD RULES:
 
@@ -244,47 +312,101 @@ Record each batch, then fix and re-sweep:
 schematic review batch-result <batch_id> clean|findings --summary "<one line>" --schematic <name>
 ```
 
-Fix every finding, then **re-run `review sweep`** — a fresh sweep over the new
-diff. Repeat until a sweep reports `PRISTINE` (every batch clean).
+Fix findings, re-sweep until PRISTINE (every batch clean). **Re-sweeps are incremental
+(token discipline):** a file whose diff is byte-identical to one already reviewed `clean`
+in a prior sweep is skipped and logged — only re-touched files re-enter batches. A re-sweep
+where every file is skipped reports PRISTINE immediately. This is the mechanic that scopes
+each sweep to its group.
 
-**Re-sweeps are incremental (token discipline):** a file whose diff is
-byte-identical to one already reviewed `clean` in a prior sweep is skipped and
-logged — only re-touched files re-enter batches. A re-sweep where every file is
-skipped reports PRISTINE immediately.
+### #3 — consistency sweep (single agent, one pass)
 
-#### Pass 2: E2e correctness gate (master agent)
+Once every group is swept PRISTINE and the board is drained:
 
-After the style sweep reaches PRISTINE:
+```
+schematic review consistency --schematic <name>
+```
+
+ONE review-model agent over the ENTIRE feature diff in a single view, **one pass, no
+loop**, asking only: what is duplicated, what is redundant, what says the same thing two
+ways (names, patterns, helpers) across files and tasks. It does NOT loop — re-running a
+reviewer over signed-off code chasing names and patterns is the churn `#1` and `#2` already
+own; this pass reads once. Standards are NOT re-checked — the earlier gates held them.
+Duplication is a cross-file property, so this pass needs the whole diff in one view (a
+5-file shard cannot see a helper duplicated eight files away).
+
+Plus a **mechanical per-file line-limit check**: the CLI itself flags any Python feature
+file whose logic lines (imports excluded) exceed the ceiling (`schematic.maxFileLines`,
+default 220) — no subagent, no standards read. The master splits or justifies each.
+
+The master triages findings with full context (a locked card or ledgered ruling beats the
+reviewer), fixes the accepted ones, and records the verdict. Plus the project's whole-tree
+gates (linter, type checker, full suites — whatever its own config declares) run once.
+
+```
+schematic review consistency-result clean|findings --summary "<one line>" --schematic <name>
+```
+
+### #4 — e2e entry-point tracing (adversarial)
+
+Requires a clean consistency gate. `#2`/`#3` read the diff; `#4` reads the **system**, and
+it is the only pass that can catch a defect whose whole nature is that nothing in the diff
+looks wrong — a runner that will happily apply a file a comment says to hold back, a
+scheduled job that fires against something a later step removes, a flag whose meaning
+drifted between two entry points.
 
 ```
 schematic review e2e --schematic <name>
 ```
 
-The master agent — which has full schematic context, naming decisions, and prior
-feedback — reviews all changed files for correctness. This is NOT a style review
-(the sweep handled that). The master checks:
+One **correctness-model reviewer per entry point** (`schematic.correctnessModel` in
+`standards.json`; default = the session's planning model, never `reviewModel`), run in
+parallel. "Entry point" explicitly includes *operational* entry points, not just the
+feature's own API surface:
 
-1. **Wiring** — DI constructor args match, imports resolve, method signatures match callers
-2. **Contracts** — implementation matches the locked schematic component specs
-3. **Test coverage** — every schematic AC test exists and tests the right behaviour
-4. **Integration** — cross-component call flows are correct (sequence diagram vs code)
-5. **Correctness** — the Correctness & Bugs lens from the resolved review module, over changed lines
-6. **Blast radius** — the Integration & Blast Radius lens from the resolved review module: dependents of changed signatures, derived-key completeness (cache/memo/dedupe/etag/hash)
+- every HTTP route / MCP tool / public service method the feature adds or changes
+- **any runner that applies files from a directory** (schema migrations, seed
+  scripts, jobs) — what it globs, what it skips, what one `--yes` covers
+- **the deploy commands** — what each subcommand actually executes, with which args
+- **the cron / scheduled / workflow entrypoints** — including anything registered
+  in another database or another system (pg_cron, Cloud Scheduler, terraform)
 
-**In auto mode:** fix findings silently, record the result — no user gate. The
-implementation report notes the e2e verdict.
+Each reviewer traces its entry point **all the way to storage and back**, against the ACs
+as the oracle, and must produce **cross-path claims** — statements about what a *different*
+entry point now does as a consequence. A finding that only restates its own path is not a
+finding; the value is entirely in the crossings ("the scheduled job in database A calls a
+function the chain for database B deletes", "the deploy job passes `--yes`, which this
+change makes sufficient to drop a table"). Each reviewer carries the 7 checks: wiring,
+contracts, test coverage, integration, correctness, blast radius, and the **meeting-point
+inventory table** (state · writer file:line · reader file:line · axes · e2e test) — an
+empty inventory on a feature touching SQL or a shared model is a FAIL, not clean.
 
-**In manual mode:** present findings to the user with `Confirm: y/comment`.
+Then **one correctness-model reconciler** reads every reviewer's output, dedupes, resolves
+contradictions, and ranks by blast radius. Output goes to
+`research/correctness_pass_<date>/` under the schematic:
 
-Record the verdict:
+```
+research/correctness_pass_2026-09-03/
+  R1_<entry_point>.md            one per reviewer
+  R2_<entry_point>.md
+  ...
+  R_reconciled.md                the reconciler's single ordered list
+  R_dispositions.md              the addendum, written as the user rules on each
+```
+
+**Findings are user-dispositioned, never auto-fixed** — including in auto mode. `#4` is a
+*reading* pass; the agent presents `R_reconciled.md` and stops. The user decides per
+finding: fix now, fix later (with a named home), or accept. The dispositions addendum
+records that ruling. An agent that silently fixes a finding has destroyed the evidence the
+user needed to judge how bad it was. Record the reconciled verdict:
 
 ```
 schematic review e2e-result clean|findings --summary "<one line>" --schematic <name>
 ```
 
-The feature is not done until both a PRISTINE sweep AND a clean (or recorded)
-e2e verdict exist. `schematic review status` shows the mode, `base_ref`, the
-latest sweep's per-batch verdicts, and the e2e state.
+**Feature done** = every group swept PRISTINE (`#2`) + consistency CLEAN (`#3`) + e2e
+tracing dispositioned (`#4`). A clean tracing pass proceeds untouched; only its findings
+stop for the user to rule on. `schematic review status` shows the mode, `base_ref`, the
+latest sweep's per-batch verdicts, the consistency state, and the e2e state.
 
 ---
 

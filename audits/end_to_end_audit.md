@@ -56,7 +56,34 @@ Final quality gate. Walk the entire schematic bundle and verify everything cross
 - Any Feature AC marked DEFERRED must have a corresponding 501-return note in the contract.
 - Flag silent deferrals.
 
-### 9. Count tally
+### 9. Triggered lenses (conditional — driven by the resolved review modules)
+
+Some review lenses apply only to specific parts of a codebase. Such a lens declares its own
+scope with a `Triggers:` line directly under its heading — a comma-separated list of path
+globs. The schematic knows nothing about what those paths mean; the lens does.
+
+For every lens in the resolved `review` modules (the manifest `review` slot — it may map to
+several modules; read all of them, in order):
+
+1. Read the lens's `Triggers:` line. A lens with no `Triggers:` line is unconditional and was
+   already applied by the standards pass — skip it here.
+2. Match every path that a task in `tasks.md` creates or modifies against those globs. If
+   nothing matches, skip the lens and record that in one line.
+3. If anything matches, run that lens's **planning checks** — the subsection the lens marks as
+   belonging to this audit — against the matching tasks AND the real files they name. Read the
+   files; the task text is not the evidence.
+4. Report findings under the lens's own heading and apply its FAIL conditions verbatim. A lens
+   FAIL blocks the phase lock exactly as a check in this file does.
+
+Tasks are the trigger surface at planning time; the diff is the trigger surface at review time
+(the Phase 8 sweep). Where a triggered lens requires an artifact — a runbook, a sequencing
+table, an ordered plan — that artifact becomes part of the phase: every task that triggered
+the lens must link it, and a task that does not is a finding.
+
+A prose assurance is never a mechanism: if the rule is "this must not run yet", the file must
+sit where the runner cannot reach it.
+
+### 10. Count tally
 Report final counts:
 - Feature ACs: N (X deferred, Y active)
 - Classes: N (BE: X, FE: Y)

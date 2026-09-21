@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 
 import argparse
+import contextlib
 import importlib.util
+import io
 import json
 import textwrap
 import unittest
@@ -139,6 +141,41 @@ def _make_args(**kwargs: Any) -> argparse.Namespace:
 def _with_resolved_dir(schematic_dir: Path, fn: Any, args: Any) -> None:
     with patch.object(_cli, "resolve_schematic_dir", return_value=schematic_dir):
         fn(args)
+
+
+def _claim_task(schematic_dir: Path, tag: str) -> None:
+    """Move a task pending → in_progress in both tasks.md and the state file."""
+    _cli.update_task_status_in_file(schematic_dir / "tasks.md", tag, _cli.TASK_STATUS_IN_PROGRESS)
+    state = _cli.load_state(schematic_dir)
+    state["tasks"].setdefault(tag, {})["status"] = _cli.TASK_STATUS_IN_PROGRESS
+    _cli.save_state(schematic_dir, state)
+
+
+def _run_task_ask(schematic_dir: Path, tag: str, question: str) -> None:
+    args = _make_args(tag=tag, text=question, schematic=schematic_dir.name)
+    _with_resolved_dir(schematic_dir, _cli._task_ask, args)
+
+
+def _run_answer(schematic_dir: Path, question_id: str, answer: str) -> None:
+    args = _make_args(id=question_id, text=answer, name=schematic_dir.name)
+    with patch.object(_cli, "_resolve_single_or_all", return_value=[schematic_dir]):
+        _cli.cmd_answer(args)
+
+
+def _status_of(schematic_dir: Path, tag: str) -> str:
+    return next(
+        task["status"]
+        for task in _cli.parse_tasks(schematic_dir / "tasks.md")
+        if task["tag"] == tag
+    )
+
+
+def _captured_stdout(fn: Any, **kwargs: Any) -> str:
+    """Run fn(**kwargs) and return everything it printed."""
+    captured = io.StringIO()
+    with contextlib.redirect_stdout(captured):
+        fn(**kwargs)
+    return captured.getvalue()
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
 
@@ -717,6 +754,49 @@ class TestValidate(unittest.TestCase):
             findings = _cli._validate_schematic(schematic_dir)
             self.assertTrue(any("override" in f for f in findings))
 
+    def test_flags_task_in_pending_input(self) -> None:
+        # Given a task held awaiting the user
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            _claim_task(schematic_dir, "b.1")
+            _run_task_ask(schematic_dir, "b.1", _QUESTION_KEY_CHOICE)
+
+            # When validating
+            findings = _cli._validate_schematic(schematic_dir)
+
+            # Then the held task is a finding
+            self.assertTrue(any("b.1" in f and "pendingInput" in f for f in findings))
+
+    def test_flags_unanswered_question(self) -> None:
+        # Given an unanswered question in the relay
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            _claim_task(schematic_dir, "b.1")
+            _run_task_ask(schematic_dir, "b.1", _QUESTION_KEY_CHOICE)
+
+            # When validating
+            findings = _cli._validate_schematic(schematic_dir)
+
+            # Then the open question is a finding naming its id
+            self.assertTrue(any(_TASK_QUESTION_ID_FIRST in f for f in findings))
+
+    def test_clean_when_question_answered_and_task_resumed(self) -> None:
+        # Given the question answered and the task back in progress
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            _claim_task(schematic_dir, "b.1")
+            _run_task_ask(schematic_dir, "b.1", _QUESTION_KEY_CHOICE)
+            _run_answer(schematic_dir, _TASK_QUESTION_ID_FIRST, _ANSWER_KEY_CHOICE)
+
+            # When validating
+            findings = _cli._validate_schematic(schematic_dir)
+
+            # Then neither the state nor the question is a finding
+            self.assertEqual(
+                [f for f in findings if "pendingInput" in f or "question" in f],
+                [],
+            )
+
 
 # Fixtures
 
@@ -1077,15 +1157,357 @@ class TestReviewSweepIncremental(unittest.TestCase):
             self.assertEqual([b["files"] for b in resweep["batches"]], [["src/a.py"]])
 
 
+class TestLogicLineCount(unittest.TestCase):
+    """_logic_line_count — physical lines minus the lines imports occupy."""
+
+    def test_excludes_single_line_imports(self) -> None:
+        # Given a module with three import lines and two code lines
+        python_source = (
+            "import os\n"
+            "import sys\n"
+            "from pathlib import Path\n"
+            "x = 1\n"
+            "y = 2\n"
+        )
+
+        # When counting logic lines
+        logic_line_count = _cli._logic_line_count(python_source=python_source)
+
+        # Then the three import lines are excluded
+        assert logic_line_count == 2
+
+    def test_excludes_a_multiline_import(self) -> None:
+        # Given a parenthesised import spanning four lines plus one code line
+        python_source = (
+            "from pkg import (\n"
+            "    a,\n"
+            "    b,\n"
+            ")\n"
+            "z = a\n"
+        )
+
+        # When counting logic lines
+        logic_line_count = _cli._logic_line_count(python_source=python_source)
+
+        # Then every line of the multiline import is excluded
+        assert logic_line_count == 1
+
+    def test_counts_blanks_and_docstrings_as_logic(self) -> None:
+        # Given a module docstring, a blank line, one import, and one code line
+        python_source = (
+            '"""Module doc."""\n'
+            "\n"
+            "import os\n"
+            "value = os.getcwd()\n"
+        )
+
+        # When counting logic lines
+        logic_line_count = _cli._logic_line_count(python_source=python_source)
+
+        # Then only the import is excluded — docstring and blank still count
+        assert logic_line_count == 3
+
+
+class TestResolveMaxFileLines(unittest.TestCase):
+    """_resolve_max_file_lines — manifest override, else the packaged default."""
+
+    def test_uses_the_manifest_override_when_present(self) -> None:
+        # Given a manifest setting schematic.maxFileLines
+        with TemporaryDirectory() as tmp:
+            project_root = _gen_project_root_with_manifest(
+                tmp,
+                manifest={"schematic": {"maxFileLines": 50}},
+            )
+
+            # When resolving the ceiling
+            max_file_lines = _cli._resolve_max_file_lines(project_root=project_root)
+
+            # Then the override wins
+            assert max_file_lines == 50
+
+    def test_falls_back_to_the_default_when_unset(self) -> None:
+        # Given a manifest with no maxFileLines key
+        with TemporaryDirectory() as tmp:
+            project_root = _gen_project_root_with_manifest(
+                tmp,
+                manifest={"schematic": {}},
+            )
+
+            # When resolving the ceiling
+            max_file_lines = _cli._resolve_max_file_lines(project_root=project_root)
+
+            # Then the packaged default applies
+            assert max_file_lines == _cli.MAX_FILE_LINES_DEFAULT
+
+
+class TestOversizedFeatureFiles(unittest.TestCase):
+    """_oversized_feature_files — python files over the logic-line ceiling."""
+
+    def _write_python_file(self, project_root: Path, path: str, logic_line_count: int) -> None:
+        file_path = project_root / path
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        body = "\n".join(
+            f"line_{index} = {index}"
+            for index in range(logic_line_count)
+        )
+        file_path.write_text(f"{body}\n")
+
+    def test_flags_a_python_file_over_the_ceiling(self) -> None:
+        # Given a python file of twelve logic lines and a ceiling of ten
+        with TemporaryDirectory() as tmp:
+            project_root = Path(tmp)
+            self._write_python_file(project_root, "src/big.py", 12)
+
+            # When scanning
+            path_to_logic_lines = _cli._oversized_feature_files(
+                diff_files=["src/big.py"],
+                project_root=project_root,
+                max_file_lines=10,
+            )
+
+            # Then the file is flagged with its count
+            assert path_to_logic_lines == {"src/big.py": 12}
+
+    def test_keeps_a_file_at_the_ceiling_out(self) -> None:
+        # Given a python file exactly at the ceiling
+        with TemporaryDirectory() as tmp:
+            project_root = Path(tmp)
+            self._write_python_file(project_root, "src/exact.py", 10)
+
+            # When scanning with a ceiling of ten
+            path_to_logic_lines = _cli._oversized_feature_files(
+                diff_files=["src/exact.py"],
+                project_root=project_root,
+                max_file_lines=10,
+            )
+
+            # Then it is not flagged — the ceiling is strict
+            assert path_to_logic_lines == {}
+
+    def test_ignores_non_python_files(self) -> None:
+        # Given an oversized SQL file
+        with TemporaryDirectory() as tmp:
+            project_root = Path(tmp)
+            self._write_python_file(project_root, "migrations/big.sql", 20)
+
+            # When scanning with a ceiling of ten
+            path_to_logic_lines = _cli._oversized_feature_files(
+                diff_files=["migrations/big.sql"],
+                project_root=project_root,
+                max_file_lines=10,
+            )
+
+            # Then only python files are measured
+            assert path_to_logic_lines == {}
+
+    def test_skips_a_deleted_file(self) -> None:
+        # Given a diff path with no working-tree file (a deletion)
+        with TemporaryDirectory() as tmp:
+            project_root = Path(tmp)
+
+            # When scanning
+            path_to_logic_lines = _cli._oversized_feature_files(
+                diff_files=["src/gone.py"],
+                project_root=project_root,
+                max_file_lines=10,
+            )
+
+            # Then the missing file is skipped, not read
+            assert path_to_logic_lines == {}
+
+
+class TestReviewE2e(unittest.TestCase):
+    """_review_e2e — adversarial per-entry-point tracing brief, never a silent auto-fix."""
+
+    def _seed_ready_for_e2e(self, schematic_dir: Path) -> None:
+        state = _cli.load_state(schematic_dir)
+        state["run"] = {"mode": "auto", "goal": "g", "base_ref": "BASE", "started_at": "t"}
+        state["sweeps"] = [
+            {
+                "sweep_id": 1,
+                "batches": [],
+                "pristine": True,
+                "skipped_clean": [],
+            },
+        ]
+        state["consistency"] = {"status": "clean", "verdict": "clean", "summary": "ok"}
+        _cli.save_state(schematic_dir, state)
+
+    def _captured_e2e(self, schematic_dir: Path, diff_files: list[str]) -> str:
+        args = _make_args(schematic=schematic_dir.name)
+        captured = io.StringIO()
+        with patch.object(_cli, "resolve_schematic_dir", return_value=schematic_dir), \
+             patch.object(_cli, "find_project_root", return_value=schematic_dir), \
+             patch.object(_cli, "_cumulative_diff_files", return_value=diff_files), \
+             contextlib.redirect_stdout(captured):
+            _cli._review_e2e(args)
+        return captured.getvalue()
+
+    def test_brief_asks_for_per_entry_point_tracing(self) -> None:
+        # Given an auto run ready for e2e (pristine sweep + clean consistency)
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            self._seed_ready_for_e2e(schematic_dir)
+
+            # When opening the e2e gate
+            e2e_output = self._captured_e2e(schematic_dir, ["src/a.py"])
+
+            # Then the brief orchestrates per-entry-point tracing, not a single master review
+            assert "entry-point tracing" in e2e_output
+            assert "reviewer PER entry point" in e2e_output
+            assert "reconciler" in e2e_output
+            assert "MASTER AGENT" not in e2e_output
+
+    def test_brief_forbids_auto_fixing_findings(self) -> None:
+        # Given an auto run ready for e2e
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            self._seed_ready_for_e2e(schematic_dir)
+
+            # When opening the e2e gate
+            e2e_output = self._captured_e2e(schematic_dir, ["src/a.py"])
+
+            # Then findings are user-dispositioned, never silently fixed
+            assert "USER-DISPOSITIONED, never auto-fixed" in e2e_output
+            assert "fix any findings silently" not in e2e_output
+
+    def test_exits_without_a_clean_consistency_gate(self) -> None:
+        # Given an auto run with a pristine sweep but no consistency verdict
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            state = _cli.load_state(schematic_dir)
+            state["run"] = {"mode": "auto", "goal": "g", "base_ref": "BASE", "started_at": "t"}
+            state["sweeps"] = [{"sweep_id": 1, "batches": [], "pristine": True, "skipped_clean": []}]
+            _cli.save_state(schematic_dir, state)
+
+            # When opening the e2e gate / Then it refuses
+            with self.assertRaises(SystemExit):
+                self._captured_e2e(schematic_dir, ["src/a.py"])
+
+    def test_exits_when_consistency_returned_findings(self) -> None:
+        # Given a pristine sweep and a consistency gate that returned findings
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            state = _cli.load_state(schematic_dir)
+            state["run"] = {"mode": "auto", "goal": "g", "base_ref": "BASE", "started_at": "t"}
+            state["sweeps"] = [{"sweep_id": 1, "batches": [], "pristine": True, "skipped_clean": []}]
+            state["consistency"] = {"status": "findings", "verdict": "findings", "summary": "dup found"}
+            _cli.save_state(schematic_dir, state)
+
+            # When opening the e2e gate / Then it refuses — consistency is not clean
+            with self.assertRaises(SystemExit):
+                self._captured_e2e(schematic_dir, ["src/a.py"])
+
+
+class TestReviewConsistency(unittest.TestCase):
+    """_review_consistency — single-agent whole-diff duplication/redundancy + line-limit, one pass."""
+
+    def _seed_run_and_pristine_sweep(self, schematic_dir: Path) -> None:
+        state = _cli.load_state(schematic_dir)
+        state["run"] = {"mode": "auto", "goal": "g", "base_ref": "BASE", "started_at": "t"}
+        state["sweeps"] = [{"sweep_id": 1, "batches": [], "pristine": True, "skipped_clean": []}]
+        _cli.save_state(schematic_dir, state)
+
+    def _captured_consistency(self, schematic_dir: Path, diff_files: list[str]) -> str:
+        args = _make_args(schematic=schematic_dir.name)
+        captured = io.StringIO()
+        with patch.object(_cli, "resolve_schematic_dir", return_value=schematic_dir), \
+             patch.object(_cli, "find_project_root", return_value=schematic_dir), \
+             patch.object(_cli, "_cumulative_diff_files", return_value=diff_files), \
+             patch.object(_cli, "_run_git_raw", return_value=""), \
+             contextlib.redirect_stdout(captured):
+            _cli._review_consistency(args)
+        return captured.getvalue()
+
+    def test_prompt_asks_for_duplication_not_standards(self) -> None:
+        # Given an auto run with a pristine sweep
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            self._seed_run_and_pristine_sweep(schematic_dir)
+
+            # When opening the consistency gate
+            consistency_output = self._captured_consistency(schematic_dir, ["src/a.py"])
+
+            # Then it asks for duplication in a single view, never a standards re-review
+            assert "DUPLICATION" in consistency_output
+            assert "single view" in consistency_output
+            assert "STYLE + STANDARDS" not in consistency_output
+
+    def test_warns_about_a_file_over_the_line_ceiling(self) -> None:
+        # Given a python file well over the default ceiling
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            self._seed_run_and_pristine_sweep(schematic_dir)
+            big_body = "\n".join(
+                f"line_{index} = {index}"
+                for index in range(_cli.MAX_FILE_LINES_DEFAULT + 5)
+            )
+            big_file = schematic_dir / "src" / "big.py"
+            big_file.parent.mkdir(parents=True, exist_ok=True)
+            big_file.write_text(f"{big_body}\n")
+
+            # When opening the consistency gate
+            consistency_output = self._captured_consistency(schematic_dir, ["src/big.py"])
+
+            # Then the oversized warning names the file
+            assert "logic-line" in consistency_output
+            assert "src/big.py" in consistency_output
+
+    def test_exits_without_a_pristine_sweep(self) -> None:
+        # Given an auto run but no pristine sweep
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            state = _cli.load_state(schematic_dir)
+            state["run"] = {"mode": "auto", "goal": "g", "base_ref": "BASE", "started_at": "t"}
+            _cli.save_state(schematic_dir, state)
+
+            # When opening the consistency gate / Then it refuses
+            with self.assertRaises(SystemExit):
+                self._captured_consistency(schematic_dir, ["src/a.py"])
+
+    def test_exits_when_the_latest_sweep_is_not_pristine(self) -> None:
+        # Given an earlier pristine sweep but a later group sweep with outstanding findings
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            state = _cli.load_state(schematic_dir)
+            state["run"] = {"mode": "auto", "goal": "g", "base_ref": "BASE", "started_at": "t"}
+            state["sweeps"] = [
+                {"sweep_id": 1, "batches": [], "pristine": True, "skipped_clean": []},
+                {
+                    "sweep_id": 2,
+                    "batches": [{"batch_id": "2.1", "files": ["src/b.py"], "verdict": "findings", "summary": None}],
+                    "pristine": False,
+                    "skipped_clean": [],
+                },
+            ]
+            _cli.save_state(schematic_dir, state)
+
+            # When opening the consistency gate / Then it refuses — the latest sweep is not pristine
+            with self.assertRaises(SystemExit):
+                self._captured_consistency(schematic_dir, ["src/b.py"])
+
+    def test_records_a_clean_verdict(self) -> None:
+        # Given a consistency gate opened over one file
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            self._seed_run_and_pristine_sweep(schematic_dir)
+            self._captured_consistency(schematic_dir, ["src/a.py"])
+
+            # When recording a clean verdict
+            args = _make_args(verdict="clean", summary="no duplication", schematic=schematic_dir.name)
+            with patch.object(_cli, "resolve_schematic_dir", return_value=schematic_dir), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                _cli._review_consistency_result(args)
+
+            # Then the verdict is recorded on the consistency gate
+            consistency = _cli.load_state(schematic_dir)["consistency"]
+            assert consistency["verdict"] == "clean"
+
+
 class TestStatusOutput(unittest.TestCase):
 
     def _captured_status(self, schematic_dir: Path) -> str:
-        import contextlib
-        import io
-        captured = io.StringIO()
-        with contextlib.redirect_stdout(captured):
-            _cli._print_status(schematic_dir)
-        return captured.getvalue()
+        return _captured_stdout(_cli._print_status, schematic_dir=schematic_dir)
 
     def test_status_shows_next_phase_over_nine_and_locked_line(self) -> None:
         # Given phases 1-3 locked
@@ -1112,6 +1534,19 @@ class TestStatusOutput(unittest.TestCase):
             status_output = self._captured_status(schematic_dir)
             # Then the schematic reads complete
             self.assertIn("phase:     complete", status_output)
+
+    def test_status_lists_pending_input_tasks_with_count(self) -> None:
+        # Given a task held awaiting the user
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            _claim_task(schematic_dir, "b.1")
+            _run_task_ask(schematic_dir, "b.1", _QUESTION_KEY_CHOICE)
+
+            # When printing status
+            status_output = self._captured_status(schematic_dir)
+
+            # Then the held task is counted and named on its own line
+            self.assertIn("pendingInput  1  [b.1]", status_output)
 
     def test_status_shows_dash_when_nothing_locked(self) -> None:
         # Given no locked phases
@@ -1239,6 +1674,625 @@ class TestReviewBatchResult(unittest.TestCase):
             self._seed_sweep(schematic_dir)
             with self.assertRaises(SystemExit):
                 self._run_result(schematic_dir, "9.9", "clean", "ok")
+
+
+# Fixtures
+
+
+# Fixtures:
+
+_QUESTION_KEY_CHOICE = "which cache key does the diff window use?"
+_QUESTION_STAMP_RULE = "do degenerate rows get a stamp?"
+_ANSWER_KEY_CHOICE = "use the anchor polled_at"
+_TASK_QUESTION_ID_FIRST = "tasks#0"
+_TASK_QUESTION_ID_SECOND = "tasks#1"
+_DASHBOARD_QUESTION_ID = "overview#0"
+
+
+class TestTaskAsk(unittest.TestCase):
+
+    def test_ask_moves_task_to_pending_input_and_files_the_question(self) -> None:
+        # Given a claimed task
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            _claim_task(schematic_dir, "b.1")
+
+            # When the agent asks a question it cannot answer
+            _run_task_ask(schematic_dir, "b.1", _QUESTION_KEY_CHOICE)
+
+            # Then the task is held in pendingInput and the question is filed against it
+            self.assertEqual(_status_of(schematic_dir, "b.1"), "pendingInput")
+            self.assertEqual(
+                _cli.load_state(schematic_dir)["tasks"]["b.1"]["status"],
+                "pendingInput",
+            )
+            questions = json.loads((schematic_dir / "tasks.questions.json").read_text())
+            self.assertEqual(
+                questions,
+                [{"idx": 0, "tag": "b.1", "text": _QUESTION_KEY_CHOICE, "context": "task b.1"}],
+            )
+
+    def test_ask_question_surfaces_in_the_pending_relay(self) -> None:
+        # Given a filed task question
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            _claim_task(schematic_dir, "b.1")
+            _run_task_ask(schematic_dir, "b.1", _QUESTION_KEY_CHOICE)
+
+            # When the relay is drained
+            pending = _cli._pending_questions(schematic_dir)
+
+            # Then `schematic questions` sees it under the tasks source
+            self.assertEqual(len(pending), 1)
+            self.assertEqual(pending[0]["id"], _TASK_QUESTION_ID_FIRST)
+            self.assertEqual(pending[0]["text"], _QUESTION_KEY_CHOICE)
+
+    def test_ask_when_task_is_pending_is_refused(self) -> None:
+        # Given an unclaimed task
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+
+            # Then asking is refused
+            with self.assertRaises(SystemExit):
+                # When asking before claiming
+                _run_task_ask(schematic_dir, "b.1", _QUESTION_KEY_CHOICE)
+            self.assertEqual(_status_of(schematic_dir, "b.1"), "pending")
+
+    def test_ask_when_task_unknown_is_refused(self) -> None:
+        # Given a tag that is not in tasks.md
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+
+            # Then asking is refused
+            with self.assertRaises(SystemExit):
+                # When asking against it
+                _run_task_ask(schematic_dir, "z.9", _QUESTION_KEY_CHOICE)
+
+    def test_second_ask_appends_without_dropping_the_first(self) -> None:
+        # Given one question already filed on a task
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            _claim_task(schematic_dir, "b.1")
+            _run_task_ask(schematic_dir, "b.1", _QUESTION_KEY_CHOICE)
+
+            # When a second question is asked
+            _run_task_ask(schematic_dir, "b.1", _QUESTION_STAMP_RULE)
+
+            # Then both are open, in order
+            pending = _cli._pending_questions(schematic_dir)
+            self.assertEqual(
+                [(question["id"], question["text"]) for question in pending],
+                [
+                    (_TASK_QUESTION_ID_FIRST, _QUESTION_KEY_CHOICE),
+                    (_TASK_QUESTION_ID_SECOND, _QUESTION_STAMP_RULE),
+                ],
+            )
+
+
+# Fixtures
+
+
+class TestAnswerRoundTrip(unittest.TestCase):
+
+    def test_answer_returns_task_to_in_progress(self) -> None:
+        # Given a task held in pendingInput by one question
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            _claim_task(schematic_dir, "b.1")
+            _run_task_ask(schematic_dir, "b.1", _QUESTION_KEY_CHOICE)
+
+            # When the user answers it
+            _run_answer(schematic_dir, _TASK_QUESTION_ID_FIRST, _ANSWER_KEY_CHOICE)
+
+            # Then the task resumes and the answer is on file
+            self.assertEqual(_status_of(schematic_dir, "b.1"), "in_progress")
+            self.assertEqual(
+                _cli.load_state(schematic_dir)["tasks"]["b.1"]["status"],
+                "in_progress",
+            )
+            answers = json.loads((schematic_dir / "tasks.answers.json").read_text())
+            self.assertEqual(answers, [{"idx": 0, "answer": _ANSWER_KEY_CHOICE}])
+
+    def test_answer_leaves_task_pending_input_while_another_question_is_open(self) -> None:
+        # Given two open questions on one task
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            _claim_task(schematic_dir, "b.1")
+            _run_task_ask(schematic_dir, "b.1", _QUESTION_KEY_CHOICE)
+            _run_task_ask(schematic_dir, "b.1", _QUESTION_STAMP_RULE)
+
+            # When only the first is answered
+            _run_answer(schematic_dir, _TASK_QUESTION_ID_FIRST, _ANSWER_KEY_CHOICE)
+
+            # Then the task is still held
+            self.assertEqual(_status_of(schematic_dir, "b.1"), "pendingInput")
+
+    def test_answer_to_a_dashboard_question_does_not_touch_task_status(self) -> None:
+        # Given a claimed task and an unrelated dashboard question
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            _claim_task(schematic_dir, "b.1")
+            (schematic_dir / "overview.questions.json").write_text(
+                json.dumps([{"idx": 0, "text": "why this DAG edge?"}])
+            )
+
+            # When the dashboard question is answered
+            _run_answer(schematic_dir, _DASHBOARD_QUESTION_ID, "it is the write path")
+
+            # Then no task status moves
+            self.assertEqual(_status_of(schematic_dir, "b.1"), "in_progress")
+
+
+# Fixtures
+
+
+class TestPendingInputGates(unittest.TestCase):
+
+    def _record_clean_review(self, schematic_dir: Path, tag: str) -> None:
+        state = _cli.load_state(schematic_dir)
+        state["tasks"].setdefault(tag, {})["review_request"] = {"tag": tag, "status": "clean"}
+        _cli.save_state(schematic_dir, state)
+
+    def _run_task_complete(self, schematic_dir: Path, tag: str, override: str | None) -> None:
+        args = _make_args(tag=tag, schematic=schematic_dir.name, override=override)
+        _with_resolved_dir(schematic_dir, _cli._task_complete, args)
+
+    def _run_task_status(self, schematic_dir: Path, tag: str, new_status: str) -> None:
+        args = _make_args(
+            tag=tag,
+            status=new_status,
+            schematic=schematic_dir.name,
+            override=None,
+        )
+        _with_resolved_dir(schematic_dir, _cli._task_status, args)
+
+    def test_complete_refused_when_task_is_pending_input(self) -> None:
+        # Given a task held in pendingInput that already has a clean review
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            _claim_task(schematic_dir, "b.1")
+            _run_task_ask(schematic_dir, "b.1", _QUESTION_KEY_CHOICE)
+            self._record_clean_review(schematic_dir, "b.1")
+
+            # Then completion is refused
+            with self.assertRaises(SystemExit):
+                # When completing
+                self._run_task_complete(schematic_dir, "b.1", override=None)
+            self.assertEqual(_status_of(schematic_dir, "b.1"), "pendingInput")
+
+    def test_complete_refused_when_question_unanswered_despite_clean_review(self) -> None:
+        # Given a task returned to in_progress by hand while its question is still open
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            _claim_task(schematic_dir, "b.1")
+            _run_task_ask(schematic_dir, "b.1", _QUESTION_KEY_CHOICE)
+            _claim_task(schematic_dir, "b.1")
+            self._record_clean_review(schematic_dir, "b.1")
+
+            # Then completion is refused
+            with self.assertRaises(SystemExit):
+                # When completing
+                self._run_task_complete(schematic_dir, "b.1", override=None)
+
+    def test_complete_refused_with_override_when_question_unanswered(self) -> None:
+        # Given the same task and an override reason
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            _claim_task(schematic_dir, "b.1")
+            _run_task_ask(schematic_dir, "b.1", _QUESTION_KEY_CHOICE)
+            _claim_task(schematic_dir, "b.1")
+            self._record_clean_review(schematic_dir, "b.1")
+
+            # Then the override does not unlock an open question
+            with self.assertRaises(SystemExit):
+                # When completing with an override
+                self._run_task_complete(schematic_dir, "b.1", override="shipping tonight")
+
+    def test_complete_allowed_once_the_question_is_answered(self) -> None:
+        # Given the question answered and the task resumed
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            _claim_task(schematic_dir, "b.1")
+            _run_task_ask(schematic_dir, "b.1", _QUESTION_KEY_CHOICE)
+            _run_answer(schematic_dir, _TASK_QUESTION_ID_FIRST, _ANSWER_KEY_CHOICE)
+            self._record_clean_review(schematic_dir, "b.1")
+
+            # When completing
+            self._run_task_complete(schematic_dir, "b.1", override=None)
+
+            # Then the task completes
+            self.assertEqual(_status_of(schematic_dir, "b.1"), "complete")
+
+    def test_status_review_refused_when_question_unanswered(self) -> None:
+        # Given a task with an open question, put back in_progress
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            _claim_task(schematic_dir, "b.1")
+            _run_task_ask(schematic_dir, "b.1", _QUESTION_KEY_CHOICE)
+            _claim_task(schematic_dir, "b.1")
+
+            # Then submitting it for review is refused
+            with self.assertRaises(SystemExit):
+                # When submitting for review
+                self._run_task_status(schematic_dir, "b.1", "review")
+            self.assertEqual(_status_of(schematic_dir, "b.1"), "in_progress")
+
+    def test_status_review_allowed_once_the_question_is_answered(self) -> None:
+        # Given the question answered
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            _claim_task(schematic_dir, "b.1")
+            _run_task_ask(schematic_dir, "b.1", _QUESTION_KEY_CHOICE)
+            _run_answer(schematic_dir, _TASK_QUESTION_ID_FIRST, _ANSWER_KEY_CHOICE)
+
+            # When submitting for review
+            self._run_task_status(schematic_dir, "b.1", "review")
+
+            # Then the task moves to review
+            self.assertEqual(_status_of(schematic_dir, "b.1"), "review")
+
+
+# Fixtures
+
+
+class TestTaskDecision(unittest.TestCase):
+
+    def _run_decision(self, schematic_dir: Path, tag: str, kind: str, text: str) -> None:
+        args = _make_args(tag=tag, text=text, kind=kind, schematic=schematic_dir.name)
+        _with_resolved_dir(schematic_dir, _cli._task_decision, args)
+
+    def test_decision_with_naming_kind_is_recorded(self) -> None:
+        # Given a claimed task
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+
+            # When a naming decision is recorded
+            self._run_decision(schematic_dir, "b.1", "naming", "called it anchor_polled_at")
+
+            # Then the ledger holds it with its kind
+            decisions = _cli.load_state(schematic_dir)["tasks"]["b.1"]["decisions"]
+            self.assertEqual(len(decisions), 1)
+            self.assertEqual(decisions[0]["text"], "called it anchor_polled_at")
+            self.assertEqual(decisions[0]["kind"], "naming")
+
+    def test_decision_with_placement_kind_is_recorded(self) -> None:
+        # Given a claimed task
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+
+            # When a placement decision is recorded
+            self._run_decision(schematic_dir, "b.1", "placement", "put it under utils/")
+
+            # Then the ledger holds it with its kind
+            decisions = _cli.load_state(schematic_dir)["tasks"]["b.1"]["decisions"]
+            self.assertEqual(decisions[0]["kind"], "placement")
+
+    def test_decision_with_contract_kind_is_refused_pointing_at_task_ask(self) -> None:
+        # Given a decision that changes a signed contract
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            captured_error = io.StringIO()
+
+            # Then it is refused and redirected to task ask
+            with contextlib.redirect_stderr(captured_error), self.assertRaises(SystemExit):
+                # When recording it as a decision
+                self._run_decision(schematic_dir, "b.1", "contract", "widened the CHECK")
+            self.assertIn("task ask", captured_error.getvalue())
+            self.assertEqual(_cli.load_state(schematic_dir)["tasks"], {})
+
+
+# Fixtures
+
+
+class TestRatificationPhraseLint(unittest.TestCase):
+
+    def _phrase_findings(self, schematic_dir: Path) -> list[str]:
+        return [
+            finding for finding in _cli._validate_schematic(schematic_dir)
+            if "a note is not a state" in finding
+        ]
+
+    def test_flags_open_for_ratification_in_a_component_card(self) -> None:
+        # Given a card carrying the phrase and no question filed for its task
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            (schematic_dir / "components" / "reel_enrichment_service.md").write_text(
+                "## Contract\nOPEN FOR RATIFICATION — the window rule may be wrong.\n"
+            )
+
+            # When validating
+            findings = self._phrase_findings(schematic_dir)
+
+            # Then the card is flagged
+            self.assertTrue(any("reel_enrichment_service.md" in f for f in findings))
+
+    def test_accepts_the_phrase_when_a_question_is_filed_for_that_cards_task(self) -> None:
+        # Given the same card, with a question filed against the task that owns it
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            (schematic_dir / "components" / "reel_enrichment_service.md").write_text(
+                "## Contract\nOPEN FOR RATIFICATION — the window rule may be wrong.\n"
+            )
+            _claim_task(schematic_dir, "b.1")
+            _run_task_ask(schematic_dir, "b.1", _QUESTION_KEY_CHOICE)
+
+            # When validating
+            findings = self._phrase_findings(schematic_dir)
+
+            # Then the phrase is not flagged — the question is the state
+            self.assertEqual(findings, [])
+
+    def test_flags_the_phrase_again_once_its_question_is_answered(self) -> None:
+        # Given a card whose ratification question has been asked AND answered
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            (schematic_dir / "components" / "reel_enrichment_service.md").write_text(
+                "## Contract\nOPEN FOR RATIFICATION — the window rule may be wrong.\n"
+            )
+            _claim_task(schematic_dir, "b.1")
+            _run_task_ask(schematic_dir, "b.1", _QUESTION_KEY_CHOICE)
+            _run_answer(schematic_dir, _TASK_QUESTION_ID_FIRST, _ANSWER_KEY_CHOICE)
+
+            # When validating
+            findings = self._phrase_findings(schematic_dir)
+
+            # Then the stale prose is a finding again — only an OPEN question silences it
+            self.assertTrue(any("reel_enrichment_service.md" in f for f in findings))
+
+    def test_flags_awaiting_ratification_in_the_task_ledger(self) -> None:
+        # Given tasks.md carrying the phrase with no question filed
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            tasks_md = schematic_dir / "tasks.md"
+            tasks_md.write_text(
+                tasks_md.read_text().replace(
+                    "Feature ACs: 1.A, 1.B",
+                    "Feature ACs: 1.A, 1.B\nNote: awaiting ratification of the cap",
+                )
+            )
+
+            # When validating
+            findings = self._phrase_findings(schematic_dir)
+
+            # Then the ledger is flagged
+            self.assertTrue(any("tasks.md" in f for f in findings))
+
+    def test_flags_needs_user_sign_off_in_the_objective_ledger(self) -> None:
+        # Given objective.md carrying the phrase — no task owns it
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            objective_md = schematic_dir / "objective.md"
+            objective_md.write_text(
+                objective_md.read_text() + "\n## Decision Log\n- cap of 15 needs user sign-off\n"
+            )
+
+            # When validating
+            findings = self._phrase_findings(schematic_dir)
+
+            # Then the ledger is flagged
+            self.assertTrue(any("objective.md" in f for f in findings))
+
+
+# Fixtures
+
+
+# Fixtures:
+
+_REVIEW_SLOT = "review"
+_LENS_ONE_FILENAME = "lens_one.md"
+_LENS_TWO_FILENAME = "lens_two.md"
+_LENS_ONE_BODY = "## Lens — One\nfirst lens body\n"
+_LENS_TWO_BODY = "## Lens — Two\nsecond lens body\n"
+_MISSING_LENS_SOURCE = "file:.schematic/absent_lens.md"
+
+
+def _gen_project_root_with_manifest(tmp: str, manifest: dict) -> Path:
+    """Write a project root carrying the canonical manifest plus two stand-in standards modules."""
+    project_root = Path(tmp)
+    schematic_config_dir = project_root / ".schematic"
+    schematic_config_dir.mkdir(parents=True)
+    (schematic_config_dir / _LENS_ONE_FILENAME).write_text(_LENS_ONE_BODY)
+    (schematic_config_dir / _LENS_TWO_FILENAME).write_text(_LENS_TWO_BODY)
+    (schematic_config_dir / "standards.json").write_text(json.dumps(manifest) + "\n")
+    return project_root
+
+
+def _gen_project_root_with_review_sources(tmp: str, review_source: object) -> Path:
+    """Write a project root whose manifest maps only the review slot to review_source."""
+    return _gen_project_root_with_manifest(tmp, manifest={_REVIEW_SLOT: review_source})
+
+
+def _gen_lens_source(filename: str) -> str:
+    """A manifest source string pointing at one of the stand-in modules."""
+    return f"file:.schematic/{filename}"
+
+# Fixtures
+
+
+class TestMultiSourceReviewSlot(unittest.TestCase):
+
+    def test_review_slot_string_source_still_resolves(self) -> None:
+        # Given a manifest mapping review to a single string source
+        with TemporaryDirectory() as tmp:
+            project_root = _gen_project_root_with_review_sources(
+                tmp,
+                review_source=_gen_lens_source(_LENS_ONE_FILENAME),
+            )
+
+            # When resolving the slots
+            slot_to_paths = _cli._resolved_slot_paths(project_root)
+
+            # Then the review slot holds that one module
+            self.assertEqual(
+                slot_to_paths[_REVIEW_SLOT],
+                [project_root / ".schematic" / _LENS_ONE_FILENAME],
+            )
+
+    def test_review_slot_list_of_sources_resolves_in_order(self) -> None:
+        # Given a manifest mapping review to an ordered list of sources
+        with TemporaryDirectory() as tmp:
+            project_root = _gen_project_root_with_review_sources(
+                tmp,
+                review_source=[
+                    _gen_lens_source(_LENS_ONE_FILENAME),
+                    _gen_lens_source(_LENS_TWO_FILENAME),
+                ],
+            )
+
+            # When resolving the slots
+            slot_to_paths = _cli._resolved_slot_paths(project_root)
+
+            # Then both modules resolve, in manifest order
+            self.assertEqual(
+                slot_to_paths[_REVIEW_SLOT],
+                [
+                    project_root / ".schematic" / _LENS_ONE_FILENAME,
+                    project_root / ".schematic" / _LENS_TWO_FILENAME,
+                ],
+            )
+
+    def test_string_source_that_does_not_exist_is_refused(self) -> None:
+        # Given a slot mapped to a single module that is not on disk
+        with TemporaryDirectory() as tmp:
+            project_root = _gen_project_root_with_review_sources(
+                tmp,
+                review_source=_MISSING_LENS_SOURCE,
+            )
+
+            # Then resolution refuses the manifest, exactly as it does for a listed source
+            with self.assertRaises(SystemExit):
+                # When resolving the slots
+                _cli._resolved_slot_paths(project_root)
+
+    def test_review_slot_list_with_an_unresolvable_source_is_refused(self) -> None:
+        # Given a list naming a module that is not on disk
+        with TemporaryDirectory() as tmp:
+            project_root = _gen_project_root_with_review_sources(
+                tmp,
+                review_source=[
+                    _gen_lens_source(_LENS_ONE_FILENAME),
+                    _MISSING_LENS_SOURCE,
+                ],
+            )
+
+            # Then resolution refuses the manifest
+            with self.assertRaises(SystemExit):
+                # When resolving the slots
+                _cli._resolved_slot_paths(project_root)
+
+    def test_sweep_prompt_inlines_every_review_source_under_its_own_header(self) -> None:
+        # Given a manifest with two review lenses
+        with TemporaryDirectory() as tmp:
+            project_root = _gen_project_root_with_review_sources(
+                tmp,
+                review_source=[
+                    _gen_lens_source(_LENS_ONE_FILENAME),
+                    _gen_lens_source(_LENS_TWO_FILENAME),
+                ],
+            )
+
+            # When building the standards block for a python batch
+            standards_content = _cli._resolve_standards_content_for_batch(
+                batch_files=["src/a.py"],
+                project_root=project_root,
+            )
+
+            # Then each lens is inlined under its own headed section, in order
+            first_header = f"── review ({_gen_lens_source(_LENS_ONE_FILENAME)}) ──"
+            second_header = f"── review ({_gen_lens_source(_LENS_TWO_FILENAME)}) ──"
+            self.assertIn(first_header, standards_content)
+            self.assertIn(second_header, standards_content)
+            self.assertIn(_LENS_ONE_BODY.strip(), standards_content)
+            self.assertIn(_LENS_TWO_BODY.strip(), standards_content)
+            self.assertLess(
+                standards_content.index(first_header),
+                standards_content.index(second_header),
+            )
+
+    def test_sql_only_batch_inlines_the_sql_styling_module(self) -> None:
+        # Given a manifest mapping sql styling, and a batch of only migration files
+        with TemporaryDirectory() as tmp:
+            project_root = _gen_project_root_with_manifest(
+                tmp,
+                manifest={"styling": {"sql": _gen_lens_source(_LENS_ONE_FILENAME)}},
+            )
+
+            # When building the standards block
+            standards_content = _cli._resolve_standards_content_for_batch(
+                batch_files=["config/db/schema/migrations/trengine/019_drop.sql"],
+                project_root=project_root,
+            )
+
+            # Then the sql module is inlined under its own header
+            self.assertIn(
+                f"── styling.sql ({_gen_lens_source(_LENS_ONE_FILENAME)}) ──",
+                standards_content,
+            )
+            self.assertIn(_LENS_ONE_BODY.strip(), standards_content)
+
+    def test_init_labels_the_canonical_repo_manifest_as_its_source(self) -> None:
+        # Given a repo carrying the canonical .schematic/ manifest
+        with TemporaryDirectory() as tmp:
+            project_root = _gen_project_root_with_review_sources(
+                tmp,
+                review_source=_gen_lens_source(_LENS_ONE_FILENAME),
+            )
+
+            # When reporting manifest coverage
+            report_output = _captured_stdout(
+                _cli._report_standards_manifest,
+                project_root=project_root,
+            )
+
+            # Then the label names the file actually loaded, not the .claude/ fallback
+            self.assertIn("standards: .schematic/standards.json (repo manifest)", report_output)
+
+    def test_correctness_model_is_read_from_the_manifest_and_defaults_to_inherit(self) -> None:
+        # Given one manifest pinning a correctness model and one leaving it unset
+        with TemporaryDirectory() as tmp:
+            pinned_root = _gen_project_root_with_manifest(
+                tmp,
+                manifest={"schematic": {"reviewModel": "sonnet", "correctnessModel": "opus"}},
+            )
+
+            # When resolving the correctness model
+            pinned_model = _cli._resolve_correctness_model(pinned_root)
+
+            # Then the manifest value wins
+            self.assertEqual(pinned_model, "opus")
+
+        with TemporaryDirectory() as tmp:
+            unset_root = _gen_project_root_with_manifest(
+                tmp,
+                manifest={"schematic": {"reviewModel": "sonnet"}},
+            )
+
+            # When resolving with no correctnessModel set
+            inherited_model = _cli._resolve_correctness_model(unset_root)
+
+            # Then it is None — inherit the session's planning model
+            self.assertIsNone(inherited_model)
+
+    def test_init_reports_every_review_source(self) -> None:
+        # Given a manifest with two review lenses
+        with TemporaryDirectory() as tmp:
+            project_root = _gen_project_root_with_review_sources(
+                tmp,
+                review_source=[
+                    _gen_lens_source(_LENS_ONE_FILENAME),
+                    _gen_lens_source(_LENS_TWO_FILENAME),
+                ],
+            )
+
+            # When reporting manifest coverage
+            report_output = _captured_stdout(
+                _cli._report_standards_manifest,
+                project_root=project_root,
+            )
+
+            # Then both module paths are printed
+            self.assertIn(str(project_root / ".schematic" / _LENS_ONE_FILENAME), report_output)
+            self.assertIn(str(project_root / ".schematic" / _LENS_TWO_FILENAME), report_output)
 
 
 # Fixtures

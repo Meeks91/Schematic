@@ -8,6 +8,14 @@
 
 Write ASCII sequence to `<schematic_dir>/components/_overview.md`. Write Mermaid to `<schematic_dir>/sequence.mmd`.
 
+> **Multi-flow features → one `.mmd` per flow (user rule 2026-07-22).** When the feature has
+> several distinct runtime flows, do NOT pack them into one diagram: `sequence.mmd` holds the
+> primary flow; siblings are `sequence_<flow>.mmd` beside it. All validate via `schematic mermaid`
+> (it scans every `.mmd` in the dir) and each renders as its own entry ("tab") in the dashboard's
+> Diagrams view. `_overview.md`'s `## Sequence Diagram` header lists every file with its flow + ACs.
+> Open the live editor per file, sequentially — Save & Close advances to the next.
+> (Future tooling: multi-tab support inside `reference/mermaid_edit/` — not built yet.)
+
 > **Gate enforcement:** `schematic phase complete` will reject if `sequence.mmd` does not exist, if `components/_overview.md` does not contain `## Sequence Diagram`, **or if `sequence.mmd` fails mermaid validation** — the diagram must parse before the phase can lock.
 
 > **Surface the visual tools (mandatory, once per phase):** when presenting the sequence gate, tell the user the diagram is viewable and hand-editable right now — `schematic overview` renders it in the dashboard (Diagrams tab), and the live editor below round-trips it on disk. Don't leave these discoverable-only.

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import ast
 import hashlib
 import json
 import re
@@ -8,10 +9,15 @@ import subprocess
 import sys
 import textwrap
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, NoReturn, TypeAlias
 
 # ── constants ──────────────────────────────────────────────────────────────────
+
+# One task as parsed out of tasks.md: tag, action, target, status, component_file, blocked_by, raw_lines.
+TaskRecord: TypeAlias = dict[str, Any]
 
 SCHEMATICS_BASE = "docs/schematics"
 STANDARDS_MANIFEST_RELPATH_CANONICAL = ".schematic/standards.json"
@@ -21,20 +27,43 @@ STATE_FILENAME = ".schematic-state.json"
 
 TASK_STATUS_PENDING = "pending"
 TASK_STATUS_IN_PROGRESS = "in_progress"
+TASK_STATUS_PENDING_INPUT = "pendingInput"
 TASK_STATUS_REVIEW = "review"
 TASK_STATUS_COMPLETE = "complete"
-VALID_TASK_STATUSES = {TASK_STATUS_PENDING, TASK_STATUS_IN_PROGRESS, TASK_STATUS_REVIEW, TASK_STATUS_COMPLETE}
+VALID_TASK_STATUSES = {
+    TASK_STATUS_PENDING,
+    TASK_STATUS_IN_PROGRESS,
+    TASK_STATUS_PENDING_INPUT,
+    TASK_STATUS_REVIEW,
+    TASK_STATUS_COMPLETE,
+}
+# pendingInput is entered only by `task ask`, which files the question that holds the task.
+MANUAL_TASK_STATUS_CHOICES = sorted(VALID_TASK_STATUSES - {TASK_STATUS_PENDING_INPUT})
+TASK_STATUSES_ALLOWED_TO_ASK = {
+    TASK_STATUS_IN_PROGRESS,
+    TASK_STATUS_PENDING_INPUT,
+    TASK_STATUS_REVIEW,
+}
+
+DECISION_KIND_NAMING = "naming"
+DECISION_KIND_PLACEMENT = "placement"
+VALID_DECISION_KINDS = {DECISION_KIND_NAMING, DECISION_KIND_PLACEMENT}
 
 REVIEW_MODEL_DEFAULT = "sonnet"
 REVIEW_MODEL_KEY = "reviewModel"
+CORRECTNESS_MODEL_KEY = "correctnessModel"
+CORRECTNESS_MODEL_INHERIT_LABEL = "inherit"  # unset = the session's planning model, never reviewModel
 SCHEMATIC_CONFIG_KEY = "schematic"
 REVIEW_VERDICT_CLEAN = "clean"
 REVIEW_VERDICT_FINDINGS = "findings"
 REVIEW_VERDICTS = {REVIEW_VERDICT_CLEAN, REVIEW_VERDICT_FINDINGS}
+REVIEW_GATE_STATUS_PENDING = "pending"  # a consistency/e2e gate opened but not yet recorded
 
 MAX_FILES_PER_REVIEW_BATCH = 5  # token bound: a sweep subagent reads at most this many files, nothing else
+MAX_FILE_LINES_KEY = "maxFileLines"
+MAX_FILE_LINES_DEFAULT = 220  # per-file logic lines, imports excluded — the styling standard
 RUN_MODE_MANUAL = "manual"  # per-task sketch gate (default)
-RUN_MODE_AUTO = "auto"      # long-running driver loop + batch-until-pristine sweep
+RUN_MODE_AUTO = "auto"      # long-running driver loop + per-group standards sweep + consistency + e2e tracing
 VALID_RUN_MODES = {RUN_MODE_MANUAL, RUN_MODE_AUTO}
 SWEEP_STATUS_PRISTINE = "pristine"
 REVIEW_SLOT_KEY = "review"
@@ -59,15 +88,23 @@ PHASE_STATUS_LOCKED = "locked"
 PHASE_AUDIT_CLEAN = "clean"
 
 STANDARDS_SLOTS = ("architecture", "types", "common", "styling", "testing", "review", "exemplars")
+STYLING_SLOT = "styling"
+EXEMPLARS_SLOT = "exemplars"
 
 TASK_HEADER_RE = re.compile(r"^## ([a-z]\.\d+) \| (\w+) \| (.+)$")
 FEATURE_AC_RE = re.compile(r"(\d+\.[A-Z])\b")
 BLOCKED_BY_TAG_RE = re.compile(r"\b([a-z]\.\d+)\b")
+RATIFICATION_PHRASE_RE = re.compile(
+    r"awaiting ratification|open for ratification|needs (?:user )?sign|needs ratification",
+    re.IGNORECASE,
+)
+LINT_LEDGER_FILENAMES = ("objective.md", "tasks.md", "implementation_report.md")
 
 LEGAL_TASK_TRANSITIONS: dict[str, set[str]] = {
     TASK_STATUS_PENDING: {TASK_STATUS_IN_PROGRESS},
-    TASK_STATUS_IN_PROGRESS: {TASK_STATUS_REVIEW, TASK_STATUS_COMPLETE},
-    TASK_STATUS_REVIEW: {TASK_STATUS_COMPLETE, TASK_STATUS_IN_PROGRESS},
+    TASK_STATUS_IN_PROGRESS: {TASK_STATUS_REVIEW, TASK_STATUS_COMPLETE, TASK_STATUS_PENDING_INPUT},
+    TASK_STATUS_PENDING_INPUT: {TASK_STATUS_IN_PROGRESS},
+    TASK_STATUS_REVIEW: {TASK_STATUS_COMPLETE, TASK_STATUS_IN_PROGRESS, TASK_STATUS_PENDING_INPUT},
     TASK_STATUS_COMPLETE: set(),
 }
 
@@ -203,8 +240,8 @@ def _shard_diff_into_batches(changed_files: list[str], max_files_per_batch: int)
     ]
 
 
-def _load_standards_manifest(project_root: Path) -> dict:
-    """Canonical .schematic/ manifest, else .claude/ (back-compat) — repo first, then user-global; else empty."""
+def _locate_standards_manifest(project_root: Path) -> Path | None:
+    """First manifest in the lookup chain: repo .schematic/ → repo .claude/ → user .schematic/ → user .claude/."""
     manifest_paths = (
         project_root / STANDARDS_MANIFEST_RELPATH_CANONICAL,
         project_root / STANDARDS_MANIFEST_RELPATH,
@@ -213,8 +250,16 @@ def _load_standards_manifest(project_root: Path) -> dict:
     )
     for manifest_path in manifest_paths:
         if manifest_path.exists():
-            return json.loads(manifest_path.read_text())
-    return {}
+            return manifest_path
+    return None
+
+
+def _load_standards_manifest(project_root: Path) -> dict:
+    """The resolved standards manifest, or empty when the lookup chain finds none."""
+    manifest_path = _locate_standards_manifest(project_root)
+    if manifest_path is None:
+        return {}
+    return json.loads(manifest_path.read_text())
 
 
 def _resolve_review_model(project_root: Path) -> str:
@@ -222,6 +267,21 @@ def _resolve_review_model(project_root: Path) -> str:
     manifest = _load_standards_manifest(project_root)
     schematic_config = manifest.get(SCHEMATIC_CONFIG_KEY, {})
     return schematic_config.get(REVIEW_MODEL_KEY, REVIEW_MODEL_DEFAULT)
+
+
+def _resolve_correctness_model(project_root: Path) -> str | None:
+    """Pass-3 correctness model from schematic.correctnessModel; None means inherit the session model."""
+    manifest = _load_standards_manifest(project_root)
+    schematic_config = manifest.get(SCHEMATIC_CONFIG_KEY, {})
+    correctness_model: str | None = schematic_config.get(CORRECTNESS_MODEL_KEY)
+    return correctness_model
+
+
+def _resolve_max_file_lines(project_root: Path) -> int:
+    """Per-file logic-line ceiling from schematic.maxFileLines, else the packaged default."""
+    manifest = _load_standards_manifest(project_root)
+    schematic_config = manifest.get(SCHEMATIC_CONFIG_KEY, {})
+    return schematic_config.get(MAX_FILE_LINES_KEY, MAX_FILE_LINES_DEFAULT)
 
 
 def _resolve_source_path(source: str, project_root: Path) -> Path | None:
@@ -235,22 +295,52 @@ def _resolve_source_path(source: str, project_root: Path) -> Path | None:
     return None
 
 
-def _resolved_slot_paths(project_root: Path) -> dict[str, Path]:
-    """Every mapped manifest slot resolved to its module path (styling flattened per language)."""
+def _resolve_mapped_source_paths(slot: str, sources: list[str], project_root: Path) -> list[Path]:
+    """Resolve every source mapped to a slot, in order; a mapped module missing from disk refuses the manifest."""
+    resolved_paths: list[Path] = []
+    for source in sources:
+        path = _resolve_source_path(
+            source=source,
+            project_root=project_root,
+        )
+        if path is None:
+            _exit_error(
+                f"standards manifest slot '{slot}' names a source that is not on disk: '{source}'\n"
+                f"  map it to a module that exists, or drop the slot to leave it UNMAPPED"
+            )
+        else:
+            resolved_paths.append(path)
+    return resolved_paths
+
+
+def _resolved_slot_paths(project_root: Path) -> dict[str, list[Path]]:
+    """Every mapped manifest slot resolved to its ordered module paths (styling flattened per language)."""
     manifest = _load_standards_manifest(project_root)
-    slot_to_path: dict[str, Path] = {}
+    slot_to_paths: dict[str, list[Path]] = {}
     for slot in STANDARDS_SLOTS:
         source = manifest.get(slot)
-        if slot == "styling" and isinstance(source, dict):
+        if slot == EXEMPLARS_SLOT:
+            continue
+        if slot == STYLING_SLOT and isinstance(source, dict):
             for lang, lang_source in source.items():
-                path = _resolve_source_path(lang_source, project_root)
-                if path:
-                    slot_to_path[f"styling.{lang}"] = path
+                slot_to_paths[f"styling.{lang}"] = _resolve_mapped_source_paths(
+                    slot=f"styling.{lang}",
+                    sources=[lang_source],
+                    project_root=project_root,
+                )
         elif isinstance(source, str):
-            path = _resolve_source_path(source, project_root)
-            if path:
-                slot_to_path[slot] = path
-    return slot_to_path
+            slot_to_paths[slot] = _resolve_mapped_source_paths(
+                slot=slot,
+                sources=[source],
+                project_root=project_root,
+            )
+        elif isinstance(source, list):
+            slot_to_paths[slot] = _resolve_mapped_source_paths(
+                slot=slot,
+                sources=source,
+                project_root=project_root,
+            )
+    return slot_to_paths
 
 
 # ── standards content resolution (for inline review prompts) ─────────────────
@@ -261,7 +351,15 @@ _LANGUAGE_EXTENSIONS: dict[str, str] = {
     ".kts": "kotlin",
     ".ts": "typescript",
     ".tsx": "typescript",
+    ".sql": "sql",
 }
+
+
+@dataclass(frozen=True)
+class _StandardsModuleSource:
+    """One standards module to inline into a review prompt, tagged with the slot it fills."""
+    slot_label: str
+    source: str
 
 
 def _resolve_skill_path(source: str) -> Path | None:
@@ -289,32 +387,45 @@ def _resolve_standards_content_for_batch(batch_files: list[str], project_root: P
         if lang:
             languages_in_batch.add(lang)
 
-    # Collect unique module sources to read: styling per language + testing + review lens.
-    sources_to_read: dict[str, str] = {}
-    styling_map = manifest.get("styling", {})
+    # Collect the module sources to read, in order: styling per language + common + testing + review lenses.
+    module_sources: list[_StandardsModuleSource] = []
+    styling_map = manifest.get(STYLING_SLOT, {})
     for lang in sorted(languages_in_batch):
         source = styling_map.get(lang) if isinstance(styling_map, dict) else None
         if source:
-            sources_to_read[f"styling.{lang}"] = source
+            module_sources.append(
+                _StandardsModuleSource(slot_label=f"styling.{lang}", source=source),
+            )
     for slot in ("common", "testing", REVIEW_SLOT_KEY):
         source = manifest.get(slot)
         if isinstance(source, str):
-            sources_to_read[slot] = source
+            module_sources.append(_StandardsModuleSource(slot_label=slot, source=source))
+        elif isinstance(source, list):
+            module_sources.extend(
+                _StandardsModuleSource(slot_label=slot, source=listed_source)
+                for listed_source in source
+            )
 
-    if not sources_to_read:
+    if not module_sources:
         return ""
 
     sections: list[str] = []
-    for slot_label, source in sources_to_read.items():
-        module_path = _resolve_source_path(source, project_root)
+    for module_source in module_sources:
+        module_path = _resolve_source_path(
+            source=module_source.source,
+            project_root=project_root,
+        )
         if module_path:
             content = module_path.read_text().strip()
-            sections.append(f"── {slot_label} ({source}) ──\n{content}")
+            sections.append(
+                f"── {module_source.slot_label} ({module_source.source}) ──\n{content}"
+            )
 
     if not sections:
         return ""
 
     return "\n\n".join(sections)
+
 
 # ── markdown parsers ───────────────────────────────────────────────────────────
 
@@ -417,7 +528,7 @@ def update_task_status_in_file(tasks_md: Path, tag: str, new_status: str) -> Non
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
-def _exit_error(message: str) -> None:
+def _exit_error(message: str) -> NoReturn:
     print(f"error: {message}", file=sys.stderr)
     sys.exit(1)
 
@@ -493,12 +604,25 @@ _DAG_STUB = "flowchart TD\n"
 _SEQUENCE_STUB = "sequenceDiagram\n"
 
 
+def _print_slot_paths(slot_label: str, module_paths: list[Path]) -> None:
+    """Print one line per resolved module, labelling only the first."""
+    for position, module_path in enumerate(module_paths):
+        label = f"{slot_label}:" if position == 0 else ""
+        print(f"  {label:<13} {module_path}")
+
+
+def _print_model_config(project_root: Path) -> None:
+    """Print which model runs the diff review and which runs the Pass-3 correctness read."""
+    correctness_model = _resolve_correctness_model(project_root)
+    print(f"  {'reviewModel:':<18} {_resolve_review_model(project_root)}")
+    print(f"  {'correctnessModel:':<18} {correctness_model or CORRECTNESS_MODEL_INHERIT_LABEL}")
+
+
 def _report_standards_manifest(project_root: Path) -> None:
     """Slot-by-slot manifest coverage — the onboarding cue for Phase 0."""
-    repo_manifest = project_root / STANDARDS_MANIFEST_RELPATH
-    global_manifest = Path.home() / STANDARDS_MANIFEST_RELPATH
+    manifest_path = _locate_standards_manifest(project_root)
 
-    if not repo_manifest.exists() and not global_manifest.exists():
+    if manifest_path is None:
         print("standards: NO MANIFEST FOUND")
         print("  Phase 0 onboards you (standards_resolution.md):")
         print("    1. map slots to skills you already have (architecture/types/styling/testing/review), or")
@@ -508,9 +632,9 @@ def _report_standards_manifest(project_root: Path) -> None:
         return
 
     source_label = (
-        f"{repo_manifest.relative_to(project_root)} (repo manifest)"
-        if repo_manifest.exists()
-        else f"{global_manifest} (global default — Phase 0 confirms + copies it into the repo)"
+        f"{manifest_path.relative_to(project_root)} (repo manifest)"
+        if manifest_path.is_relative_to(project_root)
+        else f"{manifest_path} (global default — Phase 0 confirms + copies it into the repo)"
     )
     print(f"standards: {source_label}")
 
@@ -518,25 +642,31 @@ def _report_standards_manifest(project_root: Path) -> None:
     slot_paths = _resolved_slot_paths(project_root)
     unmapped: list[str] = []
     for slot in STANDARDS_SLOTS:
-        if slot == "exemplars":
-            exemplars = manifest.get("exemplars", [])
+        if slot == EXEMPLARS_SLOT:
+            exemplars = manifest.get(EXEMPLARS_SLOT, [])
             status = ", ".join(exemplars) if exemplars else "—"
             print(f"  exemplars:    {status}")
             continue
-        if slot == "styling":
-            styling_paths = {k: v for k, v in slot_paths.items() if k.startswith("styling.")}
-            if styling_paths:
-                for lang_slot, path in sorted(styling_paths.items()):
-                    print(f"  {lang_slot + ':':<13} {path}")
+        if slot == STYLING_SLOT:
+            styling_slot_to_paths = {
+                slot_label: paths
+                for slot_label, paths in slot_paths.items()
+                if slot_label.startswith("styling.")
+            }
+            if styling_slot_to_paths:
+                for lang_slot, paths in sorted(styling_slot_to_paths.items()):
+                    _print_slot_paths(slot_label=lang_slot, module_paths=paths)
             else:
-                unmapped.append("styling")
+                unmapped.append(STYLING_SLOT)
                 print("  styling:      UNMAPPED")
             continue
         if slot in slot_paths:
-            print(f"  {slot + ':':<13} {slot_paths[slot]}")
+            _print_slot_paths(slot_label=slot, module_paths=slot_paths[slot])
         else:
             unmapped.append(slot)
             print(f"  {slot + ':':<13} UNMAPPED")
+
+    _print_model_config(project_root=project_root)
     if unmapped:
         print(f"  → Phase 0 resolves unmapped slots ({', '.join(unmapped)}): map an existing")
         print("    module or LEARN it from the codebase (standards_resolution.md → Learn mode).")
@@ -630,6 +760,7 @@ def _print_status(schematic_dir: Path) -> None:
     by_status: dict[str, list[str]] = {
         TASK_STATUS_COMPLETE: [],
         TASK_STATUS_IN_PROGRESS: [],
+        TASK_STATUS_PENDING_INPUT: [],
         TASK_STATUS_PENDING: [],
     }
     complete_tags = {t["tag"] for t in tasks if t["status"] == TASK_STATUS_COMPLETE}
@@ -651,7 +782,12 @@ def _print_status(schematic_dir: Path) -> None:
 
     total = len(tasks)
     print(f"\ntasks: {total} total")
-    for status_key in [TASK_STATUS_COMPLETE, TASK_STATUS_IN_PROGRESS, TASK_STATUS_PENDING]:
+    for status_key in [
+        TASK_STATUS_COMPLETE,
+        TASK_STATUS_IN_PROGRESS,
+        TASK_STATUS_PENDING_INPUT,
+        TASK_STATUS_PENDING,
+    ]:
         tags = by_status[status_key]
         if tags:
             print(f"  {status_key:<12} {len(tags):>2}  [{', '.join(tags)}]")
@@ -676,6 +812,69 @@ def cmd_validate(args: argparse.Namespace) -> None:
         sys.exit(1)
     else:
         print("✓ validate: clean")
+
+
+def _component_file_owners(tasks: list[TaskRecord]) -> dict[str, set[str]]:
+    """Bundle-relative markdown path → the task tags that own it (tasks.md is owned by all)."""
+    path_to_tags: dict[str, set[str]] = {"tasks.md": {task["tag"] for task in tasks}}
+    for task in tasks:
+        if task["component_file"]:
+            path_to_tags.setdefault(task["component_file"].lstrip("./"), set()).add(task["tag"])
+    return path_to_tags
+
+
+def _lintable_markdown_paths(schematic_dir: Path) -> list[Path]:
+    """The ledgers and component cards the ratification lint reads."""
+    ledger_paths = [
+        schematic_dir / filename
+        for filename in LINT_LEDGER_FILENAMES
+        if (schematic_dir / filename).exists()
+    ]
+    return ledger_paths + sorted((schematic_dir / "components").glob("*.md"))
+
+
+def _ratification_phrase_findings(schematic_dir: Path, tasks: list[TaskRecord]) -> list[str]:
+    """Cards and ledgers claiming something awaits sign-off, with no question filed to hold it."""
+    # Only an OPEN question is a state. Once it is answered the prose is stale again.
+    tags_awaiting_answer = {
+        tag for tag in load_state(schematic_dir)["tasks"]
+        if _unanswered_question_idxs(schematic_dir, tag)
+    }
+    path_to_owning_tags = _component_file_owners(tasks)
+
+    findings: list[str] = []
+    for markdown_path in _lintable_markdown_paths(schematic_dir):
+        relative_name = markdown_path.relative_to(schematic_dir).as_posix()
+        if path_to_owning_tags.get(relative_name, set()) & tags_awaiting_answer:
+            continue
+        for phrase in sorted(set(RATIFICATION_PHRASE_RE.findall(markdown_path.read_text()))):
+            findings.append(
+                f"{relative_name} — \"{phrase}\" is prose with no question behind it; "
+                f"a note is not a state. File it: schematic task ask <tag> \"<question>\" "
+                f"--schematic {schematic_dir.name}"
+            )
+    return findings
+
+
+def _open_input_findings(schematic_dir: Path, tasks: list[TaskRecord]) -> list[str]:
+    """Everything still waiting on the user: held tasks, unanswered questions, ratification prose."""
+    findings = [
+        f"tasks.md #{task['tag']} — held in '{TASK_STATUS_PENDING_INPUT}': "
+        f"waiting on a user answer, so the phase cannot exit"
+        for task in tasks
+        if task["status"] == TASK_STATUS_PENDING_INPUT
+    ]
+    findings.extend(
+        f"unanswered question {question['id']} — \"{question['text']}\""
+        for question in _pending_questions(schematic_dir)
+    )
+    findings.extend(
+        _ratification_phrase_findings(
+            schematic_dir=schematic_dir,
+            tasks=tasks,
+        )
+    )
+    return findings
 
 
 def _validate_schematic(schematic_dir: Path) -> list[str]:
@@ -712,6 +911,13 @@ def _validate_schematic(schematic_dir: Path) -> list[str]:
                     f"state drift: task {task['tag']} is '{task['status']}' in tasks.md "
                     f"but '{state_status}' in {STATE_FILENAME}"
                 )
+
+    findings.extend(
+        _open_input_findings(
+            schematic_dir=schematic_dir,
+            tasks=tasks,
+        )
+    )
 
     for override in state.get("overrides", []):
         findings.append(
@@ -1046,10 +1252,108 @@ def cmd_task(args: argparse.Namespace) -> None:
         "complete": _task_complete,
         "next": _task_next,
         "note": _task_note,
+        "ask": _task_ask,
         "decision": _task_decision,
         "review-result": _task_review_result,
     }
     task_handlers[args.task_command](args)
+
+
+def _file_task_question(schematic_dir: Path, tag: str, question: str) -> int:
+    """Append a task question to the shared Q&A relay; returns its relay index."""
+    questions_path = schematic_dir / f"{TASK_QUESTIONS_STEM}{QUESTIONS_SUFFIX}"
+    questions = _load_json_list(questions_path)
+    question_idx = len(questions)
+    questions.append({
+        "idx": question_idx,
+        "tag": tag,
+        "text": question,
+        "context": f"task {tag}",
+    })
+    questions_path.write_text(json.dumps(questions, indent=2) + "\n")
+    return question_idx
+
+
+def _hold_task_on_question(schematic_dir: Path, tag: str, question: str) -> int:
+    """File the question, move the task to pendingInput, and record what is holding it."""
+    question_idx = _file_task_question(
+        schematic_dir=schematic_dir,
+        tag=tag,
+        question=question,
+    )
+    update_task_status_in_file(
+        tasks_md=schematic_dir / "tasks.md",
+        tag=tag,
+        new_status=TASK_STATUS_PENDING_INPUT,
+    )
+
+    state = load_state(schematic_dir)
+    task_state = state["tasks"].setdefault(tag, {})
+    task_state["status"] = TASK_STATUS_PENDING_INPUT
+    task_state.setdefault("questions", []).append({
+        "idx": question_idx,
+        "text": question,
+        "asked_at": datetime.now(tz=timezone.utc).isoformat(),
+    })
+    save_state(schematic_dir, state)
+    return question_idx
+
+
+def _unanswered_question_idxs(schematic_dir: Path, tag: str) -> list[int]:
+    """Relay indices of questions filed for this task that the user has not answered."""
+    filed_questions = load_state(schematic_dir)["tasks"].get(tag, {}).get("questions", [])
+    answered_idxs = {
+        answer.get("idx")
+        for answer in _load_json_list(schematic_dir / f"{TASK_QUESTIONS_STEM}{ANSWERS_SUFFIX}")
+    }
+    return [
+        question["idx"]
+        for question in filed_questions
+        if question["idx"] not in answered_idxs
+    ]
+
+
+def _print_held_task(
+    schematic_name: str,
+    tag: str,
+    previous_status: str,
+    question_idx: int,
+    question: str,
+) -> None:
+    """Announce the hold and the one command that lifts it."""
+    question_id = f"{TASK_QUESTIONS_STEM}#{question_idx}"
+    print(f"task {tag}: {previous_status} → {TASK_STATUS_PENDING_INPUT}")
+    print(f"  {question_id}: {question}")
+    print(f"  HELD until answered: schematic answer {question_id} \"<text>\" {schematic_name}")
+    print("  do not proceed on this task, and do not record the gap as a note.")
+
+
+def _task_ask(args: argparse.Namespace) -> None:
+    """File a question against a task and hold it in pendingInput until the user answers."""
+    schematic_dir = resolve_schematic_dir(args.schematic)
+    tasks_md = schematic_dir / "tasks.md"
+    task = next((t for t in parse_tasks(tasks_md) if t["tag"] == args.tag), None)
+    if not task:
+        _exit_error(f"task '{args.tag}' not found in {tasks_md}")
+
+    current_status = task["status"]
+    if current_status not in TASK_STATUSES_ALLOWED_TO_ASK:
+        _exit_error(
+            f"task {args.tag} is '{current_status}' — only a claimed task can ask a question\n"
+            f"  claim it first: schematic task next {schematic_dir.name}"
+        )
+
+    _print_held_task(
+        schematic_name=schematic_dir.name,
+        tag=args.tag,
+        previous_status=current_status,
+        question_idx=_hold_task_on_question(
+            schematic_dir=schematic_dir,
+            tag=args.tag,
+            question=args.text,
+        ),
+        question=args.text,
+    )
 
 
 def _task_show(args: argparse.Namespace) -> None:
@@ -1081,6 +1385,14 @@ def _task_status(args: argparse.Namespace) -> None:
     current_status = task["status"]
     new_status = args.status
     legal_targets = LEGAL_TASK_TRANSITIONS.get(current_status, set())
+
+    if new_status == TASK_STATUS_REVIEW and _unanswered_question_idxs(schematic_dir, args.tag):
+        _exit_error(
+            f"task {args.tag} cannot be submitted for review — it has unanswered question(s).\n"
+            f"  A task is ship-ready only with zero open questions.\n"
+            f"  see:    schematic questions {schematic_dir.name}\n"
+            f"  answer: schematic answer {TASK_QUESTIONS_STEM}#<idx> \"<text>\" {schematic_dir.name}"
+        )
 
     if new_status not in legal_targets:
         if args.override:
@@ -1128,11 +1440,17 @@ def _emit_review_request(schematic_dir: Path, tag: str, task: dict) -> None:
 
     slot_paths = _resolved_slot_paths(project_root)
     if slot_paths:
-        module_lines = "\n".join(f"     - {slot}: {path}" for slot, path in sorted(slot_paths.items()))
+        module_lines = "\n".join(
+            f"     - {slot}: {path}"
+            for slot, paths in sorted(slot_paths.items())
+            for path in paths
+        )
         lens_block = (
-            f"PRIMARY lens — read these resolved standards modules, then verify the\n"
+            f"PRIMARY lens — read the resolved standards modules below, then verify the\n"
             f"changed lines against them (plus the project's CLAUDE.md, which\n"
-            f"overrides on conflict):\n{module_lines}\n"
+            f"overrides on conflict). Read every language-agnostic module; of the\n"
+            f"`styling.<language>` modules read ONLY those whose language appears in\n"
+            f"the files you are reviewing:\n{module_lines}\n"
         )
     else:
         lens_block = (
@@ -1200,6 +1518,18 @@ def _task_complete(args: argparse.Namespace) -> None:
     task = next((t for t in tasks if t["tag"] == args.tag), None)
     if not task:
         _exit_error(f"task '{args.tag}' not found in tasks.md")
+
+    open_question_idxs = _unanswered_question_idxs(schematic_dir, args.tag)
+    if open_question_idxs:
+        open_question_ids = ", ".join(
+            f"{TASK_QUESTIONS_STEM}#{idx}" for idx in open_question_idxs
+        )
+        _exit_error(
+            f"task {args.tag} has unanswered question(s): {open_question_ids}\n"
+            f"  A note is not a state — an open question is closed by the user answering it,\n"
+            f"  and --override does not close one.\n"
+            f"  answer: schematic answer {TASK_QUESTIONS_STEM}#<idx> \"<text>\" {schematic_dir.name}"
+        )
 
     review_state = load_state(schematic_dir)["tasks"].get(args.tag, {}).get("review_request")
     review_verdict = review_state["status"] if review_state else None
@@ -1286,13 +1616,27 @@ def _task_note(args: argparse.Namespace) -> None:
 
 
 def _task_decision(args: argparse.Namespace) -> None:
+    """Record a non-contract choice the schematic didn't answer; anything heavier must be asked."""
     schematic_dir = resolve_schematic_dir(args.schematic)
+    if args.kind not in VALID_DECISION_KINDS:
+        _exit_error(
+            f"'{args.kind}' is not a decision an agent may take alone "
+            f"(valid kinds: {', '.join(sorted(VALID_DECISION_KINDS))}).\n"
+            f"  A choice that changes a signed contract, adds a caveat, or picks a value the\n"
+            f"  card did not specify belongs to the user — hold the task and ask:\n"
+            f"  schematic task ask {args.tag} \"<question>\" --schematic {args.schematic}"
+        )
+
     state = load_state(schematic_dir)
     task_state = state["tasks"].setdefault(args.tag, {})
     decisions = task_state.setdefault("decisions", [])
-    decisions.append({"text": args.text, "ts": datetime.now(tz=timezone.utc).isoformat()})
+    decisions.append({
+        "text": args.text,
+        "kind": args.kind,
+        "ts": datetime.now(tz=timezone.utc).isoformat(),
+    })
     save_state(schematic_dir, state)
-    print(f"decision recorded for {args.tag}: {args.text}")
+    print(f"decision recorded for {args.tag} ({args.kind}): {args.text}")
 
 
 def _print_decision_ledger(state: dict) -> None:
@@ -1316,6 +1660,7 @@ def _print_decision_ledger(state: dict) -> None:
 QUESTIONS_SUFFIX = ".questions.json"
 ANSWERS_SUFFIX = ".answers.json"
 AGENT_REQUESTS_SUFFIX = ".agent-requests.json"
+TASK_QUESTIONS_STEM = "tasks"  # `task ask` files into the same relay the dashboard bubbles use
 
 
 def _load_json_list(path: Path) -> list[dict]:
@@ -1379,6 +1724,38 @@ def cmd_questions(args: argparse.Namespace) -> None:
         print("no unanswered dashboard questions")
 
 
+def _resume_task_answered_by(schematic_dir: Path, question_idx: int) -> None:
+    """Return a held task to in_progress once the answer closes its last open question."""
+    state = load_state(schematic_dir)
+    answered_tag = next(
+        (
+            tag
+            for tag, task_state in state["tasks"].items()
+            for question in task_state.get("questions", [])
+            if question["idx"] == question_idx
+        ),
+        None,
+    )
+    if answered_tag is None:
+        return
+    if _unanswered_question_idxs(schematic_dir, answered_tag):
+        return
+
+    tasks_md = schematic_dir / "tasks.md"
+    task = next((t for t in parse_tasks(tasks_md) if t["tag"] == answered_tag), None)
+    if task is None or task["status"] != TASK_STATUS_PENDING_INPUT:
+        return
+
+    update_task_status_in_file(
+        tasks_md=tasks_md,
+        tag=answered_tag,
+        new_status=TASK_STATUS_IN_PROGRESS,
+    )
+    state["tasks"][answered_tag]["status"] = TASK_STATUS_IN_PROGRESS
+    save_state(schematic_dir, state)
+    print(f"task {answered_tag}: {TASK_STATUS_PENDING_INPUT} → {TASK_STATUS_IN_PROGRESS}")
+
+
 def cmd_answer(args: argparse.Namespace) -> None:
     if "#" not in args.id:
         _exit_error(f"invalid question id '{args.id}' — expected <source>#<idx> (e.g. overview#0, sequence#2)")
@@ -1397,17 +1774,21 @@ def cmd_answer(args: argparse.Namespace) -> None:
         answers.append({"idx": idx, "answer": args.text})
         answers_path.write_text(json.dumps(answers, indent=2) + "\n")
         print(f"answer delivered to {args.id} ({schematic_dir.name}) — the dashboard picks it up within ~2s")
+        if stem == TASK_QUESTIONS_STEM:
+            _resume_task_answered_by(schematic_dir=schematic_dir, question_idx=idx)
         return
     _exit_error(f"no question source '{stem}' found ({stem}{QUESTIONS_SUFFIX} missing in the schematic dir)")
 
 
-# ── review (auto-mode driver + batch-until-pristine sweep) ───────────────────────
+# ── review (auto-mode driver + per-group standards sweep + consistency + e2e tracing) ──
 
 def cmd_review(args: argparse.Namespace) -> None:
     handlers = {
         "start": _review_start,
         "sweep": _review_sweep,
         "batch-result": _review_batch_result,
+        "consistency": _review_consistency,
+        "consistency-result": _review_consistency_result,
         "e2e": _review_e2e,
         "e2e-result": _review_e2e_result,
         "status": _review_status,
@@ -1439,17 +1820,69 @@ def _review_start(args: argparse.Namespace) -> None:
         print(f"  schematic review sweep --schematic {args.schematic}")
 
 
+_PYTHON_SUFFIX = ".py"
+
+
+def _logic_line_count(python_source: str) -> int:
+    """Physical lines of a Python file minus the lines its import statements occupy."""
+    module = ast.parse(python_source)
+    import_line_numbers: set[int] = set()
+    for node in ast.walk(module):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for line_number in range(node.lineno, (node.end_lineno or node.lineno) + 1):
+                import_line_numbers.add(line_number)
+    return len(python_source.splitlines()) - len(import_line_numbers)
+
+
+def _oversized_feature_files(
+    diff_files: list[str],
+    project_root: Path,
+    max_file_lines: int,
+) -> dict[str, int]:
+    """Python feature files whose logic-line count exceeds the ceiling → path-to-count."""
+    path_to_logic_lines: dict[str, int] = {}
+    for path in diff_files:
+        if not path.endswith(_PYTHON_SUFFIX):
+            continue
+        file_path = project_root / path
+        if not file_path.exists():
+            continue
+        logic_line_count = _logic_line_count(python_source=file_path.read_text())
+        if logic_line_count > max_file_lines:
+            path_to_logic_lines[path] = logic_line_count
+    return path_to_logic_lines
+
+
+def _print_oversized_files(
+    path_to_logic_lines: dict[str, int],
+    max_file_lines: int,
+) -> None:
+    """Surface feature files over the logic-line ceiling as consistency findings."""
+    if not path_to_logic_lines:
+        return
+    print(f"⚠ {len(path_to_logic_lines)} file(s) over the {max_file_lines}-logic-line "
+          f"ceiling (imports excluded) — split or justify each:")
+    for path, logic_line_count in sorted(path_to_logic_lines.items()):
+        print(f"    {path}: {logic_line_count} lines")
+
+
+def _require_auto_run(state: dict, schematic_name: str) -> dict:
+    """The recorded auto run, or exit — sweeps and review gates run only in auto mode."""
+    run = state["run"]
+    if not run or run["mode"] != RUN_MODE_AUTO:
+        _exit_error(
+            "no auto run recorded — start one first:\n"
+            f"  schematic review start --auto --goal \"<goal>\" --schematic {schematic_name}"
+        )
+    return run
+
+
 def _review_sweep(args: argparse.Namespace) -> None:
     schematic_dir = resolve_schematic_dir(args.schematic)
     project_root = find_project_root()
     review_model = _resolve_review_model(project_root)
     state = load_state(schematic_dir)
-    run = state["run"]
-    if not run or run["mode"] != RUN_MODE_AUTO:
-        _exit_error(
-            "no auto run recorded — start one first:\n"
-            f"  schematic review start --auto --goal \"<goal>\" --schematic {args.schematic}"
-        )
+    run = _require_auto_run(state, args.schematic)
     diff_files = _cumulative_diff_files(run["base_ref"], project_root)
     if not diff_files:
         _exit_error(f"no changes since base_ref {run['base_ref'][:12]} — nothing to sweep")
@@ -1526,7 +1959,22 @@ def _emit_sweep_prompts(
     print(f"    schematic review batch-result <batch_id> clean|findings --summary \"<one line>\" "
           f"--schematic {schematic_dir.name}")
     print("  re-run `review sweep` after fixes; PRISTINE = a sweep where every batch is clean.")
-    print("  after PRISTINE: run `schematic review e2e --schematic <name>` for master-agent correctness gate.")
+    print("  run this sweep at each task-group boundary; once the board is drained and every group is")
+    print("  PRISTINE: run `schematic review consistency --schematic <name>` for the single-pass dedup gate.")
+
+
+def _diff_only_scope_and_body(diff_content: str, rule_three: str) -> str:
+    """The two shared diff-only HARD RULES + a caller-specific rule 3 + the DIFF framing."""
+    return (
+        f"Scope (HARD RULES — violations are false flags + wasted tokens):\n"
+        f"  1. Do NOT read, open, or grep ANY files. The diff below is your ONLY input.\n"
+        f"  2. Flag ONLY lines that appear as added (+) or modified in the diff.\n"
+        f"     Pre-existing/unchanged context lines are OUT of scope — never flag them.\n"
+        f"  3. {rule_three}\n\n"
+        f"── DIFF ──\n"
+        f"{diff_content}\n"
+        f"── END DIFF ──\n\n"
+    )
 
 
 def _emit_batch_review_prompt(
@@ -1540,14 +1988,10 @@ def _emit_batch_review_prompt(
         f"Review batch {batch['batch_id']} — STYLE + STANDARDS review of these changes:\n"
         f"Files in this batch:\n"
         f"{file_list}\n\n"
-        f"Scope (HARD RULES — violations are false flags + wasted tokens):\n"
-        f"  1. Do NOT read, open, or grep ANY files. The diff below is your ONLY input.\n"
-        f"  2. Flag ONLY lines that appear as added (+) or modified in the diff.\n"
-        f"     Pre-existing/unchanged context lines are OUT of scope — never flag them.\n"
-        f"  3. Never flag or edit code outside the feature.\n\n"
-        f"── DIFF ──\n"
-        f"{diff_content}\n"
-        f"── END DIFF ──\n\n"
+    )
+    review_prompt += _diff_only_scope_and_body(
+        diff_content=diff_content,
+        rule_three="Never flag or edit code outside the feature.",
     )
 
     if standards_content:
@@ -1591,23 +2035,18 @@ def _review_batch_result(args: argparse.Namespace) -> None:
         print(f"  fix findings, then re-run: schematic review sweep --schematic {args.schematic}")
 
 
-def _review_e2e(args: argparse.Namespace) -> None:
-    """Master-agent correctness gate — runs after the diff-only sweep reaches PRISTINE."""
+def _review_consistency(args: argparse.Namespace) -> None:
+    """Single-agent whole-diff consistency gate — duplication/redundancy + line-limit, after the sweeps are PRISTINE."""
     schematic_dir = resolve_schematic_dir(args.schematic)
     project_root = find_project_root()
+    review_model = _resolve_review_model(project_root)
     state = load_state(schematic_dir)
-    run = state["run"]
-    if not run or run["mode"] != RUN_MODE_AUTO:
-        _exit_error(
-            "no auto run recorded — start one first:\n"
-            f"  schematic review start --auto --goal \"<goal>\" --schematic {args.schematic}"
-        )
+    run = _require_auto_run(state, args.schematic)
 
-    # Verify a pristine sweep exists.
-    has_pristine = any(sweep.get("pristine") for sweep in state["sweeps"])
-    if not has_pristine:
+    latest_sweep_is_pristine = bool(state["sweeps"]) and state["sweeps"][-1].get("pristine", False)
+    if not latest_sweep_is_pristine:
         _exit_error(
-            "no PRISTINE sweep recorded — run the diff-only style sweep first:\n"
+            "latest sweep is not PRISTINE — re-sweep the outstanding group first:\n"
             f"  schematic review sweep --schematic {args.schematic}"
         )
 
@@ -1615,39 +2054,142 @@ def _review_e2e(args: argparse.Namespace) -> None:
     if not diff_files:
         _exit_error(f"no changes since base_ref {run['base_ref'][:12]} — nothing to review")
 
-    # Record e2e gate start.
-    state.setdefault("e2e", None)
-    state["e2e"] = {
-        "status": "pending",
+    state["consistency"] = {
+        "status": REVIEW_GATE_STATUS_PENDING,
         "started_at": datetime.now(tz=timezone.utc).isoformat(),
         "verdict": None,
         "summary": None,
     }
     save_state(schematic_dir, state)
 
+    max_file_lines = _resolve_max_file_lines(project_root=project_root)
+    _print_oversized_files(
+        path_to_logic_lines=_oversized_feature_files(
+            diff_files=diff_files,
+            project_root=project_root,
+            max_file_lines=max_file_lines,
+        ),
+        max_file_lines=max_file_lines,
+    )
+
+    whole_diff = "".join(
+        _file_diff(path, run["base_ref"], project_root)
+        for path in diff_files
+    )
+    _emit_consistency_prompt(schematic_dir, diff_files, whole_diff, review_model)
+
+
+def _emit_consistency_prompt(
+    schematic_dir: Path,
+    files: list[str],
+    diff_content: str,
+    review_model: str,
+) -> None:
+    file_list = "\n".join(f"  - {path}" for path in files)
+    review_prompt = (
+        f"Consistency review of the WHOLE feature diff in a single view — one pass, no loop.\n"
+        f"Files:\n"
+        f"{file_list}\n\n"
+        f"Report ONLY these — standards, naming, typing and style were signed off per task and per group:\n"
+        f"  - DUPLICATION: the same logic written twice ANYWHERE in the diff (two occurrences is\n"
+        f"    the threshold), including structurally identical blocks with only names changed.\n"
+        f"  - REDUNDANCY: a helper, constant, or type that restates another already in the diff.\n"
+        f"  - SAID TWO WAYS: one concept named or patterned inconsistently across files.\n\n"
+    )
+    review_prompt += _diff_only_scope_and_body(
+        diff_content=diff_content,
+        rule_three="Never flag standards, naming, typing, or style — earlier gates own those.",
+    )
+    review_prompt += (
+        f"Output: a numbered list of findings (file:line — what repeats — the unit to extract or\n"
+        f"canonical form to keep), then a final line: VERDICT: clean | VERDICT: findings\n"
+    )
+    print(f"consistency review — ONE {review_model} subagent over the whole diff ({len(files)} files, single view):")
+    print(textwrap.indent(review_prompt, "  "))
+    print(f"  dispatch as ONE {review_model} subagent, triage findings, fix the accepted ones, then record")
+    print("  (this pass does NOT loop — one read, triage, fix):")
+    print(f"    schematic review consistency-result clean|findings --summary \"<one line>\" --schematic {schematic_dir.name}")
+    print(f"  after clean: schematic review e2e --schematic {schematic_dir.name}")
+
+
+def _review_consistency_result(args: argparse.Namespace) -> None:
+    schematic_dir = resolve_schematic_dir(args.schematic)
+    state = load_state(schematic_dir)
+    consistency = state.get("consistency")
+    if not consistency:
+        _exit_error(
+            f"no consistency gate recorded — run `schematic review consistency --schematic {args.schematic}` first"
+        )
+    consistency["status"] = args.verdict
+    consistency["verdict"] = args.verdict
+    consistency["summary"] = args.summary
+    consistency["completed_at"] = datetime.now(tz=timezone.utc).isoformat()
+    save_state(schematic_dir, state)
+    print(f"consistency result: {args.verdict} — {args.summary}")
+    if args.verdict == REVIEW_VERDICT_CLEAN:
+        print(f"  consistency clean — next: schematic review e2e --schematic {args.schematic}")
+    else:
+        print("  fix the accepted findings, then re-run:")
+        print(f"    schematic review consistency --schematic {args.schematic}")
+
+
+def _review_e2e(args: argparse.Namespace) -> None:
+    """Adversarial entry-point tracing gate — one correctness reviewer per entry point, after a clean consistency gate."""
+    schematic_dir = resolve_schematic_dir(args.schematic)
+    project_root = find_project_root()
+    state = load_state(schematic_dir)
+    run = _require_auto_run(state, args.schematic)
+
+    # Verify the consistency gate passed.
+    consistency = state.get("consistency")
+    if not consistency or consistency.get("verdict") != REVIEW_VERDICT_CLEAN:
+        _exit_error(
+            "no clean consistency gate — run the consistency sweep first:\n"
+            f"  schematic review consistency --schematic {args.schematic}"
+        )
+
+    diff_files = _cumulative_diff_files(run["base_ref"], project_root)
+    if not diff_files:
+        _exit_error(f"no changes since base_ref {run['base_ref'][:12]} — nothing to review")
+
+    # Record e2e gate start.
+    state["e2e"] = {
+        "status": REVIEW_GATE_STATUS_PENDING,
+        "started_at": datetime.now(tz=timezone.utc).isoformat(),
+        "verdict": None,
+        "summary": None,
+    }
+    save_state(schematic_dir, state)
+
+    correctness_model = _resolve_correctness_model(project_root)
+    model_label = correctness_model or "the session's planning model"
+    pass_date = datetime.now(tz=timezone.utc).date().isoformat()
+    pass_dir = f"research/correctness_pass_{pass_date}"
+
     file_list = "\n".join(f"  - {path}" for path in diff_files)
-    print(f"e2e correctness gate — {len(diff_files)} changed files for master-agent review:")
+    print(f"e2e entry-point tracing — adversarial correctness gate over {len(diff_files)} changed files:")
     print(file_list)
     print()
-    print("MASTER AGENT: review all changed files for correctness, integration, and contract fidelity.")
-    print("This is NOT a style review (the sweep handled that). Check:")
-    print("  1. Read every changed file (full content, not just diff).")
-    print("  2. Verify wiring: DI constructor args match, imports resolve, method signatures match callers.")
-    print("  3. Verify contracts: implementation matches the locked schematic component specs.")
-    print("  4. Verify test coverage: every schematic AC test exists and tests the right behaviour.")
-    print("  5. Verify integration: cross-component call flows are correct (sequence diagram vs code).")
-    print("  6. Verify correctness: wrong conditionals, edge cases, swallowed exceptions, async bugs,")
-    print("     shared-state mutation, silent-success paths — full checklist in the resolved review module.")
-    print("  7. Verify blast radius: for each changed public signature/behaviour, grep dependents +")
-    print("     derived-key sites (cache/memo/dedupe/etag/hash/__eq__) — every result-determining input")
-    print("     must appear in every derived key. Full checklist in the resolved review module.")
+    print("ORCHESTRATE the tracing pass — do NOT review inline:")
+    print("  1. Enumerate every ENTRY POINT the feature adds or changes — HTTP routes, MCP tools,")
+    print("     public service methods, any runner that applies files from a directory (migrations,")
+    print("     seed scripts, jobs), the deploy subcommands, and the cron/scheduled/workflow entries")
+    print("     (including pg_cron, Cloud Scheduler, terraform).")
+    print(f"  2. Dispatch ONE {model_label} reviewer PER entry point, in parallel. Each traces its")
+    print("     entry point end to end — to storage and back — against the ACs as the oracle, and")
+    print("     MUST produce cross-path claims (what a DIFFERENT entry point now does as a result).")
+    print("     Each reviewer carries the 7 checks: wiring, contracts, test coverage, integration,")
+    print("     correctness, blast radius, and the meeting-point inventory table")
+    print("     (state · writer file:line · reader file:line · axes · e2e test).")
+    print(f"  3. One {model_label} reconciler dedupes, resolves contradictions, ranks by blast radius.")
+    print(f"  4. Write {pass_dir}/ — R<n>_<entry_point>.md per reviewer, R_reconciled.md, R_dispositions.md.")
+    print("  5. CORRECTNESS ONLY — the ACs and functional behaviour are the oracle. Style, naming and")
+    print("     standards are never in scope here (the sweep and per-task reviews own them).")
     _print_decision_ledger(state)
     print()
-    if run["mode"] == RUN_MODE_AUTO:
-        print("AUTO MODE: fix any findings silently, then record the result. No user gate required —")
-        print("the implementation report will note the e2e verdict.")
-    else:
-        print("Present findings to the user with `Confirm: y/comment`.")
+    print("Findings are USER-DISPOSITIONED, never auto-fixed — including in auto mode. Present")
+    print("R_reconciled.md and STOP; the user rules each finding (fix now / fix later / accept) into")
+    print("R_dispositions.md. Record the reconciled verdict (never a silent fix):")
     print(f"  schematic review e2e-result clean|findings --summary \"<one line>\" --schematic {args.schematic}")
 
 
@@ -1666,9 +2208,10 @@ def _review_e2e_result(args: argparse.Namespace) -> None:
     save_state(schematic_dir, state)
     print(f"e2e result: {args.verdict} — {args.summary}")
     if args.verdict == REVIEW_VERDICT_CLEAN:
-        print("  feature review complete — style sweep PRISTINE + e2e CLEAN.")
+        print("  feature review complete — standards sweeps PRISTINE + consistency CLEAN + e2e tracing CLEAN.")
     else:
-        print("  resolve findings, then re-run:")
+        print("  findings recorded — the user dispositions each in R_dispositions.md")
+        print("  (fix now / fix later / accept); re-run only after fixes the user chose to action:")
         print(f"    schematic review e2e --schematic {args.schematic}")
 
 
@@ -1690,6 +2233,12 @@ def _review_status(args: argparse.Namespace) -> None:
     print(f"latest sweep {latest_sweep['sweep_id']}: {pristine_flag} ({len(latest_sweep['batches'])} batches)")
     for batch in latest_sweep["batches"]:
         print(f"  {batch['batch_id']:<6} {batch['verdict']:<9} [{', '.join(batch['files'])}]")
+    consistency = state.get("consistency")
+    if consistency:
+        consistency_flag = "CLEAN ✓" if consistency.get("verdict") == REVIEW_VERDICT_CLEAN else consistency.get("status", "pending")
+        print(f"consistency: {consistency_flag}")
+        if consistency.get("summary"):
+            print(f"  {consistency['summary']}")
     e2e = state.get("e2e")
     if e2e:
         e2e_flag = "CLEAN ✓" if e2e.get("verdict") == REVIEW_VERDICT_CLEAN else e2e.get("status", "pending")
@@ -1794,7 +2343,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_tstat = task_sub.add_parser("status", help="Update task status")
     p_tstat.add_argument("tag")
-    p_tstat.add_argument("status", choices=sorted(VALID_TASK_STATUSES))
+    p_tstat.add_argument("status", choices=MANUAL_TASK_STATUS_CHOICES)
     p_tstat.add_argument("--schematic", required=True, metavar="NAME")
     p_tstat.add_argument("--override", metavar="REASON", help="Bypass legal transition check")
 
@@ -1818,12 +2367,30 @@ def _build_parser() -> argparse.ArgumentParser:
     p_tnote.add_argument("text", help="Note text")
     p_tnote.add_argument("--schematic", required=True, metavar="NAME")
 
-    p_tdecision = task_sub.add_parser("decision", help="Record an independent decision the schematic didn't answer (both modes — mandatory at the moment it's made; signed off at end-of-impl)")
+    p_task_ask = task_sub.add_parser(
+        "ask",
+        help="Ask the user a question the design doesn't answer; holds the task in pendingInput",
+    )
+    p_task_ask.add_argument("tag", help="Task tag (e.g. a.1)")
+    p_task_ask.add_argument("text", help='The question: "<one sentence> — why: <what is blocked>"')
+    p_task_ask.add_argument("--schematic", required=True, metavar="NAME")
+
+    p_tdecision = task_sub.add_parser(
+        "decision",
+        help="Record a non-contract choice the schematic didn't answer "
+             "(naming/placement only — anything heavier is `task ask`)",
+    )
     p_tdecision.add_argument("tag", help="Task tag (e.g. a.1)")
     p_tdecision.add_argument("text", help='Decision text: "<what was decided> — <why it was needed>"')
+    p_tdecision.add_argument(
+        "--kind",
+        required=True,
+        metavar="KIND",
+        help="naming | placement — a contract change, caveat, or unspecified value must use `task ask`",
+    )
     p_tdecision.add_argument("--schematic", required=True, metavar="NAME")
 
-    p_review = sub.add_parser("review", help="Auto-mode driver + batch-until-pristine diff sweep")
+    p_review = sub.add_parser("review", help="Auto-mode driver + per-group standards sweep + consistency + e2e tracing")
     review_sub = p_review.add_subparsers(dest="review_command", required=True)
 
     p_rstart = review_sub.add_parser("start", help="Record run mode + base ref (HEAD)")
@@ -1840,7 +2407,15 @@ def _build_parser() -> argparse.ArgumentParser:
     p_rresult.add_argument("--summary", required=True, help="One-line batch outcome")
     p_rresult.add_argument("--schematic", required=True, metavar="NAME")
 
-    p_re2e = review_sub.add_parser("e2e", help="Master-agent correctness gate (after PRISTINE sweep)")
+    p_rconsistency = review_sub.add_parser("consistency", help="Single-agent whole-diff consistency gate (after PRISTINE sweeps)")
+    p_rconsistency.add_argument("--schematic", required=True, metavar="NAME")
+
+    p_rconsistency_result = review_sub.add_parser("consistency-result", help="Record consistency verdict")
+    p_rconsistency_result.add_argument("verdict", choices=sorted(REVIEW_VERDICTS))
+    p_rconsistency_result.add_argument("--summary", required=True, help="One-line consistency outcome")
+    p_rconsistency_result.add_argument("--schematic", required=True, metavar="NAME")
+
+    p_re2e = review_sub.add_parser("e2e", help="Entry-point tracing gate (after clean consistency)")
     p_re2e.add_argument("--schematic", required=True, metavar="NAME")
 
     p_re2e_result = review_sub.add_parser("e2e-result", help="Record e2e correctness verdict")

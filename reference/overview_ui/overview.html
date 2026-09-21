@@ -103,7 +103,8 @@ body{font-family:'Inter','SF Pro',-apple-system,sans-serif;background:var(--bg);
 #notes-panel.open{transform:translateX(0)}
 
 /* Kanban board */
-.kanban-board{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;height:calc(100vh - 140px);overflow:hidden}
+.kanban-board{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;height:calc(100vh - 140px);overflow:hidden}
+.kanban-question{font-size:9px;color:var(--yellow);margin-top:6px;padding:5px 6px;border:1px solid var(--yellow);border-radius:4px;line-height:1.35}
 .kanban-col{background:var(--surface);border:1px solid var(--border);border-radius:8px;display:flex;flex-direction:column;overflow:hidden}
 .kanban-col-header{padding:10px 14px;font-size:12px;font-weight:700;color:var(--text);border-top:3px solid var(--text-dim);display:flex;align-items:center;gap:8px}
 .kanban-count{background:var(--surface2);padding:1px 6px;border-radius:10px;font-size:10px;color:var(--text-dim);font-weight:600}
@@ -485,7 +486,7 @@ async function showFile(path) {
     // Enhanced tasks view with status badges and click-through
     const tasks = parseTasksFromMarkdown(text);
     allTasks = tasks;
-    const statusColors = { complete:'var(--green)', in_progress:'var(--accent)', review:'var(--mauve)', pending:'var(--text-dim)' };
+    const statusColors = { complete:'var(--green)', in_progress:'var(--accent)', pendingInput:'var(--yellow)', review:'var(--mauve)', pending:'var(--text-dim)' };
     let tasksHtml = '<div style="margin-bottom:16px">';
     tasks.forEach(t => {
       const color = statusColors[t.status] || 'var(--text-dim)';
@@ -647,16 +648,17 @@ async function showKanban() {
   setActive('kanban');
   setBreadcrumb([manifest.name, 'Tasks', 'Kanban']);
   const content = document.getElementById('content');
-  content.innerHTML = `<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px"><h2 style="font-size:16px;font-weight:700;color:var(--text);margin:0">Tasks</h2></div><div class="kanban-board">${Array(4).fill('<div class="kanban-col"><div class="kanban-col-header" style="border-top-color:var(--text-dim)"><div class="skeleton narrow"></div></div><div class="kanban-cards"><div class="skeleton wide"></div><div class="skeleton medium"></div></div></div>').join('')}</div>`;
+  content.innerHTML = `<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px"><h2 style="font-size:16px;font-weight:700;color:var(--text);margin:0">Tasks</h2></div><div class="kanban-board">${Array(5).fill('<div class="kanban-col"><div class="kanban-col-header" style="border-top-color:var(--text-dim)"><div class="skeleton narrow"></div></div><div class="kanban-cards"><div class="skeleton wide"></div><div class="skeleton medium"></div></div></div>').join('')}</div>`;
 
   const res = await fetch('/api/file?name=tasks.md');
   if (!res.ok) { content.innerHTML = '<p style="color:var(--red)">tasks.md not found</p>'; return; }
   const tasksText = await res.text();
 
   const tasks = parseTasksFromMarkdown(tasksText);
+  await attachOpenQuestions(tasks);
   allTasks = tasks;
 
-  const columns = { pending: [], in_progress: [], review: [], complete: [] };
+  const columns = { pending: [], in_progress: [], pendingInput: [], review: [], complete: [] };
   tasks.forEach(t => {
     const col = columns[t.status] || columns.pending;
     col.push(t);
@@ -677,6 +679,10 @@ async function showKanban() {
         <div class="kanban-cards">${columns.in_progress.length ? columns.in_progress.map(renderKanbanCard).join('') : kanbanEmptyState('in progress')}</div>
       </div>
       <div class="kanban-col">
+        <div class="kanban-col-header" style="border-top-color:var(--yellow)">Awaiting You <span class="kanban-count">${columns.pendingInput.length}</span></div>
+        <div class="kanban-cards">${columns.pendingInput.length ? columns.pendingInput.map(renderKanbanCard).join('') : kanbanEmptyState('awaiting you')}</div>
+      </div>
+      <div class="kanban-col">
         <div class="kanban-col-header" style="border-top-color:var(--mauve)">Review <span class="kanban-count">${columns.review.length}</span></div>
         <div class="kanban-cards">${columns.review.length ? columns.review.map(renderKanbanCard).join('') : kanbanEmptyState('in review')}</div>
       </div>
@@ -694,7 +700,7 @@ function parseTasksFromMarkdown(text) {
   while ((match = taskRegex.exec(text)) !== null) {
     const tag = match[1], action = match[2], target = match[3];
     const afterMatch = text.substring(match.index + match[0].length, match.index + match[0].length + 500);
-    const statusMatch = afterMatch.match(/Status:\s*(pending|in_progress|complete|review)/);
+    const statusMatch = afterMatch.match(/Status:\s*(pendingInput|pending|in_progress|complete|review)/);
     const blockedMatch = afterMatch.match(/Blocked by:\s*(.+)/);
     tasks.push({
       tag, action, target,
@@ -706,10 +712,25 @@ function parseTasksFromMarkdown(text) {
   return tasks;
 }
 
+// A pendingInput task is held by a question the CLI filed — show it on the card,
+// so the board says what the user has to answer without opening anything.
+async function attachOpenQuestions(tasks) {
+  const held = tasks.filter(t => t.status === 'pendingInput');
+  if (!held.length) return;
+  const res = await fetch('/api/state');
+  if (!res.ok) return;
+  const state = await res.json();
+  held.forEach(t => {
+    const questions = state?.tasks?.[t.tag]?.questions || [];
+    t.openQuestion = questions.length ? questions[questions.length - 1].text : '';
+  });
+}
+
 function renderKanbanCard(task) {
   const actionColors = { Create:'var(--green)', Modify:'var(--accent)', Delete:'var(--red)', Wire:'var(--mauve)' };
   const color = actionColors[task.action] || 'var(--text-dim)';
   const blocked = task.blockedBy !== '—' ? `<div style="font-size:9px;color:var(--yellow);margin-top:4px">⚠ ${task.blockedBy}</div>` : '';
+  const question = task.openQuestion ? `<div class="kanban-question">❓ ${escHtml(task.openQuestion)}</div>` : '';
   return `<div class="kanban-card" tabindex="0" onclick="openTaskModal('${task.tag}')" onkeydown="if(event.key==='Enter')openTaskModal('${task.tag}')">
     <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
       <span style="font-size:9px;font-weight:700;color:var(--text-dim)">${task.tag}</span>
@@ -717,6 +738,7 @@ function renderKanbanCard(task) {
     </div>
     <div style="font-size:11px;color:var(--text)">${task.target}</div>
     ${blocked}
+    ${question}
   </div>`;
 }
 

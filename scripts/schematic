@@ -5,6 +5,7 @@ import ast
 import hashlib
 import json
 import re
+import secrets
 import subprocess
 import sys
 import textwrap
@@ -86,6 +87,20 @@ PHASE_MERMAID_CHECKS: dict[int, list[str]] = {
 }
 PHASE_STATUS_LOCKED = "locked"
 PHASE_AUDIT_CLEAN = "clean"
+
+# ── roster gate (Phase 2 topology present) ──────────────────────────────────────
+# The roster gate is the ONLY legitimate way to present the topology: it validates the
+# draft, writes canonical roster.mmd, launches the editor, and emits a nonce-stamped
+# envelope. A hand-typed roster (no envelope / wrong nonce) = a skipped launch, visible.
+ROSTER_PHASE = 2
+ROSTER_FILENAME = "roster.mmd"
+ROSTER_EDITOR_LOG = ".roster-editor.log"
+BRIDGE_RELPATH = "reference/mermaid_edit/bridge.py"
+WATCHER_RELPATH = "reference/mermaid_edit/watcher.py"
+EDITOR_URL_LOG_PREFIX = "Mermaid editor: "
+EDITOR_LAUNCH_TIMEOUT_SECONDS = 10.0
+EDITOR_URL_POLL_SECONDS = 0.2
+ROSTER_NONCE_BYTES = 3
 
 STANDARDS_SLOTS = ("architecture", "types", "common", "styling", "testing", "review", "exemplars")
 STYLING_SLOT = "styling"
@@ -2298,6 +2313,169 @@ def cmd_overview(args: argparse.Namespace) -> None:
 
     overview_mod.launch_overview(schematic_dir)
 
+# ── roster command (topology present gate) ──────────────────────────────────────
+
+@dataclass(frozen=True)
+class LaunchedEditor:
+    pid: int
+    url: str
+
+
+def _skill_root() -> Path:
+    """The schematic skill root (scripts/ lives one level below it)."""
+    return Path(__file__).resolve().parent.parent
+
+
+def cmd_roster(args: argparse.Namespace) -> None:
+    roster_handlers = {
+        "present": _roster_present,
+    }
+    roster_handlers[args.roster_command](args)
+
+
+def _roster_present(args: argparse.Namespace) -> None:
+    schematic_dir = resolve_schematic_dir(args.schematic)
+    draft_path = args.file
+    if not draft_path.exists():
+        _exit_error(f"draft roster not found: {draft_path}")
+
+    draft_findings = _validate_mermaid_file(draft_path)
+    if draft_findings:
+        print(f"⚠️  draft does not validate — nothing launched, nothing written: {draft_path}")
+        for finding in draft_findings:
+            print(f"   {finding}")
+        sys.exit(1)
+
+    canonical_path = schematic_dir / ROSTER_FILENAME
+    canonical_path.write_text(draft_path.read_text())
+
+    nonce = secrets.token_hex(ROSTER_NONCE_BYTES)
+    launched_editor = _launch_roster_editor(
+        canonical_path=canonical_path,
+        schematic_dir=schematic_dir,
+    )
+    _record_roster_presented(
+        schematic_dir=schematic_dir,
+        num=args.num,
+        nonce=nonce,
+        launched_editor=launched_editor,
+        canonical_path=canonical_path,
+    )
+    print(
+        _render_roster_envelope(
+            name=args.schematic,
+            num=args.num,
+            nonce=nonce,
+            launched_editor=launched_editor,
+            canonical_path=canonical_path,
+        ),
+    )
+
+
+def _launch_roster_editor(
+    canonical_path: Path,
+    schematic_dir: Path,
+) -> LaunchedEditor:
+    """Spawn the live editor detached (survives this CLI); fail closed if it never opens."""
+    bridge_path = _skill_root() / BRIDGE_RELPATH
+    if not bridge_path.exists():
+        _exit_error(f"editor bridge missing: {bridge_path}")
+
+    editor_log_path = schematic_dir / ROSTER_EDITOR_LOG
+    editor_process = subprocess.Popen(
+        ["python3", str(bridge_path), str(canonical_path)],
+        stdout=editor_log_path.open("w"),
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    return LaunchedEditor(
+        pid=editor_process.pid,
+        url=_await_editor_url(
+            editor_log_path=editor_log_path,
+            editor_process=editor_process,
+        ),
+    )
+
+
+def _await_editor_url(
+    editor_log_path: Path,
+    editor_process: "subprocess.Popen[bytes]",
+) -> str:
+    deadline = time.monotonic() + EDITOR_LAUNCH_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if editor_process.poll() is not None:
+            _exit_error(
+                f"editor exited before opening (code {editor_process.returncode}) "
+                f"— nothing presented; see {editor_log_path}",
+            )
+        reported_url = _editor_url_in_log(editor_log_path=editor_log_path)
+        if reported_url is not None:
+            return reported_url
+        time.sleep(EDITOR_URL_POLL_SECONDS)
+    _exit_error(
+        f"editor did not report a URL within {EDITOR_LAUNCH_TIMEOUT_SECONDS:.0f}s "
+        f"— nothing presented; see {editor_log_path}",
+    )
+
+
+def _editor_url_in_log(editor_log_path: Path) -> str | None:
+    if not editor_log_path.exists():
+        return None
+    for log_line in editor_log_path.read_text().splitlines():
+        if log_line.startswith(EDITOR_URL_LOG_PREFIX):
+            return log_line[len(EDITOR_URL_LOG_PREFIX):].strip()
+    return None
+
+
+def _record_roster_presented(
+    schematic_dir: Path,
+    num: int,
+    nonce: str,
+    launched_editor: LaunchedEditor,
+    canonical_path: Path,
+) -> None:
+    state = load_state(schematic_dir)
+    state["phases"].setdefault(str(num), {})["roster"] = {
+        "presented_at": datetime.now(tz=timezone.utc).isoformat(),
+        "nonce": nonce,
+        "editor_url": launched_editor.url,
+        "editor_pid": launched_editor.pid,
+        "file": str(canonical_path.relative_to(find_project_root())),
+    }
+    save_state(schematic_dir, state)
+
+
+def _render_roster_envelope(
+    name: str,
+    num: int,
+    nonce: str,
+    launched_editor: LaunchedEditor,
+    canonical_path: Path,
+) -> str:
+    watcher_command = f"python3 {_skill_root() / WATCHER_RELPATH} {canonical_path}"
+    return textwrap.dedent(
+        """\
+        Paste the fenced envelope below verbatim into your message to the user — the
+        nonce is the proof this launcher ran. Author the roster strips between the
+        EDITOR LIVE block and the closing fence, then arm the watcher (backgrounded).
+
+        ⟦schematic·roster present={num} nonce={nonce} editor={url}⟧
+        ── SCHEMATIC {name} · PHASE {num}/9 — Topology ─────────────────────────
+        This gate: the ROSTER — the full class + storage set, in one shot.
+        EDITOR LIVE ▸ {url}
+        ⟨ author the vertically-stacked roster strips, one per feature, here ⟩
+        Then arm the Q&A watcher, backgrounded:
+          {watcher}
+        ────────────────────────────────────────────────────────────────────────
+        ⟦/schematic·roster nonce={nonce}⟧   Confirm: y/comment"""
+    ).format(
+        num=num,
+        nonce=nonce,
+        url=launched_editor.url,
+        name=name,
+        watcher=watcher_command,
+    )
+
 # ── argparse + dispatch ───────────────────────────────────────────────────────
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -2333,6 +2511,21 @@ def _build_parser() -> argparse.ArgumentParser:
     p_pc.add_argument("num", type=int, choices=sorted(VALID_PHASES))
     p_pc.add_argument("--schematic", required=True, metavar="NAME")
     p_pc.add_argument("--override", metavar="REASON", help="Bypass enforcement with reason")
+
+    p_roster = sub.add_parser("roster", help="Topology roster gate (Phase 2)")
+    roster_sub = p_roster.add_subparsers(dest="roster_command", required=True)
+    p_rpresent = roster_sub.add_parser(
+        "present",
+        help="Validate a draft roster, write canonical roster.mmd, launch the editor, emit the stamped gate envelope",
+    )
+    p_rpresent.add_argument("num", type=int, choices=[ROSTER_PHASE])
+    p_rpresent.add_argument("--schematic", required=True, metavar="NAME")
+    p_rpresent.add_argument(
+        "--file",
+        type=Path,
+        required=True,
+        help="Draft .mmd authored by the agent; validated, then written to roster.mmd on success",
+    )
 
     p_task = sub.add_parser("task", help="Task lifecycle commands")
     task_sub = p_task.add_subparsers(dest="task_command", required=True)
@@ -2467,6 +2660,7 @@ def dispatch(args: argparse.Namespace) -> None:
         "validate": cmd_validate,
         "mermaid": cmd_mermaid,
         "phase": cmd_phase,
+        "roster": cmd_roster,
         "task": cmd_task,
         "review": cmd_review,
         "track": cmd_track,

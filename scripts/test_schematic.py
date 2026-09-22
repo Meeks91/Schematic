@@ -2295,6 +2295,65 @@ class TestMultiSourceReviewSlot(unittest.TestCase):
             self.assertIn(str(project_root / ".schematic" / _LENS_TWO_FILENAME), report_output)
 
 
+class TestRosterPresent(unittest.TestCase):
+    """schematic roster present — the only legitimate way to open the Phase 2 roster gate."""
+
+    def test_invalid_draft_launches_nothing_and_writes_nothing(self) -> None:
+        # Given a draft that fails mermaid validation
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            draft_path = Path(tmp) / "draft.mmd"
+            draft_path.write_text("not a diagram\n")
+            args = _make_args(num=2, schematic=schematic_dir.name, file=draft_path)
+
+            # When present runs against an invalid draft
+            with patch.object(_cli, "resolve_schematic_dir", return_value=schematic_dir), \
+                 patch.object(_cli, "_validate_mermaid_file", return_value=["unrecognised diagram type"]), \
+                 patch.object(_cli, "_launch_roster_editor") as mock_launch:
+                with self.assertRaises(SystemExit) as exit_context:
+                    _cli._roster_present(args)
+
+            # Then it exits non-zero, launches nothing, writes no canonical, records no state
+            self.assertEqual(exit_context.exception.code, 1)
+            mock_launch.assert_not_called()
+            self.assertFalse((schematic_dir / _cli.ROSTER_FILENAME).exists())
+            self.assertNotIn("roster", _cli.load_state(schematic_dir)["phases"].get("2", {}))
+
+    def test_valid_draft_writes_canonical_records_state_and_emits_stamped_envelope(self) -> None:
+        # Given a draft that passes validation and a stubbed editor launch
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            draft_path = Path(tmp) / "draft.mmd"
+            draft_body = "flowchart TD\n  A[Node]\n"
+            draft_path.write_text(draft_body)
+            args = _make_args(num=2, schematic=schematic_dir.name, file=draft_path)
+            launched_editor = _cli.LaunchedEditor(pid=4242, url="http://127.0.0.1:5555/")
+
+            # When present runs with a clean validation and a stubbed launch
+            with patch.object(_cli, "resolve_schematic_dir", return_value=schematic_dir), \
+                 patch.object(_cli, "find_project_root", return_value=Path(tmp)), \
+                 patch.object(_cli, "_validate_mermaid_file", return_value=[]), \
+                 patch.object(_cli, "_launch_roster_editor", return_value=launched_editor):
+                envelope_output = _captured_stdout(_cli._roster_present, args=args)
+
+            # Then canonical roster.mmd holds the draft body verbatim
+            self.assertEqual((schematic_dir / _cli.ROSTER_FILENAME).read_text(), draft_body)
+
+            # Then state records the presentation with a nonce and the editor identity
+            roster_state = _cli.load_state(schematic_dir)["phases"]["2"]["roster"]
+            self.assertEqual(roster_state["editor_url"], "http://127.0.0.1:5555/")
+            self.assertEqual(roster_state["editor_pid"], 4242)
+            self.assertTrue(roster_state["nonce"])
+
+            # Then the stamped envelope carries that same nonce in both fences, plus url + sigil + watcher
+            recorded_nonce = roster_state["nonce"]
+            self.assertIn(f"⟦schematic·roster present=2 nonce={recorded_nonce}", envelope_output)
+            self.assertIn(f"⟦/schematic·roster nonce={recorded_nonce}⟧", envelope_output)
+            self.assertIn("http://127.0.0.1:5555/", envelope_output)
+            self.assertIn("Confirm: y/comment", envelope_output)
+            self.assertIn("watcher.py", envelope_output)
+
+
 # Fixtures
 
 

@@ -101,6 +101,12 @@ EDITOR_URL_LOG_PREFIX = "Mermaid editor: "
 EDITOR_LAUNCH_TIMEOUT_SECONDS = 10.0
 EDITOR_URL_POLL_SECONDS = 0.2
 ROSTER_NONCE_BYTES = 3
+ROSTER_SKELETON_TODO_LABEL = "fill in nodes — replace this placeholder"
+ROSTER_SKELETON_CLASSDEFS = (
+    "  classDef new fill:#14532d,stroke:#4ade80,color:#fff\n"
+    "  classDef mod fill:#78350f,stroke:#fbbf24,color:#fff\n"
+    "  classDef storage fill:#1e3a5f,stroke:#60a5fa,color:#fff"
+)
 
 STANDARDS_SLOTS = ("architecture", "types", "common", "styling", "testing", "review", "exemplars")
 STYLING_SLOT = "styling"
@@ -108,6 +114,7 @@ EXEMPLARS_SLOT = "exemplars"
 
 TASK_HEADER_RE = re.compile(r"^## ([a-z]\.\d+) \| (\w+) \| (.+)$")
 FEATURE_AC_RE = re.compile(r"(\d+\.[A-Z])\b")
+FEATURE_HEADING_RE = re.compile(r"^### (\d+)\. (.+)$", re.MULTILINE)
 BLOCKED_BY_TAG_RE = re.compile(r"\b([a-z]\.\d+)\b")
 RATIFICATION_PHRASE_RE = re.compile(
     r"awaiting ratification|open for ratification|needs (?:user )?sign|needs ratification",
@@ -496,6 +503,49 @@ def parse_feature_acs(objective_md: Path) -> list[str]:
     if not section_match:
         return []
     return FEATURE_AC_RE.findall(section_match.group(0))
+
+
+@dataclass(frozen=True)
+class FeatureStrip:
+    number: str
+    title: str
+    ac_tags: tuple[str, ...]
+
+
+def parse_feature_strips(objective_md: Path) -> list[FeatureStrip]:
+    """One strip per Phase-1 feature heading (number, title, its AC tags) for the roster skeleton."""
+    if not objective_md.exists():
+        return []
+    section_match = re.search(
+        r"## (?:Functional ACs|Feature Change List).*?(?=^## |\Z)",
+        objective_md.read_text(),
+        re.MULTILINE | re.DOTALL,
+    )
+    if not section_match:
+        return []
+    section_text = section_match.group(0)
+    feature_headings = list(FEATURE_HEADING_RE.finditer(section_text))
+    strips: list[FeatureStrip] = []
+    for heading_index, heading in enumerate(feature_headings):
+        body_start = heading.end()
+        body_end = (
+            feature_headings[heading_index + 1].start()
+            if heading_index + 1 < len(feature_headings)
+            else len(section_text)
+        )
+        ordered_unique_tags = tuple(
+            dict.fromkeys(
+                FEATURE_AC_RE.findall(section_text[body_start:body_end]),
+            )
+        )
+        strips.append(
+            FeatureStrip(
+                number=heading.group(1),
+                title=heading.group(2).strip(),
+                ac_tags=ordered_unique_tags,
+            ),
+        )
+    return strips
 
 
 def parse_component_names(objective_md: Path) -> list[str]:
@@ -1178,7 +1228,14 @@ def _phase_audit(args: argparse.Namespace) -> None:
 def _phase_signoff(args: argparse.Namespace) -> None:
     schematic_dir = resolve_schematic_dir(args.schematic)
     state = load_state(schematic_dir)
-    state["phases"].setdefault(str(args.num), {})["signed_off"] = True
+    phase_entry = state["phases"].setdefault(str(args.num), {})
+    if args.num == ROSTER_PHASE and not phase_entry.get("roster"):
+        _exit_error(
+            "phase 2 sign-off blocked — the roster editor was never launched.\n"
+            f"  run: schematic roster init {ROSTER_PHASE} --schematic {args.schematic} "
+            "(opens the editor), fill the canvas, then sign off.",
+        )
+    phase_entry["signed_off"] = True
     save_state(schematic_dir, state)
     print(f"phase {args.num} signed off ✓")
     print(f"next: schematic phase complete {args.num} --schematic {args.schematic}")
@@ -2328,9 +2385,91 @@ def _skill_root() -> Path:
 
 def cmd_roster(args: argparse.Namespace) -> None:
     roster_handlers = {
+        "init": _roster_init,
         "present": _roster_present,
     }
     roster_handlers[args.roster_command](args)
+
+
+def _roster_init(args: argparse.Namespace) -> None:
+    """Scaffold a blank skeleton roster.mmd from Phase-1 features (if absent), then launch the editor immediately."""
+    schematic_dir = resolve_schematic_dir(args.schematic)
+    canonical_path = schematic_dir / ROSTER_FILENAME
+    if not canonical_path.exists():
+        feature_strips = parse_feature_strips(
+            objective_md=schematic_dir / "objective.md",
+        )
+        if not feature_strips:
+            _exit_error(
+                "no Phase-1 features found in objective.md — lock Phase 1 before the roster",
+            )
+        canonical_path.write_text(
+            _render_roster_skeleton(features=feature_strips),
+        )
+
+    skeleton_findings = _validate_mermaid_file(canonical_path)
+    if skeleton_findings:
+        _exit_error(
+            f"roster did not validate — nothing launched: {canonical_path} — {skeleton_findings}",
+        )
+
+    nonce = secrets.token_hex(ROSTER_NONCE_BYTES)
+    launched_editor = _launch_roster_editor(
+        canonical_path=canonical_path,
+        schematic_dir=schematic_dir,
+    )
+    _record_roster_presented(
+        schematic_dir=schematic_dir,
+        num=args.num,
+        nonce=nonce,
+        launched_editor=launched_editor,
+        canonical_path=canonical_path,
+    )
+    print(
+        _render_roster_envelope(
+            name=args.schematic,
+            num=args.num,
+            nonce=nonce,
+            launched_editor=launched_editor,
+            canonical_path=canonical_path,
+        ),
+    )
+
+
+def _render_roster_skeleton(features: list[FeatureStrip]) -> str:
+    """A valid-but-blank roster: one placeholder subgraph per feature, dark-mode classDefs, for the agent to fill."""
+    subgraph_blocks = [
+        _render_skeleton_subgraph(feature=feature)
+        for feature in features
+    ]
+    feature_chain = " ~~~ ".join(
+        f"F{feature.number}"
+        for feature in features
+    )
+    document_sections = [
+        "flowchart TB",
+        "\n\n".join(subgraph_blocks),
+        feature_chain,
+        ROSTER_SKELETON_CLASSDEFS,
+    ]
+    return "\n\n".join(
+        section
+        for section in document_sections
+        if section
+    ) + "\n"
+
+
+def _render_skeleton_subgraph(feature: FeatureStrip) -> str:
+    ac_tags_label = " ".join(feature.ac_tags)
+    quote_free_title = feature.title.replace('"', "")
+    return "\n".join(
+        [
+            f'  subgraph F{feature.number}["F{feature.number} · {quote_free_title} ({ac_tags_label})"]',
+            "    direction TB",
+            f'    F{feature.number}_todo["{ROSTER_SKELETON_TODO_LABEL}"]',
+            "  end",
+        ],
+    )
 
 
 def _roster_present(args: argparse.Namespace) -> None:
@@ -2514,6 +2653,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_roster = sub.add_parser("roster", help="Topology roster gate (Phase 2)")
     roster_sub = p_roster.add_subparsers(dest="roster_command", required=True)
+    p_rinit = roster_sub.add_parser(
+        "init",
+        help="Scaffold a blank skeleton roster.mmd from Phase-1 features and launch the editor immediately",
+    )
+    p_rinit.add_argument("num", type=int, choices=[ROSTER_PHASE])
+    p_rinit.add_argument("--schematic", required=True, metavar="NAME")
     p_rpresent = roster_sub.add_parser(
         "present",
         help="Validate a draft roster, write canonical roster.mmd, launch the editor, emit the stamped gate envelope",

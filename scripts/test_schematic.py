@@ -2354,6 +2354,139 @@ class TestRosterPresent(unittest.TestCase):
             self.assertIn("watcher.py", envelope_output)
 
 
+_ROSTER_OBJECTIVE_MD = textwrap.dedent("""\
+    # Test Feature
+
+    ## Functional ACs
+    Part of change set: recover transcripts
+
+    ### 1. Alpha recovers
+    Class: AlphaResolver
+
+    | AC | Title | What | Why |
+    |---|---|---|---|
+    | 1.A | do alpha | x | y |
+
+    ### 2. Beta recovers
+    Class: BetaClient
+
+    | AC | Title | What | Why |
+    |---|---|---|---|
+    | 2.A | do beta | x | y |
+    | 2.B | more beta | x | y |
+
+    ## Key Findings
+      - none
+""")
+
+
+class TestRosterInit(unittest.TestCase):
+    """schematic roster init — Phase 2 entry launches a blank skeleton editor; nothing the agent authors precedes it."""
+
+    def test_init_scaffolds_blank_skeleton_launches_and_records_state(self) -> None:
+        # Given a fresh schematic whose objective carries two Phase-1 features
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            (schematic_dir / "objective.md").write_text(_ROSTER_OBJECTIVE_MD)
+            args = _make_args(num=2, schematic=schematic_dir.name)
+            launched_editor = _cli.LaunchedEditor(pid=4242, url="http://127.0.0.1:5555/")
+
+            # When init runs with a real validation and a stubbed launch
+            with patch.object(_cli, "resolve_schematic_dir", return_value=schematic_dir), \
+                 patch.object(_cli, "find_project_root", return_value=Path(tmp)), \
+                 patch.object(_cli, "_launch_roster_editor", return_value=launched_editor):
+                envelope_output = _captured_stdout(_cli._roster_init, args=args)
+
+            # Then the scaffolded roster.mmd is a valid, blank, one-subgraph-per-feature skeleton
+            skeleton_text = (schematic_dir / _cli.ROSTER_FILENAME).read_text()
+            self.assertEqual(_cli._validate_mermaid_file(schematic_dir / _cli.ROSTER_FILENAME), [])
+            self.assertIn('subgraph F1["F1 · Alpha recovers (1.A)"]', skeleton_text)
+            self.assertIn('subgraph F2["F2 · Beta recovers (2.A 2.B)"]', skeleton_text)
+            self.assertIn("F1 ~~~ F2", skeleton_text)
+            self.assertIn("classDef new fill:#14532d,stroke:#4ade80,color:#fff", skeleton_text)
+            self.assertIn(_cli.ROSTER_SKELETON_TODO_LABEL, skeleton_text)
+
+            # Then the launch is recorded in state and the stamped envelope is emitted
+            roster_state = _cli.load_state(schematic_dir)["phases"]["2"]["roster"]
+            self.assertEqual(roster_state["editor_pid"], 4242)
+            self.assertIn(f"⟦schematic·roster present=2 nonce={roster_state['nonce']}", envelope_output)
+
+    def test_init_relaunches_existing_roster_without_clobbering_it(self) -> None:
+        # Given a roster.mmd the agent has already filled
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            (schematic_dir / "objective.md").write_text(_ROSTER_OBJECTIVE_MD)
+            filled_roster = "flowchart TB\n  A[FilledNode]\n"
+            (schematic_dir / _cli.ROSTER_FILENAME).write_text(filled_roster)
+            args = _make_args(num=2, schematic=schematic_dir.name)
+            launched_editor = _cli.LaunchedEditor(pid=1, url="http://127.0.0.1:5555/")
+
+            # When init runs again
+            with patch.object(_cli, "resolve_schematic_dir", return_value=schematic_dir), \
+                 patch.object(_cli, "find_project_root", return_value=Path(tmp)), \
+                 patch.object(_cli, "_launch_roster_editor", return_value=launched_editor):
+                _cli._roster_init(args)
+
+            # Then the filled canvas is preserved verbatim, never overwritten by the skeleton
+            self.assertEqual((schematic_dir / _cli.ROSTER_FILENAME).read_text(), filled_roster)
+
+    def test_init_exits_when_phase1_has_no_features(self) -> None:
+        # Given an objective with no Phase-1 feature headings
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            (schematic_dir / "objective.md").write_text("# Test\n\n## Functional ACs\nnothing here\n")
+            args = _make_args(num=2, schematic=schematic_dir.name)
+
+            # When init runs
+            with patch.object(_cli, "resolve_schematic_dir", return_value=schematic_dir), \
+                 patch.object(_cli, "_launch_roster_editor") as mock_launch:
+                with self.assertRaises(SystemExit) as exit_context:
+                    _cli._roster_init(args)
+
+            # Then it exits non-zero, launches nothing, writes no roster
+            self.assertEqual(exit_context.exception.code, 1)
+            mock_launch.assert_not_called()
+            self.assertFalse((schematic_dir / _cli.ROSTER_FILENAME).exists())
+
+
+class TestPhaseSignoffRosterGate(unittest.TestCase):
+    """Phase 2 sign-off cannot lock unless the roster editor launch was recorded."""
+
+    def test_phase2_signoff_blocked_when_roster_never_launched(self) -> None:
+        # Given a Phase 2 with no recorded roster launch
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            args = _make_args(num=2, schematic=schematic_dir.name)
+
+            # When sign-off is attempted
+            with patch.object(_cli, "resolve_schematic_dir", return_value=schematic_dir):
+                with self.assertRaises(SystemExit) as exit_context:
+                    _cli._phase_signoff(args)
+
+            # Then it is refused and the phase stays unsigned
+            self.assertEqual(exit_context.exception.code, 1)
+            self.assertNotEqual(
+                _cli.load_state(schematic_dir)["phases"].get("2", {}).get("signed_off"),
+                True,
+            )
+
+    def test_phase2_signoff_succeeds_after_roster_recorded(self) -> None:
+        # Given a Phase 2 whose roster launch is recorded
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            state = _cli.load_state(schematic_dir)
+            state["phases"].setdefault("2", {})["roster"] = {"nonce": "abc123"}
+            _cli.save_state(schematic_dir, state)
+            args = _make_args(num=2, schematic=schematic_dir.name)
+
+            # When sign-off runs
+            with patch.object(_cli, "resolve_schematic_dir", return_value=schematic_dir):
+                _cli._phase_signoff(args)
+
+            # Then the phase is signed off
+            self.assertIs(_cli.load_state(schematic_dir)["phases"]["2"]["signed_off"], True)
+
+
 # Fixtures
 
 

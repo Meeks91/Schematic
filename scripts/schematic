@@ -2595,15 +2595,16 @@ def _render_roster_envelope(
     return textwrap.dedent(
         """\
         Paste the fenced envelope below verbatim into your message to the user — the
-        nonce is the proof this launcher ran. Author the roster strips between the
-        EDITOR LIVE block and the closing fence, then arm the watcher (backgrounded).
+        nonce is the proof this launcher ran. The editor canvas is the ONLY roster
+        surface: do NOT post the topology (strips, node list, ASCII) in chat. Arm the
+        watcher (backgrounded), then point the user at the live editor.
 
         ⟦schematic·roster present={num} nonce={nonce} editor={url}⟧
         ── SCHEMATIC {name} · PHASE {num}/9 — Topology ─────────────────────────
-        This gate: the ROSTER — the full class + storage set, in one shot.
+        This gate: the ROSTER — the full class + storage set — is LIVE in the editor.
         EDITOR LIVE ▸ {url}
-        ⟨ author the vertically-stacked roster strips, one per feature, here ⟩
-        Then arm the Q&A watcher, backgrounded:
+        Edit nodes there (rename / kill / add), then Save & Close.
+        Q&A watcher (arm backgrounded):
           {watcher}
         ────────────────────────────────────────────────────────────────────────
         ⟦/schematic·roster nonce={nonce}⟧   Confirm: y/comment"""

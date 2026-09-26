@@ -42,7 +42,7 @@ Node conventions once you fill it: one subgraph per feature, vertically stacked 
 
 The round-trip IS the feedback loop: user edits (rename/kill/add nodes), hits Save & Close → re-read the file and **echo the delta back as absorbed decisions** ("killed X, renamed Y→Z, added table W to F6") before locking. Never absorb an edit silently. On Save & Close (bridge exit) the bridge also prints every sticky note (`NOTE (x=…,y=…): …` lines, mirrored in `<diagram>.notes.json`) — read and disposition EVERY note before the gate (absorb → amendment, or answer it), never leave one unread. `components/_roster.md` holds only the status banner, legend, and the amendments log — never a duplicate of the diagram.
 
-**Amendment rule (post-lock):** any add/kill/merge/rename discovered during the auto-write = an explicit `Roster amendment: <delta>` line in `_roster.md`, surfaced at the phase-closing Confirm. The phase-end audit checks card-set ≡ roster + amendments.
+**Amendment rule (post-lock):** any add/kill/merge/rename discovered during the auto-write = an explicit `Roster amendment: <delta>` line in `_roster.md`, surfaced at the phase-closing Confirm. The phase-end audit checks card-set ≡ roster + amendments. **An amendment does NOT relaunch the roster gate:** edit `roster.mmd`, validate it (`schematic mermaid --file`), record the delta in `_roster.md`, and take the user's `y` in chat. `schematic roster init` is for the fresh Phase-2 roster only (or when the user asks to see the diagram) — re-running it per amendment is ceremony, not a gate.
 
 The roster is its own gate — end it with **Confirm: y/comment**.
 

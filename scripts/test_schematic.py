@@ -979,7 +979,7 @@ class TestDiffBatching(unittest.TestCase):
         untracked_result = _cli.subprocess.CompletedProcess(args=[], returncode=0, stdout="src/a.py\nsrc/c.py\n")
         # When collecting the cumulative diff
         with patch.object(_cli.subprocess, "run", side_effect=[diff_result, untracked_result]):
-            diff_files = _cli._cumulative_diff_files("BASE", Path("/repo"))
+            diff_files = _cli._cumulative_diff_files("BASE", Path("/repo"), [])
         # Then the union is sorted and deduped
         self.assertEqual(diff_files, ["src/a.py", "src/b.py", "src/c.py"])
 
@@ -988,7 +988,7 @@ class TestDiffBatching(unittest.TestCase):
         empty = _cli.subprocess.CompletedProcess(args=[], returncode=0, stdout="")
         # When collecting the cumulative diff
         with patch.object(_cli.subprocess, "run", side_effect=[empty, empty]):
-            diff_files = _cli._cumulative_diff_files("BASE", Path("/repo"))
+            diff_files = _cli._cumulative_diff_files("BASE", Path("/repo"), [])
         # Then there are no files
         self.assertEqual(diff_files, [])
 
@@ -1001,7 +1001,7 @@ class TestDiffBatching(unittest.TestCase):
         untracked_result = _cli.subprocess.CompletedProcess(args=[], returncode=0, stdout="")
         # When collecting the cumulative diff
         with patch.object(_cli.subprocess, "run", side_effect=[diff_result, untracked_result]):
-            diff_files = _cli._cumulative_diff_files("BASE", Path("/repo"))
+            diff_files = _cli._cumulative_diff_files("BASE", Path("/repo"), [])
         # Then only the feature file remains
         self.assertEqual(diff_files, ["src/a.py"])
 
@@ -1042,6 +1042,33 @@ class TestReviewStart(unittest.TestCase):
             self._run_start(schematic_dir, auto=False, goal=None)
             # Then mode is manual
             self.assertEqual(_cli.load_state(schematic_dir)["run"]["mode"], "manual")
+
+
+class TestReviewScope(unittest.TestCase):
+
+    def test_empty_scope_admits_every_changed_path(self) -> None:
+        self.assertTrue(_cli._matches_review_scope("src/anything.py", []))
+
+    def test_scope_glob_spans_directories(self) -> None:
+        self.assertTrue(_cli._matches_review_scope("src/shared/clients/reels/transcription/Resolver.py", ["src/shared/clients/reels/*"]))
+        self.assertFalse(_cli._matches_review_scope("src/shared/clients/llm/Client.py", ["src/shared/clients/reels/*"]))
+
+    def test_cumulative_diff_files_keeps_only_scoped_paths(self) -> None:
+        with patch.object(_cli, "_run_git", side_effect=[["src/a/x.py", "tools/other/y.py"], ["src/a/z.py", "docs/schematics/f/tasks.md"]]):
+            files = _cli._cumulative_diff_files("BASE", Path("/repo"), ["src/a/*"])
+        self.assertEqual(files, ["src/a/x.py", "src/a/z.py"])
+
+    def test_only_globs_are_recorded_on_the_run_and_reused(self) -> None:
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            state = _cli.load_state(schematic_dir)
+            state["run"] = {"mode": "auto", "goal": "g", "base_ref": "BASE", "started_at": "t"}
+
+            # When given on one gate
+            first = _cli._review_scope_globs(state, state["run"], ["src/a/*"])
+            # Then a later gate without --only reuses them
+            later = _cli._review_scope_globs(state, state["run"], None)
+            self.assertEqual((first, later, state["run"]["only_globs"]), (["src/a/*"], ["src/a/*"], ["src/a/*"]))
 
 
 class TestReviewSweep(unittest.TestCase):

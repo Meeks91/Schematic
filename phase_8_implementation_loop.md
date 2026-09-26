@@ -343,7 +343,12 @@ schematic review sweep --schematic <name>
 The sweep computes the cumulative diff since `base_ref` (feature files only — the
 `docs/schematics/` planning tree is excluded), shards it into batches of at most
 **5 files**, and prints one **STYLE + STANDARDS** review prompt per batch, with the
-resolved standards modules inlined. **Per-group scoping falls out of timing + the skip,
+resolved standards modules inlined. **A shared, dirty checkout needs a scope:** when the
+working tree also carries another session's uncommitted work (or a pile of untracked
+artefacts), pass `--only <glob>` (repeatable; fnmatch, `*` spans directories) naming the
+feature's own paths — the CLI records the globs on the run and the consistency and e2e
+gates reuse them when `--only` is omitted. Without a scope the sweep diffs everything
+changed in the checkout, foreign files included. **Per-group scoping falls out of timing + the skip,
 not a flag:** at group `a`'s boundary the cumulative diff is only `a`'s files; at group
 `b`'s boundary the skip drops `a`'s already-clean files and only `b`'s new files re-enter
 batches. No `--group` argument — the CLI can't map a group to file paths (task targets are

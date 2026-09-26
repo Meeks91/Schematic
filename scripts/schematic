@@ -2,6 +2,7 @@
 
 import argparse
 import ast
+import fnmatch
 import hashlib
 import json
 import os
@@ -22,6 +23,11 @@ from typing import Any, NoReturn, TypeAlias
 TaskRecord: TypeAlias = dict[str, Any]
 
 SCHEMATICS_BASE = "docs/schematics"
+REVIEW_ONLY_HELP = (
+    "Limit the reviewed diff to paths matching this glob (repeatable; fnmatch, `*` spans directories). "
+    "Recorded on the run and reused by later gates when omitted — for a checkout that also carries "
+    "another session's uncommitted work."
+)
 STANDARDS_MANIFEST_RELPATH_CANONICAL = ".schematic/standards.json"
 STANDARDS_MANIFEST_RELPATH = ".claude/standards.json"
 ARCHIVE_SUBDIR = "_archive"
@@ -253,12 +259,30 @@ def _run_git_raw(git_args: list[str], project_root: Path) -> str:
     return completed.stdout
 
 
-def _cumulative_diff_files(base_ref: str, project_root: Path) -> list[str]:
-    """Feature files changed since base_ref — tracked diffs plus new untracked, minus schematic planning artifacts."""
+def _cumulative_diff_files(base_ref: str, project_root: Path, only_globs: list[str]) -> list[str]:
+    """Feature files changed since base_ref — tracked diffs plus new untracked, minus schematic planning artifacts.
+
+    `only_globs` narrows the set to the feature's own paths (fnmatch, `*` spans directories) when the
+    checkout also carries another session's work; empty means every changed file.
+    """
     tracked_changed = _run_git(["diff", "--name-only", base_ref], project_root)
     untracked_new = _run_git(["ls-files", "--others", "--exclude-standard"], project_root)
     all_changed = set(tracked_changed) | set(untracked_new)
-    return sorted(path for path in all_changed if not path.startswith(SCHEMATICS_BASE + "/"))
+    feature_paths = (path for path in all_changed if not path.startswith(SCHEMATICS_BASE + "/"))
+    return sorted(path for path in feature_paths if _matches_review_scope(path, only_globs))
+
+
+def _matches_review_scope(path: str, only_globs: list[str]) -> bool:
+    """Whether a changed path is inside the review scope; an empty scope admits everything."""
+    return not only_globs or any(fnmatch.fnmatch(path, glob) for glob in only_globs)
+
+
+def _review_scope_globs(state: dict, run: dict, requested_globs: list[str] | None) -> list[str]:
+    """The run's review scope: `--only` globs given now are recorded on the run; otherwise the recorded ones."""
+    if requested_globs:
+        run["only_globs"] = list(requested_globs)
+        return run["only_globs"]
+    return list(run.get("only_globs", []))
 
 
 def _file_diff(path: str, base_ref: str, project_root: Path) -> str:
@@ -3389,7 +3413,8 @@ def _review_sweep(args: argparse.Namespace) -> None:
     review_model = _resolve_review_model(project_root)
     state = load_state(schematic_dir)
     run = _require_auto_run(state, args.schematic)
-    diff_files = _cumulative_diff_files(run["base_ref"], project_root)
+    only_globs = _review_scope_globs(state, run, getattr(args, "only", None))
+    diff_files = _cumulative_diff_files(run["base_ref"], project_root, only_globs)
     if not diff_files:
         _exit_error(f"no changes since base_ref {run['base_ref'][:12]} — nothing to sweep")
 
@@ -3559,7 +3584,8 @@ def _review_consistency(args: argparse.Namespace) -> None:
             f"  schematic review sweep --schematic {args.schematic}"
         )
 
-    diff_files = _cumulative_diff_files(run["base_ref"], project_root)
+    only_globs = _review_scope_globs(state, run, getattr(args, "only", None))
+    diff_files = _cumulative_diff_files(run["base_ref"], project_root, only_globs)
     if not diff_files:
         _exit_error(f"no changes since base_ref {run['base_ref'][:12]} — nothing to review")
 
@@ -3657,7 +3683,8 @@ def _review_e2e(args: argparse.Namespace) -> None:
             f"  schematic review consistency --schematic {args.schematic}"
         )
 
-    diff_files = _cumulative_diff_files(run["base_ref"], project_root)
+    only_globs = _review_scope_globs(state, run, getattr(args, "only", None))
+    diff_files = _cumulative_diff_files(run["base_ref"], project_root, only_globs)
     if not diff_files:
         _exit_error(f"no changes since base_ref {run['base_ref'][:12]} — nothing to review")
 
@@ -4267,6 +4294,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_rsweep = review_sub.add_parser("sweep", help="Shard the cumulative diff into <=5-file review batches")
     p_rsweep.add_argument("--schematic", required=True, metavar="NAME")
+    p_rsweep.add_argument("--only", action="append", metavar="GLOB", help=REVIEW_ONLY_HELP)
 
     p_rresult = review_sub.add_parser("batch-result", help="Record a batch verdict; flags PRISTINE when all clean")
     p_rresult.add_argument("batch_id", help="Batch id (e.g. 1.2)")
@@ -4276,6 +4304,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_rconsistency = review_sub.add_parser("consistency", help="Single-agent whole-diff consistency gate (after PRISTINE sweeps)")
     p_rconsistency.add_argument("--schematic", required=True, metavar="NAME")
+    p_rconsistency.add_argument("--only", action="append", metavar="GLOB", help=REVIEW_ONLY_HELP)
 
     p_rconsistency_result = review_sub.add_parser("consistency-result", help="Record consistency verdict")
     p_rconsistency_result.add_argument("verdict", choices=sorted(REVIEW_VERDICTS))
@@ -4284,6 +4313,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_re2e = review_sub.add_parser("e2e", help="Entry-point tracing gate (after clean consistency)")
     p_re2e.add_argument("--schematic", required=True, metavar="NAME")
+    p_re2e.add_argument("--only", action="append", metavar="GLOB", help=REVIEW_ONLY_HELP)
 
     p_re2e_result = review_sub.add_parser("e2e-result", help="Record e2e correctness verdict")
     p_re2e_result.add_argument("verdict", choices=sorted(REVIEW_VERDICTS))

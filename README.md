@@ -24,7 +24,7 @@
 |---|---|
 | **Plan** | Feature ACs → class topology → per-class contracts + tests → injection DAG → sequence diagram → agent-ready tasks. Boxed cards, dependency grids, interactive diagrams — structure exposes design flaws that prose hides. |
 | **Implement** | Task-by-task execution against the blueprint: CLI-driven kanban, sketch gates (manual) or an autonomous driver loop (auto), drift receipts on every completion. Optionally staged into **milestones** — the loop drains the board to the checkpoint, reports, and stops until you sign it off. |
-| **Review** | Continuous automated scrubbing, not one model doing the right thing: phase audits, a diff-scoped review on every task, an optional batch-until-pristine sweep, a master e2e gate — every verdict recorded in state the agent cannot forge. |
+| **Review** | Continuous automated scrubbing, not one model doing the right thing: phase audits, a diff-scoped review on every task, a whole-diff consistency pass, a master e2e gate — every verdict recorded in state the agent cannot forge. |
 | **Standards** | Modular slots — architecture, component types, styling per language, testing, review. Point them at skills you already like, or **learn** them from your codebase's exemplars. Greenfield (bring your style) and brownfield (absorb the existing one) with the same mechanism. |
 | **Compress** | Durable knowledge (sequence, decisions, core summary) merges into your repo's arch docs; the planning bundle retires clean. |
 
@@ -79,12 +79,12 @@ Invoke `/schematic` in Claude Code, or ask to architect a feature end-to-end bef
 | 5 | Injection DAG | `dag.mmd`, §DAG + §Integration | artifact check + **mermaid validation** |
 | 6 | Sequence Diagram | `sequence.mmd`, §Sequence | audit + artifact check + **mermaid validation** |
 | 7 | Tasks | `tasks.md` | end-to-end audit + sign-off |
-| 8 | Implementation | code + `implementation_report.md` | per-task review verdicts (+ optional pristine sweep) + consistency + e2e gate |
+| 8 | Implementation | code + `implementation_report.md` | per-task review verdicts + consistency + e2e gate |
 | 9 | Compression | knowledge merged into repo arch docs | lock, then cleanup |
 
-Phase 8 runs **manual** (sketch → confirm → implement, per task) or **auto** (user-opted autonomous loop with per-task diff reviews, an optional batch-until-pristine style sweep, and a master-agent correctness gate). Re-sweeps are incremental: files unchanged since their last clean review are skipped, not re-reviewed.
+Phase 8 runs **manual** (sketch → confirm → implement, per task) or **auto** (user-opted autonomous loop with per-task diff reviews, a whole-diff consistency pass, and a master-agent correctness gate).
 
-**Milestones (optional).** Phase 7 asks whether the task set ships in stages. On `yes` the agent proposes a `## Milestones` table over the task graph — one row per checkpoint, with what it proves — and one `y` locks it. From then on `task next` serves nothing from the next stage until the current one is signed off, so the auto driver loop exits at the boundary by construction. Hitting one writes a milestone section into `implementation_report.md` (tasks with divergence flags, autonomous decisions, review verdicts, sweep result, suite output, open questions) and opens the dashboard on it (`SCHEMATIC_NO_BROWSER=1` skips the launch for unattended runs). Sign-off additionally requires every task in the stage to hold a clean review. No table = one implicit stage and nothing changes.
+**Milestones (optional).** Phase 7 asks whether the task set ships in stages. On `yes` the agent proposes a `## Milestones` table over the task graph — one row per checkpoint, with what it proves — and one `y` locks it. From then on `task next` serves nothing from the next stage until the current one is signed off, so the auto driver loop exits at the boundary by construction. Hitting one writes a milestone section into `implementation_report.md` (tasks with divergence flags, autonomous decisions, review verdicts, suite output, open questions) and opens the dashboard on it (`SCHEMATIC_NO_BROWSER=1` skips the launch for unattended runs). Sign-off additionally requires every task in the stage to hold a clean review. No table = one implicit stage and nothing changes.
 
 **Phase 1 — the objective**, human-readable in two minutes, and **Phase 3 — the feature's footprint**, every file annotated with the AC that necessitated it:
 
@@ -123,7 +123,6 @@ Phase 8 runs **manual** (sketch → confirm → implement, per task) or **auto**
 | `task complete` / `schematic-task-done` review check | Completing a task that never passed review |
 | `schematic-task-done --matched/--updated` | Silent schematic drift — divergence is recorded, always |
 | `schematic validate` | Cross-reference rot (blockers, component files, AC pyramid) |
-| Incremental sweeps | Token burn from re-reviewing already-clean files |
 
 ## CLI
 
@@ -134,7 +133,7 @@ schematic init|status|validate|mermaid            bundle lifecycle + integrity
 schematic phase audit|sign-off|complete           gate state, phases 1-9 (audit: 1,2,4,6,7)
 schematic task next|show|status|note|review-result|complete    task loop
 schematic milestone decide|propose|lock|status|sign-off|report|amend   staged delivery
-schematic review start|sweep|batch-result|e2e|e2e-result|status  phase 8 review
+schematic review start|consistency|consistency-result|e2e|e2e-result|status  phase 8 review
 schematic questions / schematic answer            dashboard Q&A relay
 schematic overview [--fragment <hash>]            browser dashboard (e.g. milestone:M2)
 schematic track init|validate|show                execution traces
@@ -149,8 +148,8 @@ Schematic absorbs the conventions of the repo it runs in. Each **slot** maps to 
 |---|---|---|
 | `architecture` | service layout, directories, DI, boundaries | P2, P3, P5 |
 | `types` | class-suffix vocabulary, banned suffixes | P2 + audits |
-| `styling.<language>` | naming, idioms, defensive-code policy | P4, P8 (inlined into sweep prompts) |
-| `testing` | test planning, naming, assertion style | P4, P7, P8 (inlined into sweep prompts) |
+| `styling.<language>` | naming, idioms, defensive-code policy | P4, P8 (cited in per-task review briefs) |
+| `testing` | test planning, naming, assertion style | P4, P7, P8 (cited in per-task review briefs) |
 | `review` | review lenses, gate criteria | audits + P8 review prompts |
 | `exemplars` | known-good directories to imitate | learn mode, P8 |
 | `schematic.reviewModel` | model for review subagents (default `sonnet`) | P8 |
@@ -179,7 +178,7 @@ Schematic ships in the Agent Skills format, so it runs on any harness that suppo
 |---|---|
 | CLI (gates, state, kanban, validate) | Plain stdlib Python — any agent or human runs it |
 | Bundle (`objective.md`, contracts, `.mmd`) | Markdown + Mermaid — any model reads and writes it |
-| **Review loop** | The CLI is the gatekeeper, the session agent is the dispatcher: prompts are *printed*, verdicts are *recorded* (`task review-result`, `review batch-result`). Sweep prompts inline the diff hunks + standards content so the reviewer needs **zero file access** — any subagent, any model, any harness |
+| **Review loop** | The CLI is the gatekeeper, the session agent is the dispatcher: prompts are *printed*, verdicts are *recorded* (`task review-result`, `review consistency-result`, `review e2e-result`). The consistency prompt inlines the diff hunks so the reviewer needs **zero file access** — any subagent, any model, any harness |
 | Audits | Same pattern — self-contained prompt files, results recorded via `phase audit` |
 | Dashboard + Mermaid editor | Stdlib HTTP servers + vanilla JS in a browser; Q&A relays through JSON files (`schematic questions` / `answer`) |
 | Skill packaging (`SKILL.md`, phase files) | Standard Agent Skills format — loads in any skills-aware harness; even without one, they're plain instruction files any agent can follow |

@@ -219,7 +219,7 @@ class TestStateIO(unittest.TestCase):
                 loaded_state,
                 {
                     "phases": {}, "tasks": {}, "overrides": [],
-                    "run": None, "sweeps": [], "milestones": None,
+                    "run": None, "milestones": None,
                 },
             )
 
@@ -231,7 +231,6 @@ class TestStateIO(unittest.TestCase):
                 "tasks": {"a.1": {"status": "complete"}},
                 "overrides": [],
                 "run": None,
-                "sweeps": [],
             }
             _cli.save_state(Path(tmp), legacy_state)
 
@@ -241,8 +240,8 @@ class TestStateIO(unittest.TestCase):
             # Then the milestone gate reads as never decided
             self.assertIsNone(loaded_state["milestones"])
 
-    def test_load_migrates_legacy_state_with_run_and_sweeps_keys(self) -> None:
-        # Given a state file written before the run/sweeps keys existed
+    def test_load_migrates_legacy_state_with_run_key(self) -> None:
+        # Given a state file written before the run key existed
         with TemporaryDirectory() as tmp:
             legacy_state = {
                 "phases": {"1": {"status": "locked", "signed_off": True}},
@@ -254,7 +253,6 @@ class TestStateIO(unittest.TestCase):
             loaded_state = _cli.load_state(Path(tmp))
             # Then the new keys are injected with empty defaults
             self.assertIsNone(loaded_state["run"])
-            self.assertEqual(loaded_state["sweeps"], [])
 
     def test_save_then_load_produces_identical_state(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -263,7 +261,6 @@ class TestStateIO(unittest.TestCase):
                 "tasks": {"a.1": {"status": "complete"}},
                 "overrides": [],
                 "run": None,
-                "sweeps": [],
                 "milestones": None,
             }
             _cli.save_state(Path(tmp), original_state)
@@ -944,35 +941,6 @@ class TestParseFeatureAcs(unittest.TestCase):
 
 class TestDiffBatching(unittest.TestCase):
 
-    def test_returns_single_batch_when_files_at_max(self) -> None:
-        # Given five changed files and a max of five per batch
-        changed_files = ["a.py", "b.py", "c.py", "d.py", "e.py"]
-        # When sharding
-        batches = _cli._shard_diff_into_batches(changed_files, 5)
-        # Then one batch holds all five
-        self.assertEqual(batches, [["a.py", "b.py", "c.py", "d.py", "e.py"]])
-
-    def test_splits_into_batches_when_over_max(self) -> None:
-        # Given twelve files and a max of five
-        changed_files = [f"f{index}.py" for index in range(12)]
-        # When sharding
-        batches = _cli._shard_diff_into_batches(changed_files, 5)
-        # Then batch sizes are 5, 5, 2
-        self.assertEqual([len(batch) for batch in batches], [5, 5, 2])
-
-    def test_returns_empty_list_when_no_files(self) -> None:
-        # Given no changed files / When sharding / Then no batches
-        self.assertEqual(_cli._shard_diff_into_batches([], 5), [])
-
-    def test_preserves_file_order_across_batches(self) -> None:
-        # Given an ordered list spanning two batches
-        changed_files = ["1", "2", "3", "4", "5", "6"]
-        # When sharding then flattening
-        batches = _cli._shard_diff_into_batches(changed_files, 5)
-        flattened = [path for batch in batches for path in batch]
-        # Then original order is preserved
-        self.assertEqual(flattened, changed_files)
-
     def test_unions_tracked_and_untracked_diff_files(self) -> None:
         # Given git diff lists two files and ls-files lists one new (with overlap)
         diff_result = _cli.subprocess.CompletedProcess(args=[], returncode=0, stdout="src/b.py\nsrc/a.py\n")
@@ -1069,150 +1037,6 @@ class TestReviewScope(unittest.TestCase):
             # Then a later gate without --only reuses them
             later = _cli._review_scope_globs(state, state["run"], None)
             self.assertEqual((first, later, state["run"]["only_globs"]), (["src/a/*"], ["src/a/*"], ["src/a/*"]))
-
-
-class TestReviewSweep(unittest.TestCase):
-
-    def _seed_run(self, schematic_dir: Path) -> None:
-        state = _cli.load_state(schematic_dir)
-        state["run"] = {"mode": "auto", "goal": "g", "base_ref": "BASE", "started_at": "t"}
-        _cli.save_state(schematic_dir, state)
-
-    def _run_sweep(self, schematic_dir: Path, diff_files: list[str]) -> None:
-        args = _make_args(schematic=schematic_dir.name)
-        with patch.object(_cli, "resolve_schematic_dir", return_value=schematic_dir), \
-             patch.object(_cli, "find_project_root", return_value=schematic_dir), \
-             patch.object(_cli, "_cumulative_diff_files", return_value=diff_files), \
-             patch.object(_cli, "_run_git_raw", return_value=""):
-            _cli._review_sweep(args)
-
-    def test_appends_sweep_with_sharded_batches(self) -> None:
-        # Given seven changed files and an auto run
-        with TemporaryDirectory() as tmp:
-            schematic_dir = _make_schematic_dir(tmp)
-            self._seed_run(schematic_dir)
-            # When sweeping
-            self._run_sweep(schematic_dir, [f"src/f{index}.py" for index in range(7)])
-            # Then one sweep with two batches (5, 2) and sequential ids is recorded
-            sweep = _cli.load_state(schematic_dir)["sweeps"][0]
-            self.assertEqual(sweep["sweep_id"], 1)
-            self.assertEqual([len(b["files"]) for b in sweep["batches"]], [5, 2])
-            self.assertEqual([b["batch_id"] for b in sweep["batches"]], ["1.1", "1.2"])
-
-    def test_exits_when_no_auto_run_recorded(self) -> None:
-        # Given no run / When sweeping / Then it exits
-        with TemporaryDirectory() as tmp:
-            schematic_dir = _make_schematic_dir(tmp)
-            with self.assertRaises(SystemExit):
-                self._run_sweep(schematic_dir, ["src/a.py"])
-
-    def test_exits_when_no_changes_since_base(self) -> None:
-        # Given an auto run but an empty diff / When sweeping / Then it exits
-        with TemporaryDirectory() as tmp:
-            schematic_dir = _make_schematic_dir(tmp)
-            self._seed_run(schematic_dir)
-            with self.assertRaises(SystemExit):
-                self._run_sweep(schematic_dir, [])
-
-    def test_sweep_stamps_the_open_milestone_on_the_sweep_record(self) -> None:
-        # Given locked milestones with M1 open
-        with TemporaryDirectory() as tmp:
-            schematic_dir = _make_milestoned_schematic_dir(tmp)
-            self._seed_run(schematic_dir)
-
-            # When sweeping
-            self._run_sweep(schematic_dir, ["src/a.py"])
-
-            # Then the sweep records which milestone it covered
-            self.assertEqual(_cli.load_state(schematic_dir)["sweeps"][0]["milestone"], "M1")
-
-    def test_sweep_stamps_no_milestone_when_none_are_declared(self) -> None:
-        # Given a bundle with no Milestones table
-        with TemporaryDirectory() as tmp:
-            schematic_dir = _make_schematic_dir(tmp)
-            self._seed_run(schematic_dir)
-
-            # When sweeping
-            self._run_sweep(schematic_dir, ["src/a.py"])
-
-            # Then the sweep is stamped with nothing
-            self.assertIsNone(_cli.load_state(schematic_dir)["sweeps"][0]["milestone"])
-
-
-class TestReviewSweepIncremental(unittest.TestCase):
-
-    def _seed_run(self, schematic_dir: Path) -> None:
-        state = _cli.load_state(schematic_dir)
-        state["run"] = {"mode": "auto", "goal": "g", "base_ref": "BASE", "started_at": "t"}
-        _cli.save_state(schematic_dir, state)
-
-    def _seed_clean_sweep(self, schematic_dir: Path, path_to_diff: dict[str, str]) -> None:
-        state = _cli.load_state(schematic_dir)
-        state["sweeps"] = [{
-            "sweep_id": 1,
-            "batches": [{
-                "batch_id": "1.1",
-                "files": sorted(path_to_diff),
-                "file_hashes": {p: _cli._diff_hash(d) for p, d in path_to_diff.items()},
-                "verdict": "clean",
-                "summary": "ok",
-            }],
-            "pristine": True,
-        }]
-        _cli.save_state(schematic_dir, state)
-
-    def _run_sweep(self, schematic_dir: Path, path_to_diff: dict[str, str]) -> None:
-        args = _make_args(schematic=schematic_dir.name)
-        with patch.object(_cli, "resolve_schematic_dir", return_value=schematic_dir), \
-             patch.object(_cli, "find_project_root", return_value=schematic_dir), \
-             patch.object(_cli, "_cumulative_diff_files", return_value=sorted(path_to_diff)), \
-             patch.object(_cli, "_file_diff", side_effect=lambda p, ref, root: path_to_diff[p]):
-            _cli._review_sweep(args)
-
-    def test_resweep_is_pristine_when_every_file_already_reviewed_clean(self) -> None:
-        # Given a prior clean sweep over the exact same per-file diffs
-        with TemporaryDirectory() as tmp:
-            schematic_dir = _make_schematic_dir(tmp)
-            self._seed_run(schematic_dir)
-            path_to_diff = {"src/a.py": "+a", "src/b.py": "+b"}
-            self._seed_clean_sweep(schematic_dir, path_to_diff)
-            # When re-sweeping with nothing re-touched
-            self._run_sweep(schematic_dir, path_to_diff)
-            # Then the new sweep is pristine with zero batches and all files skipped
-            resweep = _cli.load_state(schematic_dir)["sweeps"][1]
-            self.assertTrue(resweep["pristine"])
-            self.assertEqual(resweep["batches"], [])
-            self.assertEqual(resweep["skipped_clean"], ["src/a.py", "src/b.py"])
-
-    def test_resweep_batches_only_retouched_files(self) -> None:
-        # Given a prior clean sweep, then one file re-touched
-        with TemporaryDirectory() as tmp:
-            schematic_dir = _make_schematic_dir(tmp)
-            self._seed_run(schematic_dir)
-            self._seed_clean_sweep(schematic_dir, {"src/a.py": "+a", "src/b.py": "+b"})
-            # When re-sweeping with b.py changed
-            self._run_sweep(schematic_dir, {"src/a.py": "+a", "src/b.py": "+b2"})
-            # Then only b.py re-enters a batch and a.py is skipped
-            resweep = _cli.load_state(schematic_dir)["sweeps"][1]
-            self.assertEqual([b["files"] for b in resweep["batches"]], [["src/b.py"]])
-            self.assertEqual(resweep["skipped_clean"], ["src/a.py"])
-
-    def test_findings_batch_files_are_reviewed_again(self) -> None:
-        # Given a prior sweep whose only batch had findings
-        with TemporaryDirectory() as tmp:
-            schematic_dir = _make_schematic_dir(tmp)
-            self._seed_run(schematic_dir)
-            path_to_diff = {"src/a.py": "+a"}
-            self._seed_clean_sweep(schematic_dir, path_to_diff)
-            state = _cli.load_state(schematic_dir)
-            state["sweeps"][0]["batches"][0]["verdict"] = "findings"
-            state["sweeps"][0]["pristine"] = False
-            _cli.save_state(schematic_dir, state)
-            # When re-sweeping with the identical diff
-            self._run_sweep(schematic_dir, path_to_diff)
-            # Then the file is reviewed again (findings never earn a skip)
-            resweep = _cli.load_state(schematic_dir)["sweeps"][1]
-            self.assertEqual([b["files"] for b in resweep["batches"]], [["src/a.py"]])
 
 
 class TestLogicLineCount(unittest.TestCase):
@@ -1380,14 +1204,6 @@ class TestReviewE2e(unittest.TestCase):
     def _seed_ready_for_e2e(self, schematic_dir: Path) -> None:
         state = _cli.load_state(schematic_dir)
         state["run"] = {"mode": "auto", "goal": "g", "base_ref": "BASE", "started_at": "t"}
-        state["sweeps"] = [
-            {
-                "sweep_id": 1,
-                "batches": [],
-                "pristine": True,
-                "skipped_clean": [],
-            },
-        ]
         state["consistency"] = {"status": "clean", "verdict": "clean", "summary": "ok"}
         _cli.save_state(schematic_dir, state)
 
@@ -1402,7 +1218,7 @@ class TestReviewE2e(unittest.TestCase):
         return captured.getvalue()
 
     def test_brief_asks_for_per_entry_point_tracing(self) -> None:
-        # Given an auto run ready for e2e (pristine sweep + clean consistency)
+        # Given an auto run ready for e2e (clean consistency)
         with TemporaryDirectory() as tmp:
             schematic_dir = _make_schematic_dir(tmp)
             self._seed_ready_for_e2e(schematic_dir)
@@ -1430,12 +1246,11 @@ class TestReviewE2e(unittest.TestCase):
             assert "fix any findings silently" not in e2e_output
 
     def test_exits_without_a_clean_consistency_gate(self) -> None:
-        # Given an auto run with a pristine sweep but no consistency verdict
+        # Given an auto run with no consistency verdict
         with TemporaryDirectory() as tmp:
             schematic_dir = _make_schematic_dir(tmp)
             state = _cli.load_state(schematic_dir)
             state["run"] = {"mode": "auto", "goal": "g", "base_ref": "BASE", "started_at": "t"}
-            state["sweeps"] = [{"sweep_id": 1, "batches": [], "pristine": True, "skipped_clean": []}]
             _cli.save_state(schematic_dir, state)
 
             # When opening the e2e gate / Then it refuses
@@ -1443,12 +1258,11 @@ class TestReviewE2e(unittest.TestCase):
                 self._captured_e2e(schematic_dir, ["src/a.py"])
 
     def test_exits_when_consistency_returned_findings(self) -> None:
-        # Given a pristine sweep and a consistency gate that returned findings
+        # Given a consistency gate that returned findings
         with TemporaryDirectory() as tmp:
             schematic_dir = _make_schematic_dir(tmp)
             state = _cli.load_state(schematic_dir)
             state["run"] = {"mode": "auto", "goal": "g", "base_ref": "BASE", "started_at": "t"}
-            state["sweeps"] = [{"sweep_id": 1, "batches": [], "pristine": True, "skipped_clean": []}]
             state["consistency"] = {"status": "findings", "verdict": "findings", "summary": "dup found"}
             _cli.save_state(schematic_dir, state)
 
@@ -1460,10 +1274,13 @@ class TestReviewE2e(unittest.TestCase):
 class TestReviewConsistency(unittest.TestCase):
     """_review_consistency — single-agent whole-diff duplication/redundancy + line-limit, one pass."""
 
-    def _seed_run_and_pristine_sweep(self, schematic_dir: Path) -> None:
+    def _seed_run_and_reviewed_board(self, schematic_dir: Path) -> None:
+        """An auto run whose every task is complete with a clean per-task review — the consistency precondition."""
         state = _cli.load_state(schematic_dir)
         state["run"] = {"mode": "auto", "goal": "g", "base_ref": "BASE", "started_at": "t"}
-        state["sweeps"] = [{"sweep_id": 1, "batches": [], "pristine": True, "skipped_clean": []}]
+        for tag in ("a.1", "b.1", "b.2"):
+            _cli.update_task_status_in_file(schematic_dir / "tasks.md", tag, "complete")
+            state["tasks"].setdefault(tag, {})["review_request"] = {"tag": tag, "status": "clean"}
         _cli.save_state(schematic_dir, state)
 
     def _captured_consistency(self, schematic_dir: Path, diff_files: list[str]) -> str:
@@ -1478,10 +1295,10 @@ class TestReviewConsistency(unittest.TestCase):
         return captured.getvalue()
 
     def test_prompt_asks_for_duplication_not_standards(self) -> None:
-        # Given an auto run with a pristine sweep
+        # Given an auto run with every task reviewed clean
         with TemporaryDirectory() as tmp:
             schematic_dir = _make_schematic_dir(tmp)
-            self._seed_run_and_pristine_sweep(schematic_dir)
+            self._seed_run_and_reviewed_board(schematic_dir)
 
             # When opening the consistency gate
             consistency_output = self._captured_consistency(schematic_dir, ["src/a.py"])
@@ -1495,7 +1312,7 @@ class TestReviewConsistency(unittest.TestCase):
         # Given a python file well over the default ceiling
         with TemporaryDirectory() as tmp:
             schematic_dir = _make_schematic_dir(tmp)
-            self._seed_run_and_pristine_sweep(schematic_dir)
+            self._seed_run_and_reviewed_board(schematic_dir)
             big_body = "\n".join(
                 f"line_{index} = {index}"
                 for index in range(_cli.MAX_FILE_LINES_DEFAULT + 5)
@@ -1511,8 +1328,8 @@ class TestReviewConsistency(unittest.TestCase):
             assert "logic-line" in consistency_output
             assert "src/big.py" in consistency_output
 
-    def test_opens_without_a_sweep_when_every_task_holds_a_clean_review(self) -> None:
-        # Given an auto run, no sweep, every task complete and reviewed clean
+    def test_opens_when_every_task_holds_a_clean_review(self) -> None:
+        # Given an auto run, every task complete and reviewed clean
         with TemporaryDirectory() as tmp:
             schematic_dir = _make_schematic_dir(tmp)
             tasks_md = schematic_dir / "tasks.md"
@@ -1526,11 +1343,11 @@ class TestReviewConsistency(unittest.TestCase):
             # When opening the consistency gate
             consistency_output = self._captured_consistency(schematic_dir, ["src/a.py"])
 
-            # Then it opens — the per-task reviews stand in for the sweep
+            # Then it opens — the per-task reviews are the standards gate
             self.assertIn("consistency", consistency_output.lower())
 
-    def test_exits_without_a_pristine_sweep(self) -> None:
-        # Given an auto run but no pristine sweep
+    def test_exits_when_the_board_is_not_reviewed_clean(self) -> None:
+        # Given an auto run whose tasks are not all complete with a clean review
         with TemporaryDirectory() as tmp:
             schematic_dir = _make_schematic_dir(tmp)
             state = _cli.load_state(schematic_dir)
@@ -1541,32 +1358,11 @@ class TestReviewConsistency(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 self._captured_consistency(schematic_dir, ["src/a.py"])
 
-    def test_exits_when_the_latest_sweep_is_not_pristine(self) -> None:
-        # Given an earlier pristine sweep but a later group sweep with outstanding findings
-        with TemporaryDirectory() as tmp:
-            schematic_dir = _make_schematic_dir(tmp)
-            state = _cli.load_state(schematic_dir)
-            state["run"] = {"mode": "auto", "goal": "g", "base_ref": "BASE", "started_at": "t"}
-            state["sweeps"] = [
-                {"sweep_id": 1, "batches": [], "pristine": True, "skipped_clean": []},
-                {
-                    "sweep_id": 2,
-                    "batches": [{"batch_id": "2.1", "files": ["src/b.py"], "verdict": "findings", "summary": None}],
-                    "pristine": False,
-                    "skipped_clean": [],
-                },
-            ]
-            _cli.save_state(schematic_dir, state)
-
-            # When opening the consistency gate / Then it refuses — the latest sweep is not pristine
-            with self.assertRaises(SystemExit):
-                self._captured_consistency(schematic_dir, ["src/b.py"])
-
     def test_records_a_clean_verdict(self) -> None:
         # Given a consistency gate opened over one file
         with TemporaryDirectory() as tmp:
             schematic_dir = _make_schematic_dir(tmp)
-            self._seed_run_and_pristine_sweep(schematic_dir)
+            self._seed_run_and_reviewed_board(schematic_dir)
             self._captured_consistency(schematic_dir, ["src/a.py"])
 
             # When recording a clean verdict
@@ -1716,55 +1512,6 @@ class TestDashboardQuestions(unittest.TestCase):
             with patch.object(_cli, "_resolve_single_or_all", return_value=[schematic_dir]), \
                  self.assertRaises(SystemExit):
                 _cli.cmd_answer(args)
-
-
-class TestReviewBatchResult(unittest.TestCase):
-
-    def _seed_sweep(self, schematic_dir: Path) -> None:
-        state = _cli.load_state(schematic_dir)
-        state["sweeps"] = [{
-            "sweep_id": 1,
-            "batches": [
-                {"batch_id": "1.1", "files": ["a.py"], "verdict": "pending", "summary": None},
-                {"batch_id": "1.2", "files": ["b.py"], "verdict": "pending", "summary": None},
-            ],
-            "pristine": False,
-        }]
-        _cli.save_state(schematic_dir, state)
-
-    def _run_result(self, schematic_dir: Path, batch_id: str, verdict: str, summary: str) -> None:
-        args = _make_args(batch_id=batch_id, verdict=verdict, summary=summary, schematic=schematic_dir.name)
-        _with_resolved_dir(schematic_dir, _cli._review_batch_result, args)
-
-    def test_marks_sweep_pristine_when_all_batches_clean(self) -> None:
-        # Given a two-batch sweep
-        with TemporaryDirectory() as tmp:
-            schematic_dir = _make_schematic_dir(tmp)
-            self._seed_sweep(schematic_dir)
-            # When both batches are recorded clean
-            self._run_result(schematic_dir, "1.1", "clean", "ok")
-            self._run_result(schematic_dir, "1.2", "clean", "ok")
-            # Then the sweep is pristine
-            self.assertTrue(_cli.load_state(schematic_dir)["sweeps"][0]["pristine"])
-
-    def test_not_pristine_while_a_batch_has_findings(self) -> None:
-        # Given a two-batch sweep
-        with TemporaryDirectory() as tmp:
-            schematic_dir = _make_schematic_dir(tmp)
-            self._seed_sweep(schematic_dir)
-            # When one batch is clean and one has findings
-            self._run_result(schematic_dir, "1.1", "clean", "ok")
-            self._run_result(schematic_dir, "1.2", "findings", "1 naming issue")
-            # Then the sweep is not pristine
-            self.assertFalse(_cli.load_state(schematic_dir)["sweeps"][0]["pristine"])
-
-    def test_exits_when_batch_id_unknown(self) -> None:
-        # Given a sweep without batch 9.9 / When recording it / Then it exits
-        with TemporaryDirectory() as tmp:
-            schematic_dir = _make_schematic_dir(tmp)
-            self._seed_sweep(schematic_dir)
-            with self.assertRaises(SystemExit):
-                self._run_result(schematic_dir, "9.9", "clean", "ok")
 
 
 # Fixtures
@@ -2359,56 +2106,6 @@ class TestMultiSourceReviewSlot(unittest.TestCase):
                 # When resolving the slots
                 _cli._resolved_slot_paths(project_root)
 
-    def test_sweep_prompt_inlines_every_review_source_under_its_own_header(self) -> None:
-        # Given a manifest with two review lenses
-        with TemporaryDirectory() as tmp:
-            project_root = _gen_project_root_with_review_sources(
-                tmp,
-                review_source=[
-                    _gen_lens_source(_LENS_ONE_FILENAME),
-                    _gen_lens_source(_LENS_TWO_FILENAME),
-                ],
-            )
-
-            # When building the standards block for a python batch
-            standards_content = _cli._resolve_standards_content_for_batch(
-                batch_files=["src/a.py"],
-                project_root=project_root,
-            )
-
-            # Then each lens is inlined under its own headed section, in order
-            first_header = f"── review ({_gen_lens_source(_LENS_ONE_FILENAME)}) ──"
-            second_header = f"── review ({_gen_lens_source(_LENS_TWO_FILENAME)}) ──"
-            self.assertIn(first_header, standards_content)
-            self.assertIn(second_header, standards_content)
-            self.assertIn(_LENS_ONE_BODY.strip(), standards_content)
-            self.assertIn(_LENS_TWO_BODY.strip(), standards_content)
-            self.assertLess(
-                standards_content.index(first_header),
-                standards_content.index(second_header),
-            )
-
-    def test_sql_only_batch_inlines_the_sql_styling_module(self) -> None:
-        # Given a manifest mapping sql styling, and a batch of only migration files
-        with TemporaryDirectory() as tmp:
-            project_root = _gen_project_root_with_manifest(
-                tmp,
-                manifest={"styling": {"sql": _gen_lens_source(_LENS_ONE_FILENAME)}},
-            )
-
-            # When building the standards block
-            standards_content = _cli._resolve_standards_content_for_batch(
-                batch_files=["config/db/schema/migrations/trengine/019_drop.sql"],
-                project_root=project_root,
-            )
-
-            # Then the sql module is inlined under its own header
-            self.assertIn(
-                f"── styling.sql ({_gen_lens_source(_LENS_ONE_FILENAME)}) ──",
-                standards_content,
-            )
-            self.assertIn(_LENS_ONE_BODY.strip(), standards_content)
-
     def test_init_labels_the_canonical_repo_manifest_as_its_source(self) -> None:
         # Given a repo carrying the canonical .schematic/ manifest
         with TemporaryDirectory() as tmp:
@@ -2751,18 +2448,6 @@ def _mark_task_complete(schematic_dir: Path, tag: str) -> None:
     _record_clean_review(schematic_dir, tag)
     state = _cli.load_state(schematic_dir)
     state["tasks"].setdefault(tag, {})["status"] = "complete"
-    _cli.save_state(schematic_dir, state)
-
-
-def _record_pristine_sweep(schematic_dir: Path, milestone_id: str | None) -> None:
-    state = _cli.load_state(schematic_dir)
-    state["sweeps"].append({
-        "sweep_id": len(state["sweeps"]) + 1,
-        "batches": [],
-        "pristine": True,
-        "skipped_clean": [],
-        "milestone": milestone_id,
-    })
     _cli.save_state(schematic_dir, state)
 
 
@@ -3703,8 +3388,8 @@ class TestMilestoneSignOff(unittest.TestCase):
             # Then the per-task review gate refuses, naming the tag
             self.assertIn("task a.1 holds no clean per-task review (verdict: never dispatched)", refusal)
 
-    def test_sign_off_succeeds_in_auto_mode_without_any_sweep(self) -> None:
-        # Given an auto run with no sweep recorded, every M1 task complete with a clean per-task review
+    def test_sign_off_succeeds_in_auto_mode_with_every_review_clean(self) -> None:
+        # Given an auto run, every M1 task complete with a clean per-task review
         with TemporaryDirectory() as tmp:
             schematic_dir = _make_milestoned_schematic_dir(tmp)
             _mark_task_complete(schematic_dir, "a.1")
@@ -3713,36 +3398,8 @@ class TestMilestoneSignOff(unittest.TestCase):
             # When it is signed off
             self._sign_off(schematic_dir, "M1")
 
-            # Then the per-task reviews are the standards gate — no sweep is demanded
+            # Then the per-task reviews are the standards gate
             self.assertIn("M1", _cli.load_state(schematic_dir)["milestones"]["signed_off"])
-
-    def test_sign_off_succeeds_in_auto_mode_when_the_milestones_sweep_is_pristine(self) -> None:
-        # Given an auto run whose M1 sweep is PRISTINE
-        with TemporaryDirectory() as tmp:
-            schematic_dir = _make_milestoned_schematic_dir(tmp)
-            _mark_task_complete(schematic_dir, "a.1")
-            _seed_run_mode(schematic_dir, "auto")
-            _record_pristine_sweep(schematic_dir, "M1")
-
-            # When it is signed off
-            self._sign_off(schematic_dir, "M1")
-
-            # Then the sign-off is recorded
-            self.assertIn("M1", _cli.load_state(schematic_dir)["milestones"]["signed_off"])
-
-    def test_sign_off_does_not_require_a_sweep_in_manual_mode(self) -> None:
-        # Given a manual run with no sweep at all
-        with TemporaryDirectory() as tmp:
-            schematic_dir = _make_milestoned_schematic_dir(tmp)
-            _mark_task_complete(schematic_dir, "a.1")
-            _seed_run_mode(schematic_dir, "manual")
-
-            # When it is signed off
-            printed = self._sign_off(schematic_dir, "M1")
-
-            # Then it is recorded and the absent sweep is stated, not implied
-            self.assertIn("M1", _cli.load_state(schematic_dir)["milestones"]["signed_off"])
-            self.assertIn("no standards sweep", printed)
 
     def test_sign_off_refuses_when_an_earlier_milestone_is_unsigned(self) -> None:
         # Given every task complete but M1 unsigned
@@ -3864,18 +3521,6 @@ class TestMilestoneReport(unittest.TestCase):
             report_text = self._report_text(schematic_dir)
             self.assertIn("clean", report_text)
             self.assertIn("a.1 reviewed clean", report_text)
-
-    def test_report_records_the_sweep_result_for_the_milestone(self) -> None:
-        # Given a PRISTINE sweep stamped M1
-        with TemporaryDirectory() as tmp:
-            schematic_dir = _make_milestoned_schematic_dir(tmp)
-            _record_pristine_sweep(schematic_dir, "M1")
-
-            # When M1 is reported
-            self._report(schematic_dir, "M1", suite=None)
-
-            # Then the sweep result is in the section
-            self.assertIn("PRISTINE", self._report_text(schematic_dir))
 
     def test_report_lists_the_open_questions_of_the_milestones_tasks(self) -> None:
         # Given an open question on a task in each milestone

@@ -20,7 +20,7 @@ description: Multi-phase feature planning skill. Grills the user to produce a fe
 > schematic phase audit|sign-off|complete         # gate state per phase 1-9 (audit: 1,2,4,6,7 only)
 > schematic task next|show|status|note|ask|decision|review-result|complete  # phase 8 task loop
 > schematic milestone decide|propose|lock|status|sign-off|report|amend  # staged delivery: P7 decision, P8 boundary
-> schematic review start|sweep|batch-result|e2e|e2e-result|status  # phase 8 review
+> schematic review start|consistency|consistency-result|e2e|e2e-result|status  # phase 8 review
 > schematic questions / schematic answer          # Q&A relay: dashboard, editor, AND `task ask`
 > schematic overview / schematic track            # dashboard + execution traces
 > ```

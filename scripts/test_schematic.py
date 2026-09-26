@@ -152,7 +152,11 @@ def _claim_task(schematic_dir: Path, tag: str) -> None:
 
 
 def _run_task_ask(schematic_dir: Path, tag: str, question: str) -> None:
-    args = _make_args(tag=tag, text=question, schematic=schematic_dir.name)
+    _run_task_ask_with_scope(schematic_dir, tag, question, _cli.TASK_QUESTION_SCOPE_CONTRACT)
+
+
+def _run_task_ask_with_scope(schematic_dir: Path, tag: str, question: str, scope: str) -> None:
+    args = _make_args(tag=tag, text=question, schematic=schematic_dir.name, scope=scope)
     _with_resolved_dir(schematic_dir, _cli._task_ask, args)
 
 
@@ -685,30 +689,18 @@ class TestTaskNext(unittest.TestCase):
     def test_returns_first_unblocked_pending_task(self) -> None:
         with TemporaryDirectory() as tmp:
             schematic_dir = _make_schematic_dir(tmp)
-            tasks = _cli.parse_tasks(schematic_dir / "tasks.md")
-            complete_tags = {t["tag"] for t in tasks if t["status"] == "complete"}
-            pending_unblocked = [
-                t for t in tasks
-                if t["status"] == "pending"
-                and not [b for b in t["blocked_by"] if b not in complete_tags]
-            ]
-            self.assertEqual(len(pending_unblocked), 1)
-            self.assertEqual(pending_unblocked[0]["tag"], "b.1")
+            servable = _cli._servable_task(schematic_dir)
+            self.assertIsNotNone(servable)
+            self.assertEqual(servable["tag"], "b.1")
 
     def test_unblocks_chained_task_when_blocker_completes(self) -> None:
         with TemporaryDirectory() as tmp:
             schematic_dir = _make_schematic_dir(tmp)
             tasks_md = schematic_dir / "tasks.md"
             _cli.update_task_status_in_file(tasks_md, "b.1", "complete")
-            tasks = _cli.parse_tasks(tasks_md)
-            complete_tags = {t["tag"] for t in tasks if t["status"] == "complete"}
-            pending_unblocked = [
-                t for t in tasks
-                if t["status"] == "pending"
-                and not [b for b in t["blocked_by"] if b not in complete_tags]
-            ]
-            self.assertEqual(len(pending_unblocked), 1)
-            self.assertEqual(pending_unblocked[0]["tag"], "b.2")
+            servable = _cli._servable_task(schematic_dir)
+            self.assertIsNotNone(servable)
+            self.assertEqual(servable["tag"], "b.2")
 
     def test_returns_no_tasks_when_all_complete(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -716,14 +708,7 @@ class TestTaskNext(unittest.TestCase):
             tasks_md = schematic_dir / "tasks.md"
             _cli.update_task_status_in_file(tasks_md, "b.1", "complete")
             _cli.update_task_status_in_file(tasks_md, "b.2", "complete")
-            tasks = _cli.parse_tasks(tasks_md)
-            complete_tags = {t["tag"] for t in tasks if t["status"] == "complete"}
-            pending_unblocked = [
-                t for t in tasks
-                if t["status"] == "pending"
-                and not [b for b in t["blocked_by"] if b not in complete_tags]
-            ]
-            self.assertEqual(pending_unblocked, [])
+            self.assertIsNone(_cli._servable_task(schematic_dir))
 
 
 # Fixtures
@@ -1594,6 +1579,21 @@ class TestStatusOutput(unittest.TestCase):
             # Then the held task is counted and named on its own line
             self.assertIn("pendingInput  1  [b.1]", status_output)
 
+    def test_status_names_a_hold_that_does_not_block_dependents(self) -> None:
+        # Given b.1 held on an internal question
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            _claim_task(schematic_dir, "b.1")
+            with contextlib.redirect_stdout(io.StringIO()):
+                _run_task_ask_with_scope(schematic_dir, "b.1", _QUESTION_STAMP_RULE, _cli.TASK_QUESTION_SCOPE_INTERNAL)
+
+            # When printing status
+            status_output = self._captured_status(schematic_dir)
+
+            # Then b.2 is not listed as blocked and the hold is named as self-only
+            self.assertNotIn("b.2 ← b.1", status_output)
+            self.assertIn("held on an internal question, dependents unblocked: b.1", status_output)
+
     def test_status_shows_dash_when_nothing_locked(self) -> None:
         # Given no locked phases
         with TemporaryDirectory() as tmp:
@@ -1772,6 +1772,94 @@ class TestTaskAsk(unittest.TestCase):
             self.assertEqual(len(pending), 1)
             self.assertEqual(pending[0]["id"], _TASK_QUESTION_ID_FIRST)
             self.assertEqual(pending[0]["text"], _QUESTION_KEY_CHOICE)
+
+    def test_contract_scope_hold_keeps_dependents_blocked(self) -> None:
+        # Given b.1 held on a question that may change its public surface
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            _claim_task(schematic_dir, "b.1")
+            with contextlib.redirect_stdout(io.StringIO()):
+                _run_task_ask(schematic_dir, "b.1", _QUESTION_KEY_CHOICE)
+
+            # When the driver asks for the next task
+            servable = _cli._servable_task(schematic_dir)
+
+            # Then b.2, which depends on b.1, is not served
+            self.assertIsNone(servable)
+
+    def test_internal_scope_hold_keeps_dependents_servable(self) -> None:
+        # Given b.1 held on a question internal to it (its surface is settled)
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            _claim_task(schematic_dir, "b.1")
+            with contextlib.redirect_stdout(io.StringIO()):
+                _run_task_ask_with_scope(schematic_dir, "b.1", _QUESTION_STAMP_RULE, _cli.TASK_QUESTION_SCOPE_INTERNAL)
+
+            # When the driver asks for the next task
+            servable = _cli._servable_task(schematic_dir)
+
+            # Then b.2 is served while b.1 stays held
+            self.assertIsNotNone(servable)
+            self.assertEqual(servable["tag"], "b.2")
+            self.assertEqual(_status_of(schematic_dir, "b.1"), "pendingInput")
+
+    def test_answering_an_internal_hold_keeps_dependents_servable(self) -> None:
+        # Given b.1 held on an internal question and b.2 already served against its surface
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            _claim_task(schematic_dir, "b.1")
+            with contextlib.redirect_stdout(io.StringIO()):
+                _run_task_ask_with_scope(schematic_dir, "b.1", _QUESTION_STAMP_RULE, _cli.TASK_QUESTION_SCOPE_INTERNAL)
+
+            # When the answer lands and b.1 resumes
+            with contextlib.redirect_stdout(io.StringIO()):
+                _run_answer(schematic_dir, _TASK_QUESTION_ID_FIRST, _ANSWER_KEY_CHOICE)
+
+            # Then b.2 stays servable — the declared surface outlives the answer
+            self.assertEqual(_status_of(schematic_dir, "b.1"), "in_progress")
+            servable = _cli._servable_task(schematic_dir)
+            self.assertIsNotNone(servable)
+            self.assertEqual(servable["tag"], "b.2")
+
+    def test_internal_scope_is_recorded_on_the_question(self) -> None:
+        # Given an internal-scope ask
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            _claim_task(schematic_dir, "b.1")
+
+            # When it is filed
+            with contextlib.redirect_stdout(io.StringIO()):
+                _run_task_ask_with_scope(schematic_dir, "b.1", _QUESTION_STAMP_RULE, _cli.TASK_QUESTION_SCOPE_INTERNAL)
+
+            # Then the state records the scope beside the question
+            filed = _cli.load_state(schematic_dir)["tasks"]["b.1"]["questions"]
+            self.assertEqual([q["scope"] for q in filed], ["internal"])
+
+    def test_ask_names_what_to_continue_with(self) -> None:
+        # Given b.1 claimed
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            _claim_task(schematic_dir, "b.1")
+
+            # When asking an internal question
+            with patch("sys.stdout", new_callable=io.StringIO) as captured:
+                _run_task_ask_with_scope(schematic_dir, "b.1", _QUESTION_STAMP_RULE, _cli.TASK_QUESTION_SCOPE_INTERNAL)
+
+            # Then the hold tells the driver which task still runs
+            self.assertIn("continue with: schematic task next test-feature  (→ b.2)", captured.getvalue())
+
+    def test_ask_says_when_nothing_else_runs(self) -> None:
+        # Given b.1 claimed and b.2 behind it
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            _claim_task(schematic_dir, "b.1")
+
+            # When asking a contract question
+            with patch("sys.stdout", new_callable=io.StringIO) as captured:
+                _run_task_ask(schematic_dir, "b.1", _QUESTION_KEY_CHOICE)
+
+            # Then the hold says the board is drained until the answer lands
+            self.assertIn("nothing else runnable", captured.getvalue())
 
     def test_ask_when_task_is_pending_is_refused(self) -> None:
         # Given an unclaimed task

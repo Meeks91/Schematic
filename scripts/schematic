@@ -40,6 +40,11 @@ VALID_TASK_STATUSES = {
     TASK_STATUS_COMPLETE,
 }
 # pendingInput is entered only by `task ask`, which files the question that holds the task.
+# A question's scope says who it holds: `contract` (the task's public surface may change, so its
+# dependents wait too) or `internal` (a value or behaviour inside the task — dependents keep flowing).
+TASK_QUESTION_SCOPE_CONTRACT = "contract"
+TASK_QUESTION_SCOPE_INTERNAL = "internal"
+TASK_QUESTION_SCOPES = (TASK_QUESTION_SCOPE_CONTRACT, TASK_QUESTION_SCOPE_INTERNAL)
 MANUAL_TASK_STATUS_CHOICES = sorted(VALID_TASK_STATUSES - {TASK_STATUS_PENDING_INPUT})
 TASK_STATUSES_ALLOWED_TO_ASK = {
     TASK_STATUS_IN_PROGRESS,
@@ -1089,14 +1094,19 @@ def _print_status(schematic_dir: Path) -> None:
         TASK_STATUS_PENDING_INPUT: [],
         TASK_STATUS_PENDING: [],
     }
-    complete_tags = {t["tag"] for t in tasks if t["status"] == TASK_STATUS_COMPLETE}
+    settled_tags = _surface_settled_tags(schematic_dir=schematic_dir, tasks=tasks)
+    holding_only_itself = [
+        t["tag"]
+        for t in tasks
+        if t["status"] == TASK_STATUS_PENDING_INPUT and t["tag"] in settled_tags
+    ]
     blocked_summaries: list[str] = []
 
     for task in tasks:
         bucket = by_status.get(task["status"], by_status[TASK_STATUS_PENDING])
         bucket.append(task["tag"])
         if task["status"] == TASK_STATUS_PENDING and task["blocked_by"]:
-            active_blockers = [b for b in task["blocked_by"] if b not in complete_tags]
+            active_blockers = [b for b in task["blocked_by"] if b not in settled_tags]
             if active_blockers:
                 blocked_summaries.append(f"{task['tag']} ← {', '.join(active_blockers)}")
 
@@ -1122,6 +1132,8 @@ def _print_status(schematic_dir: Path) -> None:
         print("\nblocked:")
         for entry in blocked_summaries:
             print(f"  {entry}")
+    if holding_only_itself:
+        print(f"\nheld on an internal question, dependents unblocked: {', '.join(holding_only_itself)}")
 
 # ── validate command ───────────────────────────────────────────────────────────
 
@@ -1644,8 +1656,8 @@ def _file_task_question(schematic_dir: Path, tag: str, question: str) -> int:
     return question_idx
 
 
-def _hold_task_on_question(schematic_dir: Path, tag: str, question: str) -> int:
-    """File the question, move the task to pendingInput, and record what is holding it."""
+def _hold_task_on_question(schematic_dir: Path, tag: str, question: str, scope: str) -> int:
+    """File the question, move the task to pendingInput, and record what is holding it and how far."""
     question_idx = _file_task_question(
         schematic_dir=schematic_dir,
         tag=tag,
@@ -1663,6 +1675,7 @@ def _hold_task_on_question(schematic_dir: Path, tag: str, question: str) -> int:
     task_state.setdefault("questions", []).append({
         "idx": question_idx,
         "text": question,
+        "scope": scope,
         "asked_at": datetime.now(tz=timezone.utc).isoformat(),
     })
     save_state(schematic_dir, state)
@@ -1683,19 +1696,52 @@ def _unanswered_question_idxs(schematic_dir: Path, tag: str) -> list[int]:
     ]
 
 
+def _surface_declared_settled(schematic_dir: Path, tag: str) -> bool:
+    """A task that filed an internal question and has no open contract question — its public surface is fixed.
+
+    The declaration outlives the answer: once the surface was declared settled, dependents built
+    against it must not re-block when the answer lands and the task resumes.
+    """
+    filed_questions = load_state(schematic_dir)["tasks"].get(tag, {}).get("questions", [])
+    open_idxs = set(_unanswered_question_idxs(schematic_dir=schematic_dir, tag=tag))
+    filed_scopes = [q.get("scope", TASK_QUESTION_SCOPE_CONTRACT) for q in filed_questions]
+    open_scopes = [q.get("scope", TASK_QUESTION_SCOPE_CONTRACT) for q in filed_questions if q["idx"] in open_idxs]
+    return TASK_QUESTION_SCOPE_INTERNAL in filed_scopes and TASK_QUESTION_SCOPE_CONTRACT not in open_scopes
+
+
+def _surface_settled_tags(schematic_dir: Path, tasks: list[TaskRecord]) -> set[str]:
+    """Tags a dependent may build against: complete, or with a surface declared settled by an internal question."""
+    return {
+        t["tag"]
+        for t in tasks
+        if t["status"] == TASK_STATUS_COMPLETE
+        or _surface_declared_settled(schematic_dir=schematic_dir, tag=t["tag"])
+    }
+
+
 def _print_held_task(
     schematic_name: str,
     tag: str,
     previous_status: str,
     question_idx: int,
     question: str,
+    scope: str,
+    next_runnable_tag: str | None,
 ) -> None:
-    """Announce the hold and the one command that lifts it."""
+    """Announce the hold, who it holds, the one command that lifts it, and what to work on meanwhile."""
     question_id = f"{TASK_QUESTIONS_STEM}#{question_idx}"
     print(f"task {tag}: {previous_status} → {TASK_STATUS_PENDING_INPUT}")
     print(f"  {question_id}: {question}")
     print(f"  HELD until answered: schematic answer {question_id} \"<text>\" {schematic_name}")
     print("  do not proceed on this task, and do not record the gap as a note.")
+    if scope == TASK_QUESTION_SCOPE_INTERNAL:
+        print(f"  scope: internal — {tag}'s public surface is settled; its dependents stay unblocked")
+    else:
+        print(f"  scope: contract — {tag}'s dependents wait with it (use --scope internal when the surface is settled)")
+    if next_runnable_tag is not None:
+        print(f"  continue with: schematic task next {schematic_name}  (→ {next_runnable_tag})")
+    else:
+        print("  nothing else runnable — surface the open questions and stop")
 
 
 def _task_ask(args: argparse.Namespace) -> None:
@@ -1713,16 +1759,21 @@ def _task_ask(args: argparse.Namespace) -> None:
             f"  claim it first: schematic task next {schematic_dir.name}"
         )
 
+    question_idx = _hold_task_on_question(
+        schematic_dir=schematic_dir,
+        tag=args.tag,
+        question=args.text,
+        scope=args.scope,
+    )
+    next_runnable = _servable_task(schematic_dir)
     _print_held_task(
         schematic_name=schematic_dir.name,
         tag=args.tag,
         previous_status=current_status,
-        question_idx=_hold_task_on_question(
-            schematic_dir=schematic_dir,
-            tag=args.tag,
-            question=args.text,
-        ),
+        question_idx=question_idx,
         question=args.text,
+        scope=args.scope,
+        next_runnable_tag=next_runnable["tag"] if next_runnable is not None else None,
     )
 
 
@@ -1957,7 +2008,7 @@ def _claim_task_in_progress(schematic_dir: Path, tag: str) -> None:
 def _servable_task(schematic_dir: Path) -> TaskRecord | None:
     """The next pending unblocked task, never one past an unsigned milestone boundary."""
     tasks = parse_tasks(schematic_dir / "tasks.md")
-    complete_tags = {t["tag"] for t in tasks if t["status"] == TASK_STATUS_COMPLETE}
+    settled_tags = _surface_settled_tags(schematic_dir=schematic_dir, tasks=tasks)
     servable_tags = _tags_inside_the_open_milestone(schematic_dir=schematic_dir, tasks=tasks)
 
     for task in tasks:
@@ -1965,7 +2016,7 @@ def _servable_task(schematic_dir: Path) -> TaskRecord | None:
             continue
         if servable_tags is not None and task["tag"] not in servable_tags:
             continue
-        active_blockers = [b for b in task["blocked_by"] if b not in complete_tags]
+        active_blockers = [b for b in task["blocked_by"] if b not in settled_tags]
         if active_blockers:
             continue
         return task
@@ -4123,6 +4174,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_task_ask.add_argument("tag", help="Task tag (e.g. a.1)")
     p_task_ask.add_argument("text", help='The question: "<one sentence> — why: <what is blocked>"')
     p_task_ask.add_argument("--schematic", required=True, metavar="NAME")
+    p_task_ask.add_argument(
+        "--scope",
+        choices=TASK_QUESTION_SCOPES,
+        default=TASK_QUESTION_SCOPE_CONTRACT,
+        help="contract (default): the task's public surface may change, dependents wait; "
+             "internal: a value/behaviour inside the task, dependents keep flowing",
+    )
 
     p_tdecision = task_sub.add_parser(
         "decision",

@@ -278,11 +278,11 @@ pending ──▶ in_progress ──▶ review ──▶ complete
 
 | rule | enforced by |
 |---|---|
-| `task ask` files the question in the bundle's Q&A relay and moves the task to `pendingInput` | CLI |
+| `task ask` files the question in the bundle's Q&A relay and moves the task to `pendingInput`; `--scope internal` (surface settled) keeps the task's dependents servable, the default `contract` holds them too | CLI |
 | `task complete` and `task status <tag> review` are refused while any question on the task is unanswered — `--override` does not close one | CLI |
 | `task decision` is limited to `--kind naming\|placement`; a contract change, a caveat, or an unspecified value must be `task ask` | CLI |
 | `validate` fails on any task in `pendingInput`, any unanswered question, and any "awaiting ratification" / "needs sign-off" prose in a card or ledger with no question behind it | CLI |
-| an open question in scope is a reviewer FAIL, never a note; auto mode stops on `pendingInput` | `phase_8_implementation_loop.md` |
+| an open question in scope is a reviewer FAIL, never a note; auto mode holds the task on `pendingInput` and runs `task next` — it stops only when nothing is servable | `phase_8_implementation_loop.md` |
 
 **Approval gate (mandatory, binding):**
 

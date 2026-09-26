@@ -24,7 +24,8 @@ in this phase keep that delivery honest:
    at the bundle root.** It holds only what the user must know to ship the
    feature — the functional and behavioural changes that diverged from the
    locked schematic (one dated bullet each), deferred items awaiting decision,
-   and commit status; never run history, review rounds, or the CLI's own ledger.
+   tests added beyond the signed lists (§ New tests), and commit status; never run
+   history, review rounds, or the CLI's own ledger.
    **Link it from the top of `objective.md`** (one blockquote line) — the
    dashboard renders the bundle, and an unlinked report is invisible there.
 5. **Independent decisions are logged, then signed off at the end.** Any decision
@@ -41,8 +42,10 @@ in this phase keep that delivery honest:
    ```
 
    That moves the task to `pendingInput` and files the question in the same Q&A relay
-   the dashboard bubble uses. The user answers with `schematic answer <id> "<text>"`,
-   which returns the task to `in_progress`. The CLI refuses `task complete` and
+   the dashboard bubble uses. Add `--scope internal` when the task's public surface is
+   settled and only a value or behaviour inside it is in question — then `task next` keeps
+   serving its dependents; the default `--scope contract` holds them too. The user answers
+   with `schematic answer <id> "<text>"`, which returns the task to `in_progress`. The CLI refuses `task complete` and
    `task status <tag> review` while any question on the task is unanswered — and
    `--override` does NOT close one. `validate` fails on any task in `pendingInput`,
    on any unanswered question, and on ratification prose ("awaiting ratification",
@@ -55,7 +58,9 @@ in this phase keep that delivery honest:
 >
 > **Auto mode** suspends the per-task sketch gate — but ONLY because the user explicitly entered it via `schematic review start --auto`. It is the single context in which an agent writes implementation code without a per-task sketch. Even then, every task is tested and diff-reviewed as it goes, each task group is standards-swept to PRISTINE as it drains, and the whole feature diff gets a final consistency pass and entry-point tracing before the feature is done. **An agent must never select auto mode on its own initiative.**
 >
-> **Auto mode STOPS on `pendingInput`.** Auto suspends confirmation gates, never the need for a human where the design is silent. The moment a task hits a decision the schematic does not answer and that is not a bare naming or placement choice, the agent runs `schematic task ask` and that task is done being worked. Auto continues on OTHER unblocked tasks; it never guesses on the held one, never marks it complete, and never resumes it by writing its own answer. If every remaining task is held, auto surfaces the open questions and stops — exactly as it already stops on `schematic questions`.
+> **Auto mode holds the TASK on `pendingInput`, never the board.** Auto suspends confirmation gates, never the need for a human where the design is silent. The moment a task hits a decision the schematic does not answer and that is not a bare naming or placement choice, the agent runs `schematic task ask` and that task is done being worked. The very next command is `schematic task next` — the hold's own output names what still runs. Auto never guesses on the held one, never marks it complete, and never resumes it by writing its own answer. Only when `task next` serves nothing does auto surface the open questions and stop — exactly as it already stops on `schematic questions`.
+>
+> **Scope the hold so it blocks only what it must.** `task ask --scope internal` when the question is a value or behaviour inside the task and its public surface (constructor, method signatures, models it exports) is settled — dependents keep flowing and build against that surface; the answer still gates the held task's own review and `validate`. `--scope contract` (the default) when the answer may change the surface — dependents wait with it. The declaration outlives the answer: dependents served against a settled surface stay served once the answer lands. If the answer does change the surface after all, the internal scope was wrong — file a contract question and reopen every dependent built against it. A question that merely adds a test never holds anything (see "Tests found during Phase 8" below).
 
 ---
 
@@ -163,6 +168,17 @@ a batch with `Confirm: y/comment`; the user signs off each decision, folded into
 per-decision gate.
 
 A decision not in the ledger didn't happen — silent improvisation is forbidden.
+
+### Tests found during Phase 8
+
+A test the card did not sign — uncovered by the implementer, a reviewer, or the sweep —
+that only proves more of the signed contract is neither a decision nor a question. Add it,
+and log it in `implementation_report.md` § **New tests** (task · test name · why the signed
+list missed it); the task's normal review covers it. It never holds the task and never files
+a `task ask`: the Phase 4 test list is signed once, and an addition that proves more of the
+same contract is not a design gap. A test that would force a choice the card did not make
+(a value, a branch, a caveat) is a question — `task ask` it. Ruled 2026-09-26 after a held
+sixth test blocked twelve downstream tasks.
 
 ---
 

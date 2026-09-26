@@ -24,7 +24,7 @@
 |---|---|
 | **Plan** | Feature ACs → class topology → per-class contracts + tests → injection DAG → sequence diagram → agent-ready tasks. Boxed cards, dependency grids, interactive diagrams — structure exposes design flaws that prose hides. |
 | **Implement** | Task-by-task execution against the blueprint: CLI-driven kanban, sketch gates (manual) or an autonomous driver loop (auto), drift receipts on every completion. Optionally staged into **milestones** — the loop drains the board to the checkpoint, reports, and stops until you sign it off. |
-| **Review** | Continuous automated scrubbing, not one model doing the right thing: phase audits, a diff-scoped review on every task, a batch-until-pristine sweep, a master e2e gate — every verdict recorded in state the agent cannot forge. |
+| **Review** | Continuous automated scrubbing, not one model doing the right thing: phase audits, a diff-scoped review on every task, an optional batch-until-pristine sweep, a master e2e gate — every verdict recorded in state the agent cannot forge. |
 | **Standards** | Modular slots — architecture, component types, styling per language, testing, review. Point them at skills you already like, or **learn** them from your codebase's exemplars. Greenfield (bring your style) and brownfield (absorb the existing one) with the same mechanism. |
 | **Compress** | Durable knowledge (sequence, decisions, core summary) merges into your repo's arch docs; the planning bundle retires clean. |
 
@@ -79,12 +79,12 @@ Invoke `/schematic` in Claude Code, or ask to architect a feature end-to-end bef
 | 5 | Injection DAG | `dag.mmd`, §DAG + §Integration | artifact check + **mermaid validation** |
 | 6 | Sequence Diagram | `sequence.mmd`, §Sequence | audit + artifact check + **mermaid validation** |
 | 7 | Tasks | `tasks.md` | end-to-end audit + sign-off |
-| 8 | Implementation | code + `implementation_report.md` | per-task review verdicts + pristine sweep + e2e gate |
+| 8 | Implementation | code + `implementation_report.md` | per-task review verdicts (+ optional pristine sweep) + consistency + e2e gate |
 | 9 | Compression | knowledge merged into repo arch docs | lock, then cleanup |
 
-Phase 8 runs **manual** (sketch → confirm → implement, per task) or **auto** (user-opted autonomous loop with per-task diff reviews, a batch-until-pristine style sweep, and a master-agent correctness gate). Re-sweeps are incremental: files unchanged since their last clean review are skipped, not re-reviewed.
+Phase 8 runs **manual** (sketch → confirm → implement, per task) or **auto** (user-opted autonomous loop with per-task diff reviews, an optional batch-until-pristine style sweep, and a master-agent correctness gate). Re-sweeps are incremental: files unchanged since their last clean review are skipped, not re-reviewed.
 
-**Milestones (optional).** Phase 7 asks whether the task set ships in stages. On `yes` the agent proposes a `## Milestones` table over the task graph — one row per checkpoint, with what it proves — and one `y` locks it. From then on `task next` serves nothing from the next stage until the current one is signed off, so the auto driver loop exits at the boundary by construction. Hitting one writes a milestone section into `implementation_report.md` (tasks with divergence flags, autonomous decisions, review verdicts, sweep result, suite output, open questions) and opens the dashboard on it (`SCHEMATIC_NO_BROWSER=1` skips the launch for unattended runs). Sign-off additionally requires every task in the stage to hold a clean review and — in auto mode — its groups to be swept PRISTINE. No table = one implicit stage and nothing changes.
+**Milestones (optional).** Phase 7 asks whether the task set ships in stages. On `yes` the agent proposes a `## Milestones` table over the task graph — one row per checkpoint, with what it proves — and one `y` locks it. From then on `task next` serves nothing from the next stage until the current one is signed off, so the auto driver loop exits at the boundary by construction. Hitting one writes a milestone section into `implementation_report.md` (tasks with divergence flags, autonomous decisions, review verdicts, sweep result, suite output, open questions) and opens the dashboard on it (`SCHEMATIC_NO_BROWSER=1` skips the launch for unattended runs). Sign-off additionally requires every task in the stage to hold a clean review. No table = one implicit stage and nothing changes.
 
 **Phase 1 — the objective**, human-readable in two minutes, and **Phase 3 — the feature's footprint**, every file annotated with the AC that necessitated it:
 
@@ -118,7 +118,7 @@ Phase 8 runs **manual** (sketch → confirm → implement, per task) or **auto**
 | `task status` legal transitions | Illegal task state jumps |
 | `phase complete 7` milestone decision | Locking the plan without answering whether delivery is staged |
 | `task next` milestone boundary | Work on the next stage starting before you signed the last one off |
-| `milestone sign-off` review + sweep check | Signing a stage off with an unreviewed task, or an unswept group in auto mode |
+| `milestone sign-off` review check | Signing a stage off with an unreviewed task |
 | `phase complete 8` unsigned-milestone check | Calling the feature done with a stage you never signed off |
 | `task complete` / `schematic-task-done` review check | Completing a task that never passed review |
 | `schematic-task-done --matched/--updated` | Silent schematic drift — divergence is recorded, always |

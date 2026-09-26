@@ -56,7 +56,7 @@ in this phase keep that delivery honest:
 >
 > In **manual mode** (the default) every task goes through the full Plan→Sketch→Confirm→Implement loop from `~/.claude/CLAUDE.md`. **Forbidden:** writing implementation code without first presenting a sketch and receiving explicit user confirmation. "The schematic approved the shape" is not consent for the implementation.
 >
-> **Auto mode** suspends the per-task sketch gate — but ONLY because the user explicitly entered it via `schematic review start --auto`. It is the single context in which an agent writes implementation code without a per-task sketch. Even then, every task is tested and diff-reviewed as it goes, each task group is standards-swept to PRISTINE as it drains, and the whole feature diff gets a final consistency pass and entry-point tracing before the feature is done. **An agent must never select auto mode on its own initiative.**
+> **Auto mode** suspends the per-task sketch gate — but ONLY because the user explicitly entered it via `schematic review start --auto`. It is the single context in which an agent writes implementation code without a per-task sketch. Even then, every task is tested and diff-reviewed as it goes, and the whole feature diff gets a final consistency pass and entry-point tracing before the feature is done (the per-group standards sweep is optional in auto mode — the per-task diff reviews already cover it). **An agent must never select auto mode on its own initiative.**
 >
 > **Auto mode holds the TASK on `pendingInput`, never the board.** Auto suspends confirmation gates, never the need for a human where the design is silent. The moment a task hits a decision the schematic does not answer and that is not a bare naming or placement choice, the agent runs `schematic task ask` and that task is done being worked. The very next command is `schematic task next` — the hold's own output names what still runs. Auto never guesses on the held one, never marks it complete, and never resumes it by writing its own answer. Only when `task next` serves nothing does auto surface the open questions and stop — exactly as it already stops on `schematic questions`.
 >
@@ -71,12 +71,12 @@ Phase 8 runs in one of two modes, recorded by `schematic review start`:
 | Mode | Entry | Per-task delivery | Final pass |
 |---|---|---|---|
 | **manual** (default) | `schematic review start --schematic <name>` | Plan→Sketch→Confirm→Implement — sketch gate mandatory | per-task review gate |
-| **auto** | `schematic review start --auto --goal "<goal>" --schematic <name>` | implement→test→diff-scoped review→fix, no sketch gate | per-group standards sweep → consistency → e2e entry-point tracing |
+| **auto** | `schematic review start --auto --goal "<goal>" --schematic <name>` | implement→test→diff-scoped review→fix, no sketch gate | consistency → e2e entry-point tracing (standards sweep optional) |
 
 Manual is the default and the safe path. Auto is the user's explicit opt-in to
 autonomous implementation; an agent never self-selects it. The per-task protocol
 and review gate below apply to **both** modes — manual adds the sketch step in
-front; auto omits it and adds the per-group standards sweep, the consistency pass, and entry-point tracing (see "Auto mode").
+front; auto omits it and adds the consistency pass and entry-point tracing, with the per-group standards sweep available but optional (see "Auto mode").
 
 ---
 
@@ -281,13 +281,16 @@ mode records every unanswered decision via `schematic task decision <tag> "<what
 
 ```
 #1  per-task review      one task's diff        standards + correctness   loops to clean       per task (driver loop above)
-#2  standards sweep      a group's files, ≤5s   standards                 loops to PRISTINE    per GROUP boundary
+#2  standards sweep      a group's files, ≤5s   standards                 loops to PRISTINE    OPTIONAL in auto
 #3  consistency sweep    whole diff, one agent  duplication/redundancy    single pass, NO loop feature end
 #4  entry-point tracing  per entry point        correctness (ACs)         no loop              feature end
 ```
 
-`#1` is the driver loop's per-task gate above. `#2` runs each time a task group
-completes; `#3` and `#4` run once the board is drained.
+`#1` is the driver loop's per-task gate above and, in auto mode, the standards gate: every
+task's diff was already reviewed against the inlined standards, so `#2` over the same lines
+is redundant. Run `#2` only when tasks were not diff-reviewed (a manual run that skipped
+per-task reviews) or after a large post-loop fix. `#3` opens on either a PRISTINE sweep or a
+clean per-task review on every task; `#3` and `#4` run once the board is drained.
 
 **Where the layers close when milestones are declared (binding split).** `#1` and `#2` are
 **per-milestone** — `schematic milestone sign-off` refuses unless every task in the stage holds
@@ -326,7 +329,7 @@ schematic milestone sign-off M<n> --schematic <name>                            
 `--suite` is how the suite's last lines reach the report; without it the section reads
 `not recorded` rather than pretending. Sign-off refuses while any task of the stage is
 incomplete or `pendingInput`, while any task lacks a clean review, while an earlier milestone
-is unsigned, and — in auto mode — until its groups are swept PRISTINE. `schematic phase
+is unsigned. `schematic phase
 complete 8` refuses while any milestone is unsigned (`--override "<reason>"` records the
 exception). On the Phase-8 lock the CLI opens the dashboard on the finished bundle — non-fatal:
 the lock is already saved, so a dashboard that never starts only prints a warning and the
@@ -389,7 +392,7 @@ each sweep to its group.
 
 ### #3 — consistency sweep (single agent, one pass)
 
-Once every group is swept PRISTINE and the board is drained:
+Once the board is drained and either every task holds a clean per-task review or every group is swept PRISTINE:
 
 ```
 schematic review consistency --schematic <name>
@@ -472,8 +475,8 @@ user needed to judge how bad it was. Record the reconciled verdict:
 schematic review e2e-result clean|findings --summary "<one line>" --schematic <name>
 ```
 
-**Feature done** = every group swept PRISTINE (`#2`) + consistency CLEAN (`#3`) + e2e
-tracing dispositioned (`#4`). A clean tracing pass proceeds untouched; only its findings
+**Feature done** = every task reviewed clean (`#1`; or every group swept PRISTINE, `#2`) +
+consistency CLEAN (`#3`) + e2e tracing dispositioned (`#4`). A clean tracing pass proceeds untouched; only its findings
 stop for the user to rule on. `schematic review status` shows the mode, `base_ref`, the
 latest sweep's per-batch verdicts, the consistency state, and the e2e state.
 

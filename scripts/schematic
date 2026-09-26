@@ -2617,21 +2617,17 @@ def _milestone_task_refusals(state: dict, milestone_tasks: list[TaskRecord]) -> 
     return refusals
 
 
-def _milestone_sweep_refusals(state: dict, milestone: Milestone) -> list[str]:
-    """In auto mode, a PRISTINE sweep stamped with this milestone must exist (GATE 2)."""
-    run = state["run"]
-    if not run or run["mode"] != RUN_MODE_AUTO:
-        return []
-    pristine_sweeps = [
-        sweep for sweep in state["sweeps"]
-        if sweep.get("milestone") == milestone.id and sweep["pristine"]
-    ]
-    if pristine_sweeps:
-        return []
-    return [
-        f"no PRISTINE standards sweep recorded for {milestone.id} — "
-        f"sweep its groups first (schematic review sweep)"
-    ]
+def _every_task_reviewed_clean(state: dict, tasks: list[TaskRecord]) -> bool:
+    """Every task is complete and holds a clean per-task review — the standards sweep is then redundant."""
+    if not tasks:
+        return False
+    for task in tasks:
+        if task["status"] != TASK_STATUS_COMPLETE:
+            return False
+        review_request = state["tasks"].get(task["tag"], {}).get("review_request")
+        if not review_request or review_request["status"] != REVIEW_VERDICT_CLEAN:
+            return False
+    return True
 
 
 def _milestone_signoff_refusals(signing_milestone: ResolvedMilestone, schematic_name: str) -> list[str]:
@@ -2644,12 +2640,10 @@ def _milestone_signoff_refusals(signing_milestone: ResolvedMilestone, schematic_
     )
     if order_refusals:
         return order_refusals
+    # A clean per-task review on every task of the stage is the standards gate; a sweep is optional.
     return _milestone_task_refusals(
         state=signing_milestone.state,
         milestone_tasks=signing_milestone.milestone_tasks,
-    ) + _milestone_sweep_refusals(
-        state=signing_milestone.state,
-        milestone=signing_milestone.milestone,
     )
 
 
@@ -3578,9 +3572,10 @@ def _review_consistency(args: argparse.Namespace) -> None:
     run = _require_auto_run(state, args.schematic)
 
     latest_sweep_is_pristine = bool(state["sweeps"]) and state["sweeps"][-1].get("pristine", False)
-    if not latest_sweep_is_pristine:
+    tasks_reviewed_clean = _every_task_reviewed_clean(state, parse_tasks(schematic_dir / "tasks.md"))
+    if not (latest_sweep_is_pristine or tasks_reviewed_clean):
         _exit_error(
-            "latest sweep is not PRISTINE — re-sweep the outstanding group first:\n"
+            "neither a PRISTINE sweep nor a clean per-task review on every task — clear one first:\n"
             f"  schematic review sweep --schematic {args.schematic}"
         )
 

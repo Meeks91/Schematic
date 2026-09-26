@@ -1511,6 +1511,24 @@ class TestReviewConsistency(unittest.TestCase):
             assert "logic-line" in consistency_output
             assert "src/big.py" in consistency_output
 
+    def test_opens_without_a_sweep_when_every_task_holds_a_clean_review(self) -> None:
+        # Given an auto run, no sweep, every task complete and reviewed clean
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            tasks_md = schematic_dir / "tasks.md"
+            state = _cli.load_state(schematic_dir)
+            state["run"] = {"mode": "auto", "goal": "g", "base_ref": "BASE", "started_at": "t"}
+            for tag in ("a.1", "b.1", "b.2"):
+                _cli.update_task_status_in_file(tasks_md, tag, "complete")
+                state["tasks"].setdefault(tag, {})["review_request"] = {"tag": tag, "status": "clean"}
+            _cli.save_state(schematic_dir, state)
+
+            # When opening the consistency gate
+            consistency_output = self._captured_consistency(schematic_dir, ["src/a.py"])
+
+            # Then it opens — the per-task reviews stand in for the sweep
+            self.assertIn("consistency", consistency_output.lower())
+
     def test_exits_without_a_pristine_sweep(self) -> None:
         # Given an auto run but no pristine sweep
         with TemporaryDirectory() as tmp:
@@ -3685,18 +3703,18 @@ class TestMilestoneSignOff(unittest.TestCase):
             # Then the per-task review gate refuses, naming the tag
             self.assertIn("task a.1 holds no clean per-task review (verdict: never dispatched)", refusal)
 
-    def test_sign_off_refuses_in_auto_mode_when_no_sweep_for_the_milestone_is_pristine(self) -> None:
-        # Given an auto run with no sweep recorded for M1
+    def test_sign_off_succeeds_in_auto_mode_without_any_sweep(self) -> None:
+        # Given an auto run with no sweep recorded, every M1 task complete with a clean per-task review
         with TemporaryDirectory() as tmp:
             schematic_dir = _make_milestoned_schematic_dir(tmp)
             _mark_task_complete(schematic_dir, "a.1")
             _seed_run_mode(schematic_dir, "auto")
 
-            # When sign-off is attempted
-            refusal = self._refused_sign_off(schematic_dir, "M1")
+            # When it is signed off
+            self._sign_off(schematic_dir, "M1")
 
-            # Then the sweep gate refuses
-            self.assertIn("no PRISTINE standards sweep recorded for M1", refusal)
+            # Then the per-task reviews are the standards gate — no sweep is demanded
+            self.assertIn("M1", _cli.load_state(schematic_dir)["milestones"]["signed_off"])
 
     def test_sign_off_succeeds_in_auto_mode_when_the_milestones_sweep_is_pristine(self) -> None:
         # Given an auto run whose M1 sweep is PRISTINE

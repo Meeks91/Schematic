@@ -4,6 +4,7 @@ import argparse
 import ast
 import hashlib
 import json
+import os
 import re
 import secrets
 import subprocess
@@ -49,6 +50,29 @@ TASK_STATUSES_ALLOWED_TO_ASK = {
 DECISION_KIND_NAMING = "naming"
 DECISION_KIND_PLACEMENT = "placement"
 VALID_DECISION_KINDS = {DECISION_KIND_NAMING, DECISION_KIND_PLACEMENT}
+
+# ── milestones (optional multi-stage delivery) ──────────────────────────────────
+# A milestone is a named checkpoint over task groups. Membership lives in tasks.md's
+# `## Milestones` table; only gate state lives in .schematic-state.json — the same split
+# `Status:` already uses. No table (or a recorded `no`) = one implicit milestone, no gate.
+MILESTONE_DECISION_YES = "yes"
+MILESTONE_DECISION_NO = "no"
+VALID_MILESTONE_DECISIONS = {MILESTONE_DECISION_YES, MILESTONE_DECISION_NO}
+MILESTONES_HEADING = "## Milestones"
+MILESTONE_TABLE_LOST_FINDING = f"milestones locked in state but no `{MILESTONES_HEADING}` table in tasks.md"
+MILESTONE_TABLE_HEADER = "| Milestone | Title | Scope | Proves |\n|---|---|---|---|"
+MILESTONE_REPORT_HEADING_PREFIX = "## Milestone "
+MILESTONE_CLAIM_TAG = "tag"
+MILESTONE_CLAIM_GROUP = "group"
+MILESTONE_NOT_RECORDED = "not recorded"
+MILESTONE_SECTION_EMPTY = "— none"
+IMPLEMENTATION_PHASE = 8
+IMPLEMENTATION_REPORT_FILENAME = "implementation_report.md"
+DASHBOARD_LOG_FILENAME = ".dashboard.log"
+DASHBOARD_URL_LOG_PREFIX = "Schematic overview: "
+DASHBOARD_MILESTONE_FRAGMENT_PREFIX = "milestone:"
+NO_BROWSER_ENV_VAR = "SCHEMATIC_NO_BROWSER"  # set to NO_BROWSER_ENV_ENABLED to skip spawning the dashboard
+NO_BROWSER_ENV_ENABLED = "1"
 
 REVIEW_MODEL_DEFAULT = "sonnet"
 REVIEW_MODEL_KEY = "reviewModel"
@@ -116,6 +140,11 @@ TASK_HEADER_RE = re.compile(r"^## ([a-z]\.\d+) \| (\w+) \| (.+)$")
 FEATURE_AC_RE = re.compile(r"(\d+\.[A-Z])\b")
 FEATURE_HEADING_RE = re.compile(r"^### (\d+)\. (.+)$", re.MULTILINE)
 BLOCKED_BY_TAG_RE = re.compile(r"\b([a-z]\.\d+)\b")
+MILESTONE_ID_RE = re.compile(r"^M\d+$")
+MILESTONE_SECTION_RE = re.compile(rf"^{MILESTONES_HEADING}$.*?(?=^## |\Z)", re.MULTILINE | re.DOTALL)
+MILESTONE_ROW_RE = re.compile(r"^\|\s*(M\d+)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|$")
+MILESTONE_SCOPE_GROUP_RE = re.compile(r"^[a-z]$")
+MILESTONE_SCOPE_TAG_RE = re.compile(r"^[a-z]\.\d+$")
 RATIFICATION_PHRASE_RE = re.compile(
     r"awaiting ratification|open for ratification|needs (?:user )?sign|needs ratification",
     re.IGNORECASE,
@@ -169,10 +198,14 @@ def list_schematic_dirs() -> list[Path]:
 def load_state(schematic_dir: Path) -> dict:
     state_path = schematic_dir / STATE_FILENAME
     if not state_path.exists():
-        return {"phases": {}, "tasks": {}, "overrides": [], "run": None, "sweeps": []}
+        return {
+            "phases": {}, "tasks": {}, "overrides": [],
+            "run": None, "sweeps": [], "milestones": None,
+        }
     loaded_state = json.loads(state_path.read_text())
     loaded_state.setdefault("run", None)
     loaded_state.setdefault("sweeps", [])
+    loaded_state.setdefault("milestones", None)
     return loaded_state
 
 
@@ -470,6 +503,7 @@ def parse_tasks(tasks_md: Path) -> list[dict]:
                 "status": TASK_STATUS_PENDING,
                 "component_file": None,
                 "blocked_by": [],
+                "divergence": None,
                 "raw_lines": [line],
             }
         elif current is not None:
@@ -484,11 +518,238 @@ def parse_tasks(tasks_md: Path) -> list[dict]:
             elif stripped.startswith("Blocked by:"):
                 blocked_text = stripped.split(":", 1)[1]
                 current["blocked_by"].extend(BLOCKED_BY_TAG_RE.findall(blocked_text))
+            elif stripped.startswith("Divergence:"):
+                current["divergence"] = stripped.split(":", 1)[1].strip()
 
     if current:
         tasks.append(current)
 
     return tasks
+
+
+@dataclass(frozen=True)
+class Milestone:
+    """One row of the `## Milestones` table — a named checkpoint over task groups and tags."""
+    id: str
+    title: str
+    scope: tuple[str, ...]
+    proves: str
+
+
+def parse_milestones(tasks_md: Path) -> list[Milestone]:
+    """Every row of the optional `## Milestones` table in tasks.md, in table order."""
+    if not tasks_md.exists():
+        return []
+    section_match = MILESTONE_SECTION_RE.search(tasks_md.read_text())
+    if not section_match:
+        return []
+
+    milestones: list[Milestone] = []
+    for line in section_match.group(0).splitlines():
+        row_match = MILESTONE_ROW_RE.match(line.strip())
+        if not row_match:
+            continue
+        milestones.append(
+            Milestone(
+                id=row_match.group(1),
+                title=row_match.group(2).strip(),
+                scope=tuple(
+                    token.strip()
+                    for token in row_match.group(3).split(",")
+                    if token.strip()
+                ),
+                proves=row_match.group(4).strip(),
+            )
+        )
+    return milestones
+
+
+def _render_milestone_table(milestones: list[Milestone]) -> str:
+    """The `## Milestones` section as tasks.md holds it — the table and nothing else."""
+    rows = [
+        f"| {milestone.id} | {milestone.title} | {', '.join(milestone.scope)} | {milestone.proves} |"
+        for milestone in milestones
+    ]
+    return "\n".join([MILESTONES_HEADING, "", MILESTONE_TABLE_HEADER, *rows])
+
+
+def write_milestone_table(tasks_md: Path, milestones: list[Milestone]) -> None:
+    """Replace the `## Milestones` section of tasks.md with these milestones."""
+    content = tasks_md.read_text()
+    section_match = MILESTONE_SECTION_RE.search(content)
+    if section_match is None:
+        _exit_error(f"no '{MILESTONES_HEADING}' table in {tasks_md} — nothing to rewrite")
+    rewritten_section = f"{_render_milestone_table(milestones)}\n\n"
+    tasks_md.write_text(
+        content[: section_match.start()] + rewritten_section + content[section_match.end():]
+    )
+
+
+def _tag_to_milestone_claims(
+    tasks: list[TaskRecord],
+    milestones: list[Milestone],
+) -> dict[str, list[tuple[str, str]]]:
+    """Task tag → every (milestone id, claim kind) that names it, by group letter or by tag."""
+    all_tags = [task["tag"] for task in tasks]
+    tag_to_claims: dict[str, list[tuple[str, str]]] = {}
+    for milestone in milestones:
+        for token in milestone.scope:
+            if MILESTONE_SCOPE_TAG_RE.match(token):
+                if token in all_tags:
+                    tag_to_claims.setdefault(token, []).append((milestone.id, MILESTONE_CLAIM_TAG))
+                continue
+            for tag in all_tags:
+                if tag.startswith(f"{token}."):
+                    tag_to_claims.setdefault(tag, []).append((milestone.id, MILESTONE_CLAIM_GROUP))
+    return tag_to_claims
+
+
+def _owning_milestone_ids(tag_to_claims: dict[str, list[tuple[str, str]]]) -> dict[str, str]:
+    """Task tag → the milestone that owns it; an explicit tag beats a group letter."""
+    tag_to_milestone_id: dict[str, str] = {}
+    for tag, claims in tag_to_claims.items():
+        explicit_ids = [claim_id for claim_id, kind in claims if kind == MILESTONE_CLAIM_TAG]
+        group_ids = [claim_id for claim_id, kind in claims if kind == MILESTONE_CLAIM_GROUP]
+        owning_ids = explicit_ids or group_ids
+        tag_to_milestone_id[tag] = owning_ids[0]
+    return tag_to_milestone_id
+
+
+def _tag_to_milestone_id(
+    tasks: list[TaskRecord],
+    milestones: list[Milestone],
+) -> dict[str, str]:
+    """Task tag → the milestone that owns it."""
+    return _owning_milestone_ids(
+        tag_to_claims=_tag_to_milestone_claims(
+            tasks=tasks,
+            milestones=milestones,
+        ),
+    )
+
+
+def _milestone_scope_findings(
+    tasks: list[TaskRecord],
+    milestones: list[Milestone],
+    tag_to_milestone_id: dict[str, str],
+) -> list[str]:
+    """Scope cells that name nothing real, and milestones that end up claiming no task."""
+    all_tags = [task["tag"] for task in tasks]
+    findings: list[str] = []
+    for milestone in milestones:
+        for token in milestone.scope:
+            if MILESTONE_SCOPE_TAG_RE.match(token):
+                if token not in all_tags:
+                    findings.append(
+                        f"tasks.md — milestone {milestone.id} scope tag '{token}' matches no task"
+                    )
+            elif MILESTONE_SCOPE_GROUP_RE.match(token):
+                if not any(tag.startswith(f"{token}.") for tag in all_tags):
+                    findings.append(
+                        f"tasks.md — milestone {milestone.id} scope group '{token}' matches no task"
+                    )
+            else:
+                findings.append(
+                    f"tasks.md — milestone {milestone.id} scope token '{token}' "
+                    f"is neither a group letter nor a task tag"
+                )
+        if milestone.id not in tag_to_milestone_id.values():
+            findings.append(f"tasks.md — milestone {milestone.id} claims no task")
+    return findings
+
+
+def _milestone_dependency_findings(
+    tasks: list[TaskRecord],
+    milestones: list[Milestone],
+    tag_to_milestone_id: dict[str, str],
+) -> list[str]:
+    """Tasks blocked by a task that lands in a later milestone — that boundary could never drain."""
+    milestone_order = {milestone.id: index for index, milestone in enumerate(milestones)}
+    findings: list[str] = []
+    for task in tasks:
+        owning_id = tag_to_milestone_id.get(task["tag"])
+        if owning_id is None:
+            continue
+        for blocker_tag in task["blocked_by"]:
+            blocker_id = tag_to_milestone_id.get(blocker_tag)
+            if blocker_id is None:
+                continue
+            if milestone_order[blocker_id] > milestone_order[owning_id]:
+                findings.append(
+                    f"tasks.md #{task['tag']} ({owning_id}) — Blocked by: '{blocker_tag}' "
+                    f"lands in the later milestone {blocker_id}"
+                )
+    return findings
+
+
+def _milestone_claim_findings(
+    tasks: list[TaskRecord],
+    tag_to_claims: dict[str, list[tuple[str, str]]],
+    tag_to_milestone_id: dict[str, str],
+) -> list[str]:
+    """Tasks no milestone claims, and tasks two milestones claim with equal weight."""
+    findings: list[str] = []
+    for task in tasks:
+        tag = task["tag"]
+        if tag not in tag_to_milestone_id:
+            findings.append(
+                f"tasks.md #{tag} — no milestone claims this task; "
+                f"every task must belong to exactly one"
+            )
+            continue
+
+        claims = tag_to_claims[tag]
+        explicit_ids = [claim_id for claim_id, kind in claims if kind == MILESTONE_CLAIM_TAG]
+        competing_ids = explicit_ids or [claim_id for claim_id, _ in claims]
+        if len(set(competing_ids)) > 1:
+            findings.append(
+                f"tasks.md #{tag} — claimed by more than one milestone "
+                f"({', '.join(sorted(set(competing_ids)))})"
+            )
+    return findings
+
+
+def _milestone_membership_findings(tasks: list[TaskRecord], milestones: list[Milestone]) -> list[str]:
+    """Every way a Milestones table can fail to partition the task graph."""
+    tag_to_claims = _tag_to_milestone_claims(tasks=tasks, milestones=milestones)
+    tag_to_milestone_id = _owning_milestone_ids(tag_to_claims=tag_to_claims)
+    return [
+        *_milestone_scope_findings(
+            tasks=tasks,
+            milestones=milestones,
+            tag_to_milestone_id=tag_to_milestone_id,
+        ),
+        *_milestone_claim_findings(
+            tasks=tasks,
+            tag_to_claims=tag_to_claims,
+            tag_to_milestone_id=tag_to_milestone_id,
+        ),
+        *_milestone_dependency_findings(
+            tasks=tasks,
+            milestones=milestones,
+            tag_to_milestone_id=tag_to_milestone_id,
+        ),
+    ]
+
+
+def _milestone_id_sequence_findings(milestones: list[Milestone]) -> list[str]:
+    """Ids must run M1, M2, … in table order — a gap makes the boundary order unreadable."""
+    expected_ids = [f"M{index}" for index in range(1, len(milestones) + 1)]
+    actual_ids = [milestone.id for milestone in milestones]
+    if actual_ids == expected_ids:
+        return []
+    return [
+        f"tasks.md — milestone ids must run {', '.join(expected_ids)} in table order "
+        f"(found {', '.join(actual_ids)})"
+    ]
+
+
+def _milestone_table_findings(tasks: list[TaskRecord], milestones: list[Milestone]) -> list[str]:
+    """Every rule a Milestones table must pass — id sequence plus a clean partition of the tasks."""
+    return _milestone_id_sequence_findings(milestones) + _milestone_membership_findings(
+        tasks=tasks,
+        milestones=milestones,
+    )
 
 
 def parse_feature_acs(objective_md: Path) -> list[str]:
@@ -942,6 +1203,20 @@ def _open_input_findings(schematic_dir: Path, tasks: list[TaskRecord]) -> list[s
     return findings
 
 
+def _milestone_findings(
+    schematic_dir: Path,
+    state: dict,
+    tasks: list[TaskRecord],
+) -> list[str]:
+    """Milestone table rules — enforced only after lock; `milestone propose` checks them before."""
+    milestones = parse_milestones(schematic_dir / "tasks.md")
+    if _milestone_table_is_lost(state=state, milestones=milestones):
+        return [MILESTONE_TABLE_LOST_FINDING]
+    if not _milestones_are_locked(state=state, milestones=milestones):
+        return []
+    return _milestone_table_findings(tasks=tasks, milestones=milestones)
+
+
 def _validate_schematic(schematic_dir: Path) -> list[str]:
     findings: list[str] = []
     tasks = parse_tasks(schematic_dir / "tasks.md")
@@ -980,6 +1255,14 @@ def _validate_schematic(schematic_dir: Path) -> list[str]:
     findings.extend(
         _open_input_findings(
             schematic_dir=schematic_dir,
+            tasks=tasks,
+        )
+    )
+
+    findings.extend(
+        _milestone_findings(
+            schematic_dir=schematic_dir,
+            state=state,
             tasks=tasks,
         )
     )
@@ -1269,6 +1552,17 @@ def _phase_complete(args: argparse.Namespace) -> None:
                 f"--override \"<reason>\""
             )
 
+    milestone_refusal = _milestone_phase_refusal(
+        schematic_dir=schematic_dir,
+        num=args.num,
+        schematic_name=args.schematic,
+    )
+    if milestone_refusal:
+        if args.override:
+            record_override(state, context, args.override)
+        else:
+            _exit_error(milestone_refusal)
+
     for rel_path, heading in PHASE_ARTIFACT_CHECKS.get(args.num, []):
         target = schematic_dir / rel_path
         content = target.read_text() if target.exists() else ""
@@ -1310,10 +1604,14 @@ def _phase_complete(args: argparse.Namespace) -> None:
         print(f"next phase: {args.num + 1}")
     elif args.num == PLANNING_FINAL_PHASE:
         print(f"planning complete — next: schematic review start --schematic {args.schematic}  (Phase 8)")
-    elif args.num == 8:
+    elif args.num == IMPLEMENTATION_PHASE:
         print("next phase: 9 (compression — lock BEFORE deleting the schematic dir)")
     else:
         print("schematic complete ✓ — bundle compressed into repo docs")
+
+    if args.num == IMPLEMENTATION_PHASE:
+        # The build is done: hand the user the whole dashboard, not a terminal tail.
+        _present_finished_dashboard(schematic_dir=schematic_dir)
 
 # ── task commands ──────────────────────────────────────────────────────────────
 
@@ -1648,32 +1946,58 @@ def _task_complete(args: argparse.Namespace) -> None:
     print(f"task {args.tag}: complete ✓")
 
 
+def _claim_task_in_progress(schematic_dir: Path, tag: str) -> None:
+    """Move a task pending → in_progress in tasks.md and the state file."""
+    update_task_status_in_file(schematic_dir / "tasks.md", tag, TASK_STATUS_IN_PROGRESS)
+    state = load_state(schematic_dir)
+    state["tasks"].setdefault(tag, {})["status"] = TASK_STATUS_IN_PROGRESS
+    save_state(schematic_dir, state)
+
+
+def _servable_task(schematic_dir: Path) -> TaskRecord | None:
+    """The next pending unblocked task, never one past an unsigned milestone boundary."""
+    tasks = parse_tasks(schematic_dir / "tasks.md")
+    complete_tags = {t["tag"] for t in tasks if t["status"] == TASK_STATUS_COMPLETE}
+    servable_tags = _tags_inside_the_open_milestone(schematic_dir=schematic_dir, tasks=tasks)
+
+    for task in tasks:
+        if task["status"] != TASK_STATUS_PENDING:
+            continue
+        if servable_tags is not None and task["tag"] not in servable_tags:
+            continue
+        active_blockers = [b for b in task["blocked_by"] if b not in complete_tags]
+        if active_blockers:
+            continue
+        return task
+    return None
+
+
 def _task_next(args: argparse.Namespace) -> None:
     name = getattr(args, "name", None)
     peek = getattr(args, "peek", False)
     schematic_dirs = _resolve_single_or_all(name)
+    for schematic_dir in schematic_dirs:
+        _refuse_a_lost_milestone_table(schematic_dir)
 
     for schematic_dir in schematic_dirs:
-        tasks_md = schematic_dir / "tasks.md"
-        tasks = parse_tasks(tasks_md)
-        complete_tags = {t["tag"] for t in tasks if t["status"] == TASK_STATUS_COMPLETE}
+        servable_task = _servable_task(schematic_dir)
+        if servable_task is None:
+            continue
+        print(f"schematic: {schematic_dir.name}")
+        print("\n".join(servable_task["raw_lines"]))
+        if not peek:
+            _claim_task_in_progress(schematic_dir=schematic_dir, tag=servable_task["tag"])
+            print(f"\n→ task {servable_task['tag']}: pending → in_progress")
+        return
 
-        for task in tasks:
-            if task["status"] != TASK_STATUS_PENDING:
-                continue
-            active_blockers = [b for b in task["blocked_by"] if b not in complete_tags]
-            if active_blockers:
-                continue
-            print(f"schematic: {schematic_dir.name}")
-            print("\n".join(task["raw_lines"]))
-            if not peek:
-                update_task_status_in_file(tasks_md, task["tag"], TASK_STATUS_IN_PROGRESS)
-                state = load_state(schematic_dir)
-                state["tasks"].setdefault(task["tag"], {})["status"] = TASK_STATUS_IN_PROGRESS
-                save_state(schematic_dir, state)
-                print(f"\n→ task {task['tag']}: pending → in_progress")
-            return
+    if not peek:
+        for schematic_dir in schematic_dirs:
+            if _announce_milestone_boundary(schematic_dir=schematic_dir):
+                return
 
+    for schematic_dir in schematic_dirs:
+        # Outside --peek a drained boundary already spoke for itself in _announce_milestone_boundary.
+        _print_open_milestone_hold(schematic_dir=schematic_dir, include_drained=peek)
     print("no pending unblocked tasks found")
 
 
@@ -1711,13 +2035,18 @@ def _task_decision(args: argparse.Namespace) -> None:
     print(f"decision recorded for {args.tag} ({args.kind}): {args.text}")
 
 
-def _print_decision_ledger(state: dict) -> None:
-    """Print every recorded autonomous decision so the master folds them into implementation_report.md."""
-    tag_to_decisions = {
+def _tag_to_decisions(state: dict, tags: set[str]) -> dict[str, list[dict]]:
+    """Recorded autonomous decisions per task tag, restricted to the tags asked for."""
+    return {
         tag: task_state["decisions"]
         for tag, task_state in state["tasks"].items()
-        if task_state.get("decisions")
+        if task_state.get("decisions") and tag in tags
     }
+
+
+def _print_decision_ledger(state: dict) -> None:
+    """Print every recorded autonomous decision so the master folds them into implementation_report.md."""
+    tag_to_decisions = _tag_to_decisions(state=state, tags=set(state["tasks"]))
     if not tag_to_decisions:
         return
     print()
@@ -1725,6 +2054,1059 @@ def _print_decision_ledger(state: dict) -> None:
     for tag, decisions in sorted(tag_to_decisions.items()):
         for decision in decisions:
             print(f"  {tag}: {decision['text']}")
+
+
+# ── milestone commands (optional multi-stage delivery) ─────────────────────────
+
+@dataclass(frozen=True)
+class MilestoneAmendment:
+    """A re-scoped Milestones table and the one-line delta that produced it."""
+    milestones: tuple[Milestone, ...]
+    delta: str
+
+
+@dataclass(frozen=True)
+class ResolvedMilestone:
+    """One milestone with the state and table it was read from, and the tasks it owns."""
+    state: dict
+    milestones: list[Milestone]
+    milestone: Milestone
+    milestone_tasks: list[TaskRecord]
+
+
+def cmd_milestone(args: argparse.Namespace) -> None:
+    """Dispatch a `schematic milestone <subcommand>` to its handler."""
+    milestone_handlers = {
+        "decide": _milestone_decide,
+        "propose": _milestone_propose,
+        "lock": _milestone_lock,
+        "status": _milestone_status,
+        "sign-off": _milestone_signoff,
+        "report": _milestone_report,
+        "amend": _milestone_amend,
+    }
+    milestone_handlers[args.milestone_command](args)
+
+
+def _milestone_decision_is_locked(state: dict) -> bool:
+    """True when the state records a `yes` decision the user has locked."""
+    milestone_state = state["milestones"]
+    return bool(
+        milestone_state
+        and milestone_state["decision"] == MILESTONE_DECISION_YES
+        and milestone_state["locked_at"]
+    )
+
+
+def _milestones_are_locked(state: dict, milestones: list[Milestone]) -> bool:
+    """True when the user locked a `yes` decision over a non-empty Milestones table."""
+    return _milestone_decision_is_locked(state) and bool(milestones)
+
+
+def _milestone_table_is_lost(state: dict, milestones: list[Milestone]) -> bool:
+    """True when the lock is recorded but tasks.md no longer carries the table it locked."""
+    return _milestone_decision_is_locked(state) and not milestones
+
+
+def _refuse_a_lost_milestone_table(schematic_dir: Path) -> None:
+    """Exit rather than let a deleted Milestones table silently open the boundary gate."""
+    if _milestone_table_is_lost(
+        state=load_state(schematic_dir),
+        milestones=parse_milestones(schematic_dir / "tasks.md"),
+    ):
+        _exit_error(
+            f"{schematic_dir.name}: {MILESTONE_TABLE_LOST_FINDING} — the boundary gate cannot hold.\n"
+            f"  restore the `{MILESTONES_HEADING}` table in tasks.md, then re-run"
+        )
+
+
+def _open_milestone(state: dict, milestones: list[Milestone]) -> Milestone | None:
+    """The earliest milestone the user has not signed off — None once every one is signed."""
+    signed_off_ids = set(state["milestones"]["signed_off"])
+    return next(
+        (milestone for milestone in milestones if milestone.id not in signed_off_ids),
+        None,
+    )
+
+
+def _open_milestone_id(schematic_dir: Path, state: dict) -> str | None:
+    """The open milestone's id — None when this bundle has no locked milestones."""
+    milestones = parse_milestones(schematic_dir / "tasks.md")
+    if not _milestones_are_locked(state=state, milestones=milestones):
+        return None
+    open_milestone = _open_milestone(state=state, milestones=milestones)
+    return open_milestone.id if open_milestone else None
+
+
+def _milestone_tasks(
+    tasks: list[TaskRecord],
+    milestones: list[Milestone],
+    milestone: Milestone,
+) -> list[TaskRecord]:
+    """The tasks this milestone owns, in tasks.md order."""
+    tag_to_milestone_id = _tag_to_milestone_id(tasks=tasks, milestones=milestones)
+    return [task for task in tasks if tag_to_milestone_id.get(task["tag"]) == milestone.id]
+
+
+def _tags_inside_the_open_milestone(
+    schematic_dir: Path,
+    tasks: list[TaskRecord],
+) -> set[str] | None:
+    """The tags `task next` may serve — None when no milestone gate applies to this bundle."""
+    state = load_state(schematic_dir)
+    milestones = parse_milestones(schematic_dir / "tasks.md")
+    if not _milestones_are_locked(state=state, milestones=milestones):
+        return None
+    open_milestone = _open_milestone(state=state, milestones=milestones)
+    if open_milestone is None:
+        return set()
+    return {
+        task["tag"]
+        for task in _milestone_tasks(tasks=tasks, milestones=milestones, milestone=open_milestone)
+    }
+
+
+def _milestone_phase_refusal(schematic_dir: Path, num: int, schematic_name: str) -> str:
+    """Why this phase cannot lock on milestone grounds — empty when it can."""
+    state = load_state(schematic_dir)
+    milestones = parse_milestones(schematic_dir / "tasks.md")
+    milestone_state = state["milestones"]
+
+    if num == PLANNING_FINAL_PHASE:
+        if not milestone_state:
+            return (
+                f"phase {PLANNING_FINAL_PHASE} requires a milestone decision before locking.\n"
+                f"  ask the user: \"Split this task set into a multi-stage delivery using milestones?\"\n"
+                f"  then record it: schematic milestone decide yes|no --schematic {schematic_name}"
+            )
+        if milestone_state["decision"] == MILESTONE_DECISION_YES and not milestone_state["locked_at"]:
+            return (
+                f"phase {PLANNING_FINAL_PHASE} has a 'yes' milestone decision with nothing locked.\n"
+                f"  write the `{MILESTONES_HEADING}` table into tasks.md, then:\n"
+                f"  schematic milestone propose --schematic {schematic_name}\n"
+                f"  schematic milestone lock --schematic {schematic_name}"
+            )
+        return ""
+
+    if num == IMPLEMENTATION_PHASE:
+        return _implementation_phase_milestone_refusal(
+            state=state,
+            milestones=milestones,
+            schematic_name=schematic_name,
+        )
+    return ""
+
+
+def _implementation_phase_milestone_refusal(
+    state: dict,
+    milestones: list[Milestone],
+    schematic_name: str,
+) -> str:
+    """Why Phase 8 cannot lock — a lost Milestones table, or an unsigned milestone (GATE 3)."""
+    if _milestone_table_is_lost(state=state, milestones=milestones):
+        return (
+            f"phase {IMPLEMENTATION_PHASE} cannot lock — {MILESTONE_TABLE_LOST_FINDING}.\n"
+            f"  restore the `{MILESTONES_HEADING}` table in tasks.md, then sign each milestone off"
+        )
+    if not _milestones_are_locked(state=state, milestones=milestones):
+        return ""
+    unsigned_ids = [
+        milestone.id for milestone in milestones
+        if milestone.id not in state["milestones"]["signed_off"]
+    ]
+    if not unsigned_ids:
+        return ""
+    return (
+        f"phase {IMPLEMENTATION_PHASE} cannot lock — {len(unsigned_ids)} milestone(s) "
+        f"unsigned: {', '.join(unsigned_ids)}\n"
+        f"  sign each off: schematic milestone sign-off <id> --schematic {schematic_name}"
+    )
+
+
+def _exit_milestone_findings(findings: list[str]) -> NoReturn:
+    """Print every way the Milestones table fails the task graph, then exit 1."""
+    print(f"⚠️  the Milestones table does not partition the task graph — {len(findings)} finding(s):\n")
+    for index, finding in enumerate(findings, 1):
+        print(f"  {index}. {finding}")
+    sys.exit(1)
+
+
+def _require_locked_milestone(
+    schematic_dir: Path,
+    state: dict,
+    milestones: list[Milestone],
+    milestone_id: str,
+    schematic_name: str,
+) -> Milestone:
+    """The named milestone — exits when the bundle has no locked table or the id is unknown."""
+    if not _milestones_are_locked(state=state, milestones=milestones):
+        _exit_error(
+            f"{schematic_dir.name} has no locked milestones.\n"
+            f"  decide, propose and lock them first: "
+            f"schematic milestone decide yes --schematic {schematic_name}"
+        )
+    milestone = next((m for m in milestones if m.id == milestone_id), None)
+    if milestone is None:
+        _exit_error(
+            f"unknown milestone '{milestone_id}' — this bundle declares "
+            f"{', '.join(m.id for m in milestones)}"
+        )
+    return milestone
+
+
+def _resolved_milestone(
+    schematic_dir: Path,
+    state: dict,
+    milestones: list[Milestone],
+    milestone: Milestone,
+) -> ResolvedMilestone:
+    """Pair a milestone with the tasks it owns in tasks.md."""
+    return ResolvedMilestone(
+        state=state,
+        milestones=milestones,
+        milestone=milestone,
+        milestone_tasks=_milestone_tasks(
+            tasks=parse_tasks(schematic_dir / "tasks.md"),
+            milestones=milestones,
+            milestone=milestone,
+        ),
+    )
+
+
+def _named_locked_milestone(
+    schematic_dir: Path,
+    milestone_id: str,
+    schematic_name: str,
+) -> ResolvedMilestone:
+    """The named milestone of a locked table — exits when there is none or the id is unknown."""
+    state = load_state(schematic_dir)
+    milestones = parse_milestones(schematic_dir / "tasks.md")
+    return _resolved_milestone(
+        schematic_dir=schematic_dir,
+        state=state,
+        milestones=milestones,
+        milestone=_require_locked_milestone(
+            schematic_dir=schematic_dir,
+            state=state,
+            milestones=milestones,
+            milestone_id=milestone_id,
+            schematic_name=schematic_name,
+        ),
+    )
+
+
+def _open_locked_milestone(schematic_dir: Path) -> ResolvedMilestone | None:
+    """The bundle's open milestone — None when no locked milestone is still unsigned."""
+    state = load_state(schematic_dir)
+    milestones = parse_milestones(schematic_dir / "tasks.md")
+    if not _milestones_are_locked(state=state, milestones=milestones):
+        return None
+    open_milestone = _open_milestone(state=state, milestones=milestones)
+    if open_milestone is None:
+        return None
+    return _resolved_milestone(
+        schematic_dir=schematic_dir,
+        state=state,
+        milestones=milestones,
+        milestone=open_milestone,
+    )
+
+
+def _milestone_proposal_findings(
+    schematic_dir: Path,
+    state: dict,
+    schematic_name: str,
+) -> list[str]:
+    """Everything wrong with the proposed table; exits when the gate itself is unreachable."""
+    milestone_state = state["milestones"]
+    if not milestone_state:
+        _exit_error(
+            "no milestone decision recorded — ask the user first:\n"
+            f"  schematic milestone decide yes|no --schematic {schematic_name}"
+        )
+    if milestone_state["decision"] != MILESTONE_DECISION_YES:
+        _exit_error(
+            f"the recorded decision is '{milestone_state['decision']}' — this task set delivers "
+            f"as one stage.\n"
+            f"  to change it: schematic milestone decide yes --schematic {schematic_name}"
+        )
+
+    milestones = parse_milestones(schematic_dir / "tasks.md")
+    if not milestones:
+        _exit_error(
+            f"no `{MILESTONES_HEADING}` table in tasks.md — write one row per milestone:\n"
+            f"  {MILESTONE_TABLE_HEADER.splitlines()[0]}\n"
+            f"  | M1 | <title> | <groups/tags> | <what it proves> |"
+        )
+    return _milestone_table_findings(
+        tasks=parse_tasks(schematic_dir / "tasks.md"),
+        milestones=milestones,
+    )
+
+
+def _print_milestone_membership(milestones: list[Milestone], tasks: list[TaskRecord]) -> None:
+    """Show which tasks each milestone claims, so the user gates on resolved membership."""
+    for milestone in milestones:
+        claimed_tasks = _milestone_tasks(tasks=tasks, milestones=milestones, milestone=milestone)
+        print(f"  {milestone.id}  {milestone.title}")
+        print(f"      tasks:  {', '.join(task['tag'] for task in claimed_tasks)}")
+        print(f"      proves: {milestone.proves}")
+
+
+def _milestone_decide(args: argparse.Namespace) -> None:
+    """Record the Phase-7 answer on multi-stage delivery — the CLI is the state of record."""
+    schematic_dir = resolve_schematic_dir(args.schematic)
+    state = load_state(schematic_dir)
+    if _milestones_are_locked(
+        state=state,
+        milestones=parse_milestones(schematic_dir / "tasks.md"),
+    ):
+        _exit_error(
+            "the milestones are already locked — a post-lock re-scope is an amendment:\n"
+            f"  schematic milestone amend --schematic {args.schematic} "
+            f"--move <tags> --to <id> --reason \"<why>\""
+        )
+
+    state["milestones"] = {
+        "decision": args.answer,
+        "decided_at": datetime.now(tz=timezone.utc).isoformat(),
+        "proposed_at": None,
+        "locked_at": None,
+        "signed_off": {},
+        "reported": {},
+        "announced": {},
+        "suite": {},
+        "amendments": [],
+    }
+    save_state(schematic_dir, state)
+    print(f"milestone decision: {args.answer}")
+    if args.answer == MILESTONE_DECISION_YES:
+        print(f"  next: write the `{MILESTONES_HEADING}` table into tasks.md "
+              f"(M<n> | title | groups/tags | what it proves), then:")
+        print(f"  schematic milestone propose --schematic {args.schematic}")
+    else:
+        print("  delivering as one stage — nothing else changes")
+        print(f"  next: schematic phase complete {PLANNING_FINAL_PHASE} --schematic {args.schematic}")
+
+
+def _milestone_propose(args: argparse.Namespace) -> None:
+    """Validate the drafted table and present the resolved membership for the user's y."""
+    schematic_dir = resolve_schematic_dir(args.schematic)
+    state = load_state(schematic_dir)
+    findings = _milestone_proposal_findings(
+        schematic_dir=schematic_dir,
+        state=state,
+        schematic_name=args.schematic,
+    )
+    if findings:
+        _exit_milestone_findings(findings)
+
+    milestones = parse_milestones(schematic_dir / "tasks.md")
+    state["milestones"]["proposed_at"] = datetime.now(tz=timezone.utc).isoformat()
+    save_state(schematic_dir, state)
+
+    print(f"proposed delivery: {len(milestones)} milestone(s) over the task graph\n")
+    _print_milestone_membership(
+        milestones=milestones,
+        tasks=parse_tasks(schematic_dir / "tasks.md"),
+    )
+    print("\nevery task belongs to exactly one milestone and no task depends on a later one.")
+    print(f"on the user's y: schematic milestone lock --schematic {args.schematic}")
+
+
+def _milestone_lock(args: argparse.Namespace) -> None:
+    """Lock the proposed milestones — the boundary gate starts holding from here."""
+    schematic_dir = resolve_schematic_dir(args.schematic)
+    state = load_state(schematic_dir)
+    milestones = parse_milestones(schematic_dir / "tasks.md")
+    if _milestones_are_locked(state=state, milestones=milestones):
+        _exit_error(
+            "the milestones are already locked — re-scope with:\n"
+            f"  schematic milestone amend --schematic {args.schematic} "
+            f"--move <tags> --to <id> --reason \"<why>\""
+        )
+
+    findings = _milestone_proposal_findings(
+        schematic_dir=schematic_dir,
+        state=state,
+        schematic_name=args.schematic,
+    )
+    if findings:
+        _exit_milestone_findings(findings)
+
+    state["milestones"]["locked_at"] = datetime.now(tz=timezone.utc).isoformat()
+    save_state(schematic_dir, state)
+    print(f"milestones locked ✓ — {len(parse_milestones(schematic_dir / 'tasks.md'))} stage(s)")
+    print("  `task next` now stops at each boundary until you sign it off")
+    print(f"  next: schematic phase complete {PLANNING_FINAL_PHASE} --schematic {args.schematic}")
+
+
+def _milestone_gate_label(state: dict, milestone: Milestone, open_milestone: Milestone | None) -> str:
+    """How this milestone's gate reads right now."""
+    signed_off_at = state["milestones"]["signed_off"].get(milestone.id)
+    if signed_off_at:
+        return f"signed off {signed_off_at}"
+    if open_milestone is not None and open_milestone.id == milestone.id:
+        return "← open milestone"
+    return "waiting"
+
+
+def _milestone_status_counts(milestone_tasks: list[TaskRecord]) -> str:
+    """Task counts per status for one milestone, richest status first."""
+    ordered_statuses = [
+        TASK_STATUS_COMPLETE,
+        TASK_STATUS_REVIEW,
+        TASK_STATUS_IN_PROGRESS,
+        TASK_STATUS_PENDING_INPUT,
+        TASK_STATUS_PENDING,
+    ]
+    return "  ".join(
+        f"{status} {len([task for task in milestone_tasks if task['status'] == status])}"
+        for status in ordered_statuses
+        if any(task["status"] == status for task in milestone_tasks)
+    )
+
+
+def _milestone_status(args: argparse.Namespace) -> None:
+    """Print each milestone's task counts and gate state, and the amendments made after lock."""
+    schematic_dir = resolve_schematic_dir(args.schematic)
+    state = load_state(schematic_dir)
+    milestones = parse_milestones(schematic_dir / "tasks.md")
+    milestone_state = state["milestones"]
+    if not milestones or not milestone_state or milestone_state["decision"] != MILESTONE_DECISION_YES:
+        print(f"no milestones declared — {schematic_dir.name} delivers as one stage")
+        return
+
+    tasks = parse_tasks(schematic_dir / "tasks.md")
+    open_milestone = _open_milestone(state=state, milestones=milestones)
+    print(f"schematic:  {schematic_dir.name}")
+    print(f"milestones: {len(milestones)} (locked: {milestone_state['locked_at'] or 'not locked'})")
+    for milestone in milestones:
+        milestone_tasks = _milestone_tasks(tasks=tasks, milestones=milestones, milestone=milestone)
+        gate_label = _milestone_gate_label(
+            state=state,
+            milestone=milestone,
+            open_milestone=open_milestone,
+        )
+        print(
+            f"  {milestone.id}  {milestone.title:<30} "
+            f"{len(milestone_tasks)} task(s): {_milestone_status_counts(milestone_tasks)}   {gate_label}"
+        )
+    if milestone_state["amendments"]:
+        print(f"\namendments: {len(milestone_state['amendments'])}")
+        for amendment in milestone_state["amendments"]:
+            print(f"  {amendment['delta']} — {amendment['reason']}")
+
+
+def _milestone_order_refusals(
+    state: dict,
+    milestone: Milestone,
+    milestones: list[Milestone],
+    schematic_name: str,
+) -> list[str]:
+    """Why this milestone is the wrong one to sign — already signed, or an earlier one is open."""
+    signed_off_at = state["milestones"]["signed_off"].get(milestone.id)
+    if signed_off_at:
+        return [f"milestone {milestone.id} is already signed off ({signed_off_at})"]
+
+    open_milestone = _open_milestone(state=state, milestones=milestones)
+    if open_milestone is not None and open_milestone.id != milestone.id:
+        return [
+            f"sign the milestones off in order — {open_milestone.id} is still open "
+            f"(schematic milestone sign-off {open_milestone.id} --schematic {schematic_name})"
+        ]
+    return []
+
+
+def _milestone_task_refusals(state: dict, milestone_tasks: list[TaskRecord]) -> list[str]:
+    """Tasks not complete, held on the user, or without a clean per-task review."""
+    refusals: list[str] = []
+    for task in milestone_tasks:
+        if task["status"] == TASK_STATUS_PENDING_INPUT:
+            refusals.append(
+                f"task {task['tag']} is held on a user answer — answer it before signing off"
+            )
+        elif task["status"] != TASK_STATUS_COMPLETE:
+            refusals.append(
+                f"task {task['tag']} is '{task['status']}' — every task of a milestone must be complete"
+            )
+
+    for task in milestone_tasks:
+        review_request = state["tasks"].get(task["tag"], {}).get("review_request")
+        verdict = review_request["status"] if review_request else None
+        if verdict != REVIEW_VERDICT_CLEAN:
+            refusals.append(
+                f"task {task['tag']} holds no clean per-task review "
+                f"(verdict: {verdict or 'never dispatched'})"
+            )
+    return refusals
+
+
+def _milestone_sweep_refusals(state: dict, milestone: Milestone) -> list[str]:
+    """In auto mode, a PRISTINE sweep stamped with this milestone must exist (GATE 2)."""
+    run = state["run"]
+    if not run or run["mode"] != RUN_MODE_AUTO:
+        return []
+    pristine_sweeps = [
+        sweep for sweep in state["sweeps"]
+        if sweep.get("milestone") == milestone.id and sweep["pristine"]
+    ]
+    if pristine_sweeps:
+        return []
+    return [
+        f"no PRISTINE standards sweep recorded for {milestone.id} — "
+        f"sweep its groups first (schematic review sweep)"
+    ]
+
+
+def _milestone_signoff_refusals(signing_milestone: ResolvedMilestone, schematic_name: str) -> list[str]:
+    """Every gate the milestone has not cleared — the review layers that close at a boundary."""
+    order_refusals = _milestone_order_refusals(
+        state=signing_milestone.state,
+        milestone=signing_milestone.milestone,
+        milestones=signing_milestone.milestones,
+        schematic_name=schematic_name,
+    )
+    if order_refusals:
+        return order_refusals
+    return _milestone_task_refusals(
+        state=signing_milestone.state,
+        milestone_tasks=signing_milestone.milestone_tasks,
+    ) + _milestone_sweep_refusals(
+        state=signing_milestone.state,
+        milestone=signing_milestone.milestone,
+    )
+
+
+def _milestone_signoff(args: argparse.Namespace) -> None:
+    """Sign a drained milestone off — the only thing that opens the next one."""
+    schematic_dir = resolve_schematic_dir(args.schematic)
+    signing_milestone = _named_locked_milestone(
+        schematic_dir=schematic_dir,
+        milestone_id=args.id,
+        schematic_name=args.schematic,
+    )
+    state = signing_milestone.state
+    milestone = signing_milestone.milestone
+    refusals = _milestone_signoff_refusals(
+        signing_milestone=signing_milestone,
+        schematic_name=args.schematic,
+    )
+    if refusals:
+        print(f"⚠️  milestone {milestone.id} is not ready to sign off — {len(refusals)} gate(s) open:\n")
+        for index, refusal in enumerate(refusals, 1):
+            print(f"  {index}. {refusal}")
+        sys.exit(1)
+
+    state["milestones"]["signed_off"][milestone.id] = datetime.now(tz=timezone.utc).isoformat()
+    save_state(schematic_dir, state)
+    print(f"milestone {milestone.id} signed off ✓ — {len(signing_milestone.milestone_tasks)} task(s), every review clean")
+    run = state["run"]
+    if not run or run["mode"] != RUN_MODE_AUTO:
+        print("  no standards sweep was required — this run is manual mode, where the")
+        print("  per-task reviews are the standards layer (sweeps are an auto-mode gate)")
+
+    next_milestone = _open_milestone(state=state, milestones=signing_milestone.milestones)
+    if next_milestone is None:
+        print(f"  every milestone is signed off — next: schematic phase complete "
+              f"{IMPLEMENTATION_PHASE} --schematic {args.schematic}")
+    else:
+        print(f"  {next_milestone.id} is now open ({next_milestone.title}) — next: schematic task next")
+
+
+def _milestone_report_heading(milestone: Milestone) -> str:
+    """The H2 heading that opens this milestone's section of implementation_report.md."""
+    return f"{MILESTONE_REPORT_HEADING_PREFIX}{milestone.id} — {milestone.title}"
+
+
+def _milestone_task_table_lines(milestone_tasks: list[TaskRecord]) -> list[str]:
+    """The report's task table — one row per task with its status and divergence flag."""
+    return [
+        "| Tag | Action | Target | Status | Divergence |",
+        "|---|---|---|---|---|",
+        *(
+            f"| {task['tag']} | {task['action']} | {task['target']} | "
+            f"{task['status']} | {task['divergence'] or '—'} |"
+            for task in milestone_tasks
+        ),
+    ]
+
+
+def _milestone_decision_lines(state: dict, milestone_tags: set[str]) -> list[str]:
+    """One bullet per autonomous decision recorded against this milestone's tasks."""
+    tag_to_decisions = _tag_to_decisions(state=state, tags=milestone_tags)
+    return [
+        f"- {tag}: {decision['text']}"
+        for tag, decisions in sorted(tag_to_decisions.items())
+        for decision in decisions
+    ]
+
+
+def _milestone_verdict_lines(state: dict, milestone_tasks: list[TaskRecord]) -> list[str]:
+    """One bullet per task with its per-task review verdict and summary."""
+    verdict_lines: list[str] = []
+    for task in milestone_tasks:
+        review_request = state["tasks"].get(task["tag"], {}).get("review_request")
+        verdict = review_request["status"] if review_request else "never dispatched"
+        summary = review_request.get("summary") if review_request else None
+        verdict_lines.append(f"- {task['tag']}: {verdict} — {summary or '—'}")
+    return verdict_lines
+
+
+def _milestone_question_lines(schematic_dir: Path, milestone_tags: set[str]) -> list[str]:
+    """One bullet per unanswered question filed by this milestone's tasks."""
+    return [
+        f"- {question['id']} ({question['tag']}): {question['text']}"
+        for question in _pending_questions(schematic_dir)
+        if question["tag"] in milestone_tags
+    ]
+
+
+def _milestone_sweep_line(state: dict, milestone: Milestone) -> str:
+    """The standards-sweep verdict recorded for this milestone's groups."""
+    milestone_sweeps = [
+        sweep for sweep in state["sweeps"]
+        if sweep.get("milestone") == milestone.id
+    ]
+    if not milestone_sweeps:
+        return f"{MILESTONE_NOT_RECORDED} — no standards sweep ran for this milestone"
+    latest_sweep = milestone_sweeps[-1]
+    pristine_label = "PRISTINE ✓" if latest_sweep["pristine"] else "not pristine"
+    return (
+        f"sweep {latest_sweep['sweep_id']}: {pristine_label} "
+        f"({len(latest_sweep['batches'])} batch(es))"
+    )
+
+
+def _render_milestone_report(schematic_dir: Path, reported_milestone: ResolvedMilestone) -> str:
+    """The milestone's section of implementation_report.md — what the user signs off against."""
+    state = reported_milestone.state
+    milestone = reported_milestone.milestone
+    milestone_tasks = reported_milestone.milestone_tasks
+    milestone_tags = {task["tag"] for task in milestone_tasks}
+    subsection_title_to_lines = {
+        "Tasks": _milestone_task_table_lines(milestone_tasks),
+        "Autonomous decisions": _milestone_decision_lines(state=state, milestone_tags=milestone_tags),
+        "Review verdicts": _milestone_verdict_lines(state=state, milestone_tasks=milestone_tasks),
+        "Standards sweep": [_milestone_sweep_line(state=state, milestone=milestone)],
+        "Test suite": [state["milestones"]["suite"].get(milestone.id) or MILESTONE_NOT_RECORDED],
+        "Open questions": _milestone_question_lines(schematic_dir, milestone_tags),
+    }
+
+    section_lines = [
+        _milestone_report_heading(milestone),
+        "",
+        f"Proves: {milestone.proves}",
+        f"Scope: {', '.join(milestone.scope)} — {len(milestone_tasks)} task(s).",
+    ]
+    for subsection_title, body_lines in subsection_title_to_lines.items():
+        section_lines.extend(
+            [
+                "",
+                f"### {subsection_title}",
+                *(body_lines or [MILESTONE_SECTION_EMPTY]),
+            ]
+        )
+    return "\n".join(section_lines)
+
+
+def _write_milestone_report_section(report_path: Path, heading: str, section_text: str) -> None:
+    """Replace this milestone's section in implementation_report.md, appending it when absent."""
+    existing_report = report_path.read_text() if report_path.exists() else ""
+    heading_match = re.search(rf"^{re.escape(heading)}$", existing_report, re.MULTILINE)
+    if heading_match is None:
+        preamble = f"{existing_report.rstrip()}\n\n" if existing_report.strip() else ""
+        report_path.write_text(f"{preamble}{section_text}\n")
+        return
+
+    next_heading = re.search(r"^## ", existing_report[heading_match.end():], re.MULTILINE)
+    section_end = (
+        heading_match.end() + next_heading.start() if next_heading else len(existing_report)
+    )
+    remainder = existing_report[section_end:]
+    separator = "\n\n" if remainder else "\n"
+    report_path.write_text(existing_report[: heading_match.start()] + section_text + separator + remainder)
+
+
+def _record_milestone_report(schematic_dir: Path, reported_milestone: ResolvedMilestone) -> str:
+    """Write the milestone's section to implementation_report.md and record that it was written."""
+    milestone = reported_milestone.milestone
+    section_text = _render_milestone_report(
+        schematic_dir=schematic_dir,
+        reported_milestone=reported_milestone,
+    )
+    _write_milestone_report_section(
+        report_path=schematic_dir / IMPLEMENTATION_REPORT_FILENAME,
+        heading=_milestone_report_heading(milestone),
+        section_text=section_text,
+    )
+    reported_milestone.state["milestones"]["reported"][milestone.id] = datetime.now(tz=timezone.utc).isoformat()
+    save_state(schematic_dir, reported_milestone.state)
+    return section_text
+
+
+def _milestone_report(args: argparse.Namespace) -> None:
+    """Write and print a milestone's report section on demand; never opens a browser."""
+    schematic_dir = resolve_schematic_dir(args.schematic)
+    reported_milestone = _named_locked_milestone(
+        schematic_dir=schematic_dir,
+        milestone_id=args.id,
+        schematic_name=args.schematic,
+    )
+    milestone_id = reported_milestone.milestone.id
+    if args.suite:
+        reported_milestone.state["milestones"]["suite"][milestone_id] = args.suite
+
+    print(_record_milestone_report(
+        schematic_dir=schematic_dir,
+        reported_milestone=reported_milestone,
+    ))
+    print(f"\nwritten to {IMPLEMENTATION_REPORT_FILENAME} — present it to the user and STOP.")
+    print(f"  schematic milestone sign-off {milestone_id} --schematic {args.schematic}")
+
+
+def _browser_launch_disabled() -> bool:
+    """True when the operator asked the CLI never to spawn a dashboard."""
+    return os.environ.get(NO_BROWSER_ENV_VAR) == NO_BROWSER_ENV_ENABLED
+
+
+def _launch_dashboard(schematic_dir: Path, fragment: str) -> str | None:
+    """Spawn the overview dashboard detached and return its URL — None when it never reports one."""
+    dashboard_log_path = schematic_dir / DASHBOARD_LOG_FILENAME
+    dashboard_command = [
+        "python3", str(Path(__file__).resolve()), "overview", schematic_dir.name,
+    ]
+    if fragment:
+        dashboard_command.extend(["--fragment", fragment])
+    dashboard_process = subprocess.Popen(
+        dashboard_command,
+        stdout=dashboard_log_path.open("w"),
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    return _polled_ui_url(
+        editor_log_path=dashboard_log_path,
+        editor_process=dashboard_process,
+        url_prefix=DASHBOARD_URL_LOG_PREFIX,
+    )
+
+
+def _present_finished_dashboard(schematic_dir: Path) -> None:
+    """Open the dashboard on the locked bundle — a courtesy after the lock, so a failure only warns."""
+    manual_command = f"schematic overview {schematic_dir.name}"
+    if _browser_launch_disabled():
+        print(f"\ndashboard: skipped ({NO_BROWSER_ENV_VAR}={NO_BROWSER_ENV_ENABLED}) — open it with: {manual_command}")
+        return
+
+    dashboard_url = _launch_dashboard(schematic_dir=schematic_dir, fragment="")
+    if dashboard_url is None:
+        print(f"\n⚠️  the dashboard did not start (see {DASHBOARD_LOG_FILENAME}) — "
+              f"the phase is still locked; open it with: {manual_command}")
+        return
+    print(f"\nopening the dashboard on the finished bundle:\n  {dashboard_url}")
+
+
+def _milestone_fragment(milestone_id: str) -> str:
+    """The dashboard deep link that opens this milestone's report screen."""
+    return f"{DASHBOARD_MILESTONE_FRAGMENT_PREFIX}{milestone_id}"
+
+
+def _launch_milestone_dashboard(schematic_dir: Path, milestone_id: str) -> str:
+    """Open the dashboard on this milestone's report screen; fail closed if it never opens."""
+    dashboard_url = _launch_dashboard(
+        schematic_dir=schematic_dir,
+        fragment=_milestone_fragment(milestone_id),
+    )
+    if dashboard_url is None:
+        _exit_error(
+            f"the milestone dashboard never reported a URL — nothing presented; "
+            f"see {schematic_dir / DASHBOARD_LOG_FILENAME}\n"
+            f"  the report is already in {IMPLEMENTATION_REPORT_FILENAME}; re-run schematic task next"
+        )
+    return dashboard_url
+
+
+def _present_milestone_dashboard(schematic_dir: Path, milestone_id: str) -> None:
+    """Open the dashboard on this milestone's report — skipped when the operator set no-browser."""
+    if _browser_launch_disabled():
+        print(
+            f"\ndashboard: skipped ({NO_BROWSER_ENV_VAR}={NO_BROWSER_ENV_ENABLED}) — open it with: "
+            f"schematic overview {schematic_dir.name} --fragment {_milestone_fragment(milestone_id)}"
+        )
+        return
+    dashboard_url = _launch_milestone_dashboard(schematic_dir=schematic_dir, milestone_id=milestone_id)
+    print(f"\ndashboard: {dashboard_url}#{_milestone_fragment(milestone_id)}")
+
+
+def _announce_milestone_boundary(schematic_dir: Path) -> bool:
+    """Report and present a freshly drained milestone; True only when this call announced it."""
+    open_milestone = _open_locked_milestone(schematic_dir)
+    if open_milestone is None:
+        return False
+    milestone_tasks = open_milestone.milestone_tasks
+    if not milestone_tasks or any(t["status"] != TASK_STATUS_COMPLETE for t in milestone_tasks):
+        return False
+
+    milestone_id = open_milestone.milestone.id
+    milestone_state = open_milestone.state["milestones"]
+    if milestone_id in milestone_state["announced"]:
+        _print_milestone_awaiting_sign_off(schematic_dir=schematic_dir, milestone_id=milestone_id)
+        return False
+
+    print(f"schematic: {schematic_dir.name}")
+    print(f"MILESTONE {milestone_id} HIT — the board is drained up to it, and nothing past it starts.\n")
+    print(_record_milestone_report(schematic_dir=schematic_dir, reported_milestone=open_milestone))
+    _present_milestone_dashboard(schematic_dir=schematic_dir, milestone_id=milestone_id)
+    milestone_state["announced"][milestone_id] = datetime.now(tz=timezone.utc).isoformat()
+    save_state(schematic_dir, open_milestone.state)
+    print("\npresent the report above and STOP. On the user's sign-off:")
+    print(f"  schematic milestone sign-off {milestone_id} --schematic {schematic_dir.name}")
+    return True
+
+
+def _print_milestone_awaiting_sign_off(schematic_dir: Path, milestone_id: str) -> None:
+    """Name a drained milestone and the one command that lifts its gate."""
+    print(f"{schematic_dir.name}: milestone {milestone_id} is drained — still waiting on your sign-off:")
+    print(f"  schematic milestone sign-off {milestone_id} --schematic {schematic_dir.name}")
+
+
+def _print_open_milestone_hold(schematic_dir: Path, include_drained: bool) -> None:
+    """Name what the open milestone waits on — its unfinished tasks, or (when asked) its sign-off."""
+    open_milestone = _open_locked_milestone(schematic_dir)
+    if open_milestone is None:
+        return
+    unfinished_labels = [
+        f"{task['tag']} ({task['status']})"
+        for task in open_milestone.milestone_tasks
+        if task["status"] != TASK_STATUS_COMPLETE
+    ]
+    if unfinished_labels:
+        print(
+            f"{schematic_dir.name}: milestone {open_milestone.milestone.id} is open — "
+            f"not yet complete: {', '.join(unfinished_labels)}"
+        )
+    elif include_drained:
+        _print_milestone_awaiting_sign_off(
+            schematic_dir=schematic_dir,
+            milestone_id=open_milestone.milestone.id,
+        )
+
+
+def _scope_with_tags(scope: tuple[str, ...], added_tags: tuple[str, ...]) -> tuple[str, ...]:
+    """The scope with these tags appended, skipping any it already names."""
+    return tuple([*scope, *[tag for tag in added_tags if tag not in scope]])
+
+
+def _scope_without_tags(
+    scope: tuple[str, ...],
+    removed_tags: tuple[str, ...],
+    tasks: list[TaskRecord],
+) -> tuple[str, ...]:
+    """The scope with these tags gone — a group letter expands to the tags it still owns."""
+    all_tags = [task["tag"] for task in tasks]
+    remaining_scope: list[str] = []
+    for token in scope:
+        if MILESTONE_SCOPE_TAG_RE.match(token):
+            if token not in removed_tags:
+                remaining_scope.append(token)
+            continue
+        group_tags = [tag for tag in all_tags if tag.startswith(f"{token}.")]
+        if not any(tag in removed_tags for tag in group_tags):
+            remaining_scope.append(token)
+            continue
+        remaining_scope.extend(tag for tag in group_tags if tag not in removed_tags)
+    return tuple(remaining_scope)
+
+
+def _milestones_after_move(
+    milestones: list[Milestone],
+    tasks: list[TaskRecord],
+    moved_tags: tuple[str, ...],
+    destination_id: str,
+) -> MilestoneAmendment:
+    """The table with these tags reassigned to the destination milestone."""
+    amended_milestones = tuple(
+        Milestone(
+            id=milestone.id,
+            title=milestone.title,
+            scope=(
+                _scope_with_tags(scope=milestone.scope, added_tags=moved_tags)
+                if milestone.id == destination_id
+                else _scope_without_tags(
+                    scope=milestone.scope,
+                    removed_tags=moved_tags,
+                    tasks=tasks,
+                )
+            ),
+            proves=milestone.proves,
+        )
+        for milestone in milestones
+    )
+    return MilestoneAmendment(
+        milestones=amended_milestones,
+        delta=f"moved {', '.join(moved_tags)} to {destination_id}",
+    )
+
+
+def _milestones_after_add(milestones: list[Milestone], added: Milestone) -> MilestoneAmendment:
+    """The table with one more milestone appended."""
+    return MilestoneAmendment(
+        milestones=(*milestones, added),
+        delta=f"added {added.id} ({added.title}) over {', '.join(added.scope)}",
+    )
+
+
+def _amendment_from_move(
+    args: argparse.Namespace,
+    milestones: list[Milestone],
+    tasks: list[TaskRecord],
+    state: dict,
+) -> MilestoneAmendment:
+    """Validate a --move/--to pair and return the amended table."""
+    if not args.to:
+        _exit_error("--move needs its destination: --to <milestone id>")
+    if all(milestone.id != args.to for milestone in milestones):
+        _exit_error(
+            f"unknown destination milestone '{args.to}' — this bundle declares "
+            f"{', '.join(milestone.id for milestone in milestones)}"
+        )
+    moved_tags = tuple(tag.strip() for tag in args.move.split(",") if tag.strip())
+    all_tags = {task["tag"] for task in tasks}
+    unknown_tags = [tag for tag in moved_tags if tag not in all_tags]
+    if unknown_tags:
+        _exit_error(f"not a task in tasks.md: {', '.join(unknown_tags)}")
+    if args.to in state["milestones"]["signed_off"]:
+        _exit_error(
+            f"milestone {args.to} is already signed off — work cannot be moved into a "
+            f"closed stage; add a later milestone instead:\n"
+            f"  schematic milestone amend --schematic {args.schematic} --add M<n> "
+            f"--title \"<t>\" --scope \"<tags>\" --proves \"<what>\" --reason \"<why>\""
+        )
+    return _milestones_after_move(
+        milestones=milestones,
+        tasks=tasks,
+        moved_tags=moved_tags,
+        destination_id=args.to,
+    )
+
+
+def _amendment_from_add(
+    args: argparse.Namespace,
+    milestones: list[Milestone],
+) -> MilestoneAmendment:
+    """Validate an --add and return the amended table."""
+    if not (args.title and args.scope and args.proves):
+        _exit_error("--add needs --title, --scope and --proves — a milestone says what it proves")
+    if not MILESTONE_ID_RE.match(args.add):
+        _exit_error(f"'{args.add}' is not a milestone id — use M<n> (e.g. M3)")
+    if any(milestone.id == args.add for milestone in milestones):
+        _exit_error(f"milestone {args.add} already exists — move tasks into it instead")
+    return _milestones_after_add(
+        milestones=milestones,
+        added=Milestone(
+            id=args.add,
+            title=args.title,
+            scope=tuple(token.strip() for token in args.scope.split(",") if token.strip()),
+            proves=args.proves,
+        ),
+    )
+
+
+def _requested_amendment(
+    args: argparse.Namespace,
+    milestones: list[Milestone],
+    tasks: list[TaskRecord],
+    state: dict,
+) -> MilestoneAmendment:
+    """The one delta the command names (a --move or an --add), checked against every table rule."""
+    if bool(args.move) == bool(args.add):
+        _exit_error(
+            "name exactly one delta:\n"
+            "  --move <tags> --to <id>        move tasks between milestones\n"
+            "  --add M<n> --title \"<t>\" --scope \"<tags>\" --proves \"<what>\"   add one"
+        )
+    amendment = (
+        _amendment_from_move(args=args, milestones=milestones, tasks=tasks, state=state)
+        if args.move
+        else _amendment_from_add(args=args, milestones=milestones)
+    )
+    findings = _milestone_table_findings(
+        tasks=tasks,
+        milestones=list(amendment.milestones),
+    )
+    if findings:
+        _exit_milestone_findings(findings)
+    return amendment
+
+
+def _milestone_ids_with_changed_membership(
+    tasks: list[TaskRecord],
+    milestones_before: list[Milestone],
+    milestones_after: list[Milestone],
+) -> set[str]:
+    """Milestones that gained or lost a task between the two tables."""
+    tag_to_id_before = _tag_to_milestone_id(tasks=tasks, milestones=milestones_before)
+    tag_to_id_after = _tag_to_milestone_id(tasks=tasks, milestones=milestones_after)
+    return {
+        milestone_id
+        for tag, id_after in tag_to_id_after.items()
+        if tag_to_id_before.get(tag) != id_after
+        for milestone_id in (tag_to_id_before.get(tag), id_after)
+        if milestone_id is not None
+    }
+
+
+def _record_milestone_amendment(
+    schematic_dir: Path,
+    state: dict,
+    milestones_before: list[Milestone],
+    amendment: MilestoneAmendment,
+    reason: str,
+) -> None:
+    """Rewrite the table, log the amendment, and re-arm the boundary of every re-scoped milestone."""
+    for rescoped_id in _milestone_ids_with_changed_membership(
+        tasks=parse_tasks(schematic_dir / "tasks.md"),
+        milestones_before=milestones_before,
+        milestones_after=list(amendment.milestones),
+    ):
+        state["milestones"]["announced"].pop(rescoped_id, None)
+    write_milestone_table(schematic_dir / "tasks.md", list(amendment.milestones))
+    state["milestones"]["amendments"].append({
+        "at": datetime.now(tz=timezone.utc).isoformat(),
+        "delta": amendment.delta,
+        "reason": reason,
+    })
+    save_state(schematic_dir, state)
+
+
+def _milestone_amend(args: argparse.Namespace) -> None:
+    """Post-lock re-scope: move tasks between milestones, or add one — recorded as an amendment."""
+    schematic_dir = resolve_schematic_dir(args.schematic)
+    state = load_state(schematic_dir)
+    milestones = parse_milestones(schematic_dir / "tasks.md")
+    if not _milestones_are_locked(state=state, milestones=milestones):
+        _exit_error(
+            "nothing to amend — this bundle has no locked milestones.\n"
+            f"  propose and lock them first: schematic milestone propose --schematic {args.schematic}"
+        )
+
+    tasks = parse_tasks(schematic_dir / "tasks.md")
+    amendment = _requested_amendment(
+        args=args,
+        milestones=milestones,
+        tasks=tasks,
+        state=state,
+    )
+    _record_milestone_amendment(
+        schematic_dir=schematic_dir,
+        state=state,
+        milestones_before=milestones,
+        amendment=amendment,
+        reason=args.reason,
+    )
+    print(f"milestone amendment recorded: {amendment.delta} — {args.reason}\n")
+    print(_render_milestone_table(list(amendment.milestones)))
+    print(f"\nre-validate the bundle: schematic validate {args.schematic}")
 
 
 # ── dashboard Q&A relay (questions asked in the browser UIs) ─────────────────────
@@ -1768,6 +3150,7 @@ def _pending_questions(schematic_dir: Path) -> list[dict]:
                 "id": f"{stem}#{idx}",
                 "source": stem,
                 "idx": idx,
+                "tag": question.get("tag", ""),
                 "text": text,
                 "context": question.get("context", ""),
                 "prompt": idx_to_prompt.get(idx, ""),
@@ -1973,10 +3356,12 @@ def _review_sweep(args: argparse.Namespace) -> None:
     skipped_clean = sorted(set(diff_files) - set(files_to_review))
 
     sweep_id = len(state["sweeps"]) + 1
+    swept_milestone_id = _open_milestone_id(schematic_dir=schematic_dir, state=state)
     if not files_to_review:
         state["sweeps"].append({
             "sweep_id": sweep_id, "batches": [], "pristine": True,
             "skipped_clean": skipped_clean,
+            "milestone": swept_milestone_id,
         })
         save_state(schematic_dir, state)
         print(f"sweep {sweep_id}: PRISTINE ✓ — all {len(skipped_clean)} changed file(s) "
@@ -1999,6 +3384,7 @@ def _review_sweep(args: argparse.Namespace) -> None:
         ],
         "pristine": False,
         "skipped_clean": skipped_clean,
+        "milestone": swept_milestone_id,
     }
     state["sweeps"].append(sweep_record)
     save_state(schematic_dir, state)
@@ -2368,7 +3754,7 @@ def cmd_overview(args: argparse.Namespace) -> None:
             _exit_error("no schematics found")
         schematic_dir = dirs[-1]
 
-    overview_mod.launch_overview(schematic_dir)
+    overview_mod.launch_overview(schematic_dir, args.fragment)
 
 # ── roster command (topology present gate) ──────────────────────────────────────
 
@@ -2532,37 +3918,61 @@ def _launch_roster_editor(
         url=_await_editor_url(
             editor_log_path=editor_log_path,
             editor_process=editor_process,
+            url_prefix=EDITOR_URL_LOG_PREFIX,
         ),
     )
+
+
+def _polled_ui_url(
+    editor_log_path: Path,
+    editor_process: "subprocess.Popen[bytes]",
+    url_prefix: str,
+) -> str | None:
+    """The URL a launched UI logs — None when it exits first or stays silent past the timeout."""
+    deadline = time.monotonic() + EDITOR_LAUNCH_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if editor_process.poll() is not None:
+            return None
+        reported_url = _editor_url_in_log(
+            editor_log_path=editor_log_path,
+            url_prefix=url_prefix,
+        )
+        if reported_url is not None:
+            return reported_url
+        time.sleep(EDITOR_URL_POLL_SECONDS)
+    return None
 
 
 def _await_editor_url(
     editor_log_path: Path,
     editor_process: "subprocess.Popen[bytes]",
+    url_prefix: str,
 ) -> str:
-    deadline = time.monotonic() + EDITOR_LAUNCH_TIMEOUT_SECONDS
-    while time.monotonic() < deadline:
-        if editor_process.poll() is not None:
-            _exit_error(
-                f"editor exited before opening (code {editor_process.returncode}) "
-                f"— nothing presented; see {editor_log_path}",
-            )
-        reported_url = _editor_url_in_log(editor_log_path=editor_log_path)
-        if reported_url is not None:
-            return reported_url
-        time.sleep(EDITOR_URL_POLL_SECONDS)
+    """The URL a launched UI logs; fail closed when it never reports one."""
+    reported_url = _polled_ui_url(
+        editor_log_path=editor_log_path,
+        editor_process=editor_process,
+        url_prefix=url_prefix,
+    )
+    if reported_url is not None:
+        return reported_url
+    if editor_process.poll() is not None:
+        _exit_error(
+            f"editor exited before opening (code {editor_process.returncode}) "
+            f"— nothing presented; see {editor_log_path}",
+        )
     _exit_error(
         f"editor did not report a URL within {EDITOR_LAUNCH_TIMEOUT_SECONDS:.0f}s "
         f"— nothing presented; see {editor_log_path}",
     )
 
 
-def _editor_url_in_log(editor_log_path: Path) -> str | None:
+def _editor_url_in_log(editor_log_path: Path, url_prefix: str) -> str | None:
     if not editor_log_path.exists():
         return None
     for log_line in editor_log_path.read_text().splitlines():
-        if log_line.startswith(EDITOR_URL_LOG_PREFIX):
-            return log_line[len(EDITOR_URL_LOG_PREFIX):].strip()
+        if log_line.startswith(url_prefix):
+            return log_line[len(url_prefix):].strip()
     return None
 
 
@@ -2729,6 +4139,66 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_tdecision.add_argument("--schematic", required=True, metavar="NAME")
 
+    p_milestone = sub.add_parser(
+        "milestone",
+        help="Multi-stage delivery: the Phase-7 decision + the Phase-8 boundary gate",
+    )
+    milestone_sub = p_milestone.add_subparsers(dest="milestone_command", required=True)
+
+    p_mdecide = milestone_sub.add_parser(
+        "decide",
+        help="Record the Phase-7 answer: split this task set into milestones?",
+    )
+    p_mdecide.add_argument("answer", choices=sorted(VALID_MILESTONE_DECISIONS))
+    p_mdecide.add_argument("--schematic", required=True, metavar="NAME")
+
+    p_mpropose = milestone_sub.add_parser(
+        "propose",
+        help="Validate the ## Milestones table and present the resolved membership for the gate",
+    )
+    p_mpropose.add_argument("--schematic", required=True, metavar="NAME")
+
+    p_mlock = milestone_sub.add_parser("lock", help="Lock the proposed milestones on the user's y")
+    p_mlock.add_argument("--schematic", required=True, metavar="NAME")
+
+    p_mstatus = milestone_sub.add_parser(
+        "status",
+        help="Per-milestone task counts, gate state, and which milestone is open",
+    )
+    p_mstatus.add_argument("--schematic", required=True, metavar="NAME")
+
+    p_msignoff = milestone_sub.add_parser(
+        "sign-off",
+        help="Sign a drained milestone off (opens the next one)",
+    )
+    p_msignoff.add_argument("id", metavar="MILESTONE", help="Milestone id (e.g. M1)")
+    p_msignoff.add_argument("--schematic", required=True, metavar="NAME")
+
+    p_mreport = milestone_sub.add_parser(
+        "report",
+        help="Write the milestone's section of implementation_report.md and print it",
+    )
+    p_mreport.add_argument("id", metavar="MILESTONE", help="Milestone id (e.g. M1)")
+    p_mreport.add_argument("--schematic", required=True, metavar="NAME")
+    p_mreport.add_argument(
+        "--suite",
+        metavar="LAST_LINES",
+        help="The test suite's last line(s) as run for this milestone",
+    )
+
+    p_mamend = milestone_sub.add_parser(
+        "amend",
+        help="Post-lock re-scope: move tasks between milestones, or add one",
+    )
+    p_mamend.add_argument("--schematic", required=True, metavar="NAME")
+    p_mamend.add_argument("--reason", required=True, metavar="WHY", help="Why the scope changed")
+    p_mamend.add_argument("--move", metavar="TAGS", help="Comma-separated task tags to move")
+    p_mamend.add_argument("--to", metavar="MILESTONE", help="Destination milestone id for --move")
+    p_mamend.add_argument("--add", metavar="MILESTONE", help="New milestone id to append")
+    p_mamend.add_argument("--title", metavar="TITLE", help="Title for --add")
+    p_mamend.add_argument("--scope", metavar="SCOPE", help="Comma-separated groups/tags for --add")
+    p_mamend.add_argument("--proves", metavar="TEXT", help="What --add proves")
+
     p_review = sub.add_parser("review", help="Auto-mode driver + per-group standards sweep + consistency + e2e tracing")
     review_sub = p_review.add_subparsers(dest="review_command", required=True)
 
@@ -2783,6 +4253,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_overview = sub.add_parser("overview", help="Launch schematic overview browser")
     p_overview.add_argument("name", nargs="?", help="Schematic name (omit for current)")
+    p_overview.add_argument(
+        "--fragment",
+        default="",
+        metavar="HASH",
+        help="Open on a specific screen (e.g. milestone:M2, reports, kanban)",
+    )
 
     p_questions = sub.add_parser("questions", help="List unanswered dashboard/editor questions")
     p_questions.add_argument("name", nargs="?", help="Schematic name (omit for all)")
@@ -2808,6 +4284,7 @@ def dispatch(args: argparse.Namespace) -> None:
         "phase": cmd_phase,
         "roster": cmd_roster,
         "task": cmd_task,
+        "milestone": cmd_milestone,
         "review": cmd_review,
         "track": cmd_track,
         "overview": cmd_overview,

@@ -110,6 +110,22 @@ body{font-family:'Inter','SF Pro',-apple-system,sans-serif;background:var(--bg);
 .kanban-count{background:var(--surface2);padding:1px 6px;border-radius:10px;font-size:10px;color:var(--text-dim);font-weight:600}
 .kanban-card:focus-visible{outline:2px solid var(--accent);outline-offset:2px;transform:translateY(-1px)}
 .kanban-empty{padding:20px 12px;text-align:center;color:var(--text-dim);font-size:11px;font-style:italic;border:1px dashed var(--border);border-radius:6px;margin:8px}
+.kanban-milestone{font-size:9px;font-weight:700;color:var(--mauve);border:1px solid var(--mauve);border-radius:8px;padding:0 5px}
+.milestone-lane{margin-bottom:18px}
+.milestone-lane-header{display:flex;align-items:center;gap:10px;margin:0 0 8px;font-size:12px;font-weight:700;color:var(--text)}
+.milestone-lane .kanban-board{height:auto;min-height:150px}
+
+/* Reports area */
+.report-entry{border:1px solid var(--border);border-radius:8px;background:var(--surface);margin-bottom:14px;overflow:hidden}
+.report-entry-header{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);font-size:12px;font-weight:700;color:var(--text)}
+.report-entry-body{padding:4px 14px 12px}
+.report-gate{font-size:10px;font-weight:700;padding:1px 7px;border-radius:10px;border:1px solid var(--border);color:var(--text-dim)}
+.report-gate.open{color:var(--yellow);border-color:var(--yellow)}
+.report-gate.signed{color:var(--green);border-color:var(--green)}
+.report-status{font-size:11px;color:var(--text-dim);margin:0 0 14px;padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--surface)}
+.report-entry.anchored{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.report-qa{border-top:1px solid var(--border);padding:10px 14px 12px}
+.report-qa h3{font-size:12px;font-weight:600;color:var(--text);margin:0 0 8px}
 
 /* Skeleton loading */
 .skeleton{background:linear-gradient(90deg,var(--surface2) 25%,var(--border) 50%,var(--surface2) 75%);background-size:200% 100%;animation:skeleton-shimmer 1.5s infinite;border-radius:4px;height:14px;margin-bottom:8px}
@@ -233,6 +249,9 @@ let currentFilePath = null;
 let searchIndex = [];
 let notes = [];
 let activeEditor = null;
+let anchoredMilestoneId = null;
+const MILESTONE_HASH_PREFIX = 'milestone:';
+let kanbanGroupedByMilestone = false;
 
 async function init() {
   const res = await fetch('/api/manifest');
@@ -240,6 +259,7 @@ async function init() {
   document.getElementById('schematic-name').textContent = manifest.name;
   notes = manifest.notes || [];
   buildSidebar();
+  revealReportsNavWhenMilestoned();
   buildSearchIndex();
   renderNotes();
   updateStats();
@@ -251,6 +271,8 @@ function restoreFromHash() {
   if (!hash) return false;
   if (hash === 'kanban') { showKanban(); return true; }
   if (hash === 'components') { showComponents(); return true; }
+  if (hash === 'reports') { anchoredMilestoneId = null; showReports(); return true; }
+  if (hash.startsWith(MILESTONE_HASH_PREFIX)) { anchoredMilestoneId = hash.slice(MILESTONE_HASH_PREFIX.length); showReports(); return true; }
   if (hash.startsWith('file:')) { const f = hash.slice(5); currentView=f; currentFilePath=f; showFile(f); return true; }
   if (hash.startsWith('diagram:')) { const d = hash.slice(8); currentView='diagram:'+d; currentFilePath=d; showDiagram(d); return true; }
   return false;
@@ -301,6 +323,7 @@ function buildSidebar() {
     html += `<div class="nav-group"><div class="nav-group-title">Execution</div>
       <div class="nav-item" data-view="kanban" onclick="navigate('kanban')"><span class="icon">▦</span>Kanban</div>
       <div class="nav-item" data-view="tasks" onclick="navigate('file','tasks.md')"><span class="icon">☐</span>Tasks (raw)</div>
+      <div class="nav-item" id="nav-reports" data-view="reports" onclick="navigate('reports')"${manifest.files?.['implementation_report.md'] ? '' : ' style="display:none"'}><span class="icon">▤</span>Reports</div>
     </div>`;
   }
 
@@ -422,6 +445,7 @@ async function navigate(type, arg) {
   if (type === 'file') { currentView=arg; currentFilePath=arg; window.location.hash='file:'+arg; await showFile(arg); return; }
   if (type === 'diagram') { currentView='diagram:'+arg; currentFilePath=arg; window.location.hash='diagram:'+arg; await showDiagram(arg); return; }
   if (type === 'kanban') { currentView='kanban'; window.location.hash='kanban'; await showKanban(); return; }
+  if (type === 'reports') { currentView='reports'; anchoredMilestoneId = arg || null; window.location.hash = arg ? MILESTONE_HASH_PREFIX+arg : 'reports'; await showReports(); return; }
 }
 
 function showComponents() {
@@ -657,44 +681,216 @@ async function showKanban() {
   const tasks = parseTasksFromMarkdown(tasksText);
   await attachOpenQuestions(tasks);
   allTasks = tasks;
+  const milestones = parseMilestonesFromMarkdown(tasksText);
 
+  const groupToggle = milestones.length
+    ? `<button class="open-ide" onclick="toggleKanbanGrouping()">${kanbanGroupedByMilestone ? '▦ One board' : '⫶ Group by milestone'}</button>`
+    : '';
+  const header = `
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+      <h2 style="font-size:16px;font-weight:700;color:var(--text);margin:0">Tasks</h2>
+      <span style="font-size:11px;color:var(--text-dim)">${tasks.length} total</span>
+      ${groupToggle}
+    </div>`;
+
+  if (!kanbanGroupedByMilestone || !milestones.length) {
+    content.innerHTML = header + renderKanbanBoard(tasks);
+    return;
+  }
+
+  const lanes = milestones.map(milestone => {
+    const laneTasks = tasks.filter(task => task.milestone === milestone.id);
+    return `<div class="milestone-lane">
+      <div class="milestone-lane-header">
+        <span class="kanban-milestone">${escHtml(milestone.id)}</span>${escHtml(milestone.title)}
+        <span class="kanban-count">${laneTasks.length}</span>
+      </div>
+      ${renderKanbanBoard(laneTasks)}
+    </div>`;
+  }).join('');
+  const unclaimedTasks = tasks.filter(task => !task.milestone);
+  const unclaimedLane = unclaimedTasks.length
+    ? `<div class="milestone-lane">
+        <div class="milestone-lane-header">No milestone <span class="kanban-count">${unclaimedTasks.length}</span></div>
+        ${renderKanbanBoard(unclaimedTasks)}
+      </div>`
+    : '';
+  content.innerHTML = header + lanes + unclaimedLane;
+}
+
+function toggleKanbanGrouping() {
+  kanbanGroupedByMilestone = !kanbanGroupedByMilestone;
+  showKanban();
+}
+
+function renderKanbanBoard(tasks) {
   const columns = { pending: [], in_progress: [], pendingInput: [], review: [], complete: [] };
   tasks.forEach(t => {
     const col = columns[t.status] || columns.pending;
     col.push(t);
   });
+  const lanes = [
+    ['Not Started', '#6c757d', columns.pending, 'pending'],
+    ['In Progress', 'var(--accent)', columns.in_progress, 'in progress'],
+    ['Awaiting You', 'var(--yellow)', columns.pendingInput, 'awaiting you'],
+    ['Review', 'var(--mauve)', columns.review, 'in review'],
+    ['Done', 'var(--green)', columns.complete, 'completed'],
+  ];
+  return `<div class="kanban-board">${lanes.map(([label, color, columnTasks, emptyLabel]) => `
+      <div class="kanban-col">
+        <div class="kanban-col-header" style="border-top-color:${color}">${label} <span class="kanban-count">${columnTasks.length}</span></div>
+        <div class="kanban-cards">${columnTasks.length ? columnTasks.map(renderKanbanCard).join('') : kanbanEmptyState(emptyLabel)}</div>
+      </div>`).join('')}</div>`;
+}
 
-  content.innerHTML = `
-    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
-      <h2 style="font-size:16px;font-weight:700;color:var(--text);margin:0">Tasks</h2>
-      <span style="font-size:11px;color:var(--text-dim)">${tasks.length} total</span>
-    </div>
-    <div class="kanban-board">
-      <div class="kanban-col">
-        <div class="kanban-col-header" style="border-top-color:#6c757d">Not Started <span class="kanban-count">${columns.pending.length}</span></div>
-        <div class="kanban-cards">${columns.pending.length ? columns.pending.map(renderKanbanCard).join('') : kanbanEmptyState('pending')}</div>
+// Reports area: one entry per milestone report, the final report, and the schematic's status.
+// A milestone section runs from its heading to the next `## ` heading of any kind (the CLI's
+// replace-in-place rule); everything outside a milestone section is final-report prose.
+function splitReportSections(reportText) {
+  const milestoneSections = {};
+  const finalReportParts = [];
+  const h2Starts = [...reportText.matchAll(/^## /gm)].map(match => match.index).filter(index => index > 0);
+  const boundaries = [0, ...h2Starts, reportText.length];
+  for (let index = 0; index + 1 < boundaries.length; index++) {
+    const chunk = reportText.slice(boundaries[index], boundaries[index + 1]);
+    const milestoneHeading = chunk.match(/^## Milestone (M\d+)\b/);
+    if (milestoneHeading) milestoneSections[milestoneHeading[1]] = chunk.trim();
+    else finalReportParts.push(chunk);
+  }
+  return { finalReport: finalReportParts.join('').trim(), milestoneSections };
+}
+
+// The Reports nav item shows once there is a report to read OR a Milestones table to report on.
+async function revealReportsNavWhenMilestoned() {
+  const reportsNav = document.getElementById('nav-reports');
+  if (!reportsNav || reportsNav.style.display !== 'none') return;
+  const res = await fetch('/api/file?name=tasks.md');
+  if (!res.ok) return;
+  if (parseMilestonesFromMarkdown(await res.text()).length) reportsNav.style.display = '';
+}
+
+function milestoneGateState(milestone, milestoneState, milestones) {
+  if (!milestoneState) return { label: 'not gated', cls: '' };
+  if (milestoneState.signed_off?.[milestone.id]) return { label: 'signed off', cls: 'signed' };
+  const openMilestone = milestones.find(m => !milestoneState.signed_off?.[m.id]);
+  if (openMilestone && openMilestone.id === milestone.id) return { label: 'open', cls: 'open' };
+  return { label: 'waiting', cls: '' };
+}
+
+function schematicStatusLine(state, milestones) {
+  const lockedPhases = Object.entries(state.phases || {}).filter(([, p]) => p.status === 'locked').map(([n]) => Number(n));
+  const highestLocked = lockedPhases.length ? Math.max(...lockedPhases) : 0;
+  const phaseLabel = highestLocked >= 9 ? 'complete' : `${Math.min(highestLocked + 1, 9)}/9`;
+  const milestoneState = state.milestones;
+  if (!milestones.length || !milestoneState || milestoneState.decision !== 'yes') {
+    return `phase ${phaseLabel} · delivering as one stage (no milestones declared)`;
+  }
+  const openMilestone = milestones.find(m => !milestoneState.signed_off?.[m.id]);
+  const gateLabel = milestoneState.locked_at ? 'milestones locked' : 'milestones proposed, not locked';
+  const currentLabel = openMilestone ? `${openMilestone.id} — ${openMilestone.title}` : 'every milestone signed off';
+  return `phase ${phaseLabel} · ${gateLabel} · current: ${currentLabel}`;
+}
+
+async function showReports() {
+  setActive('reports');
+  setBreadcrumb([manifest.name, 'Reports']);
+  const content = document.getElementById('content');
+  content.innerHTML = '<div class="md-content"><h1>Reports</h1></div><div class="skeleton wide"></div><div class="skeleton medium"></div>';
+
+  const [tasksRes, stateRes, reportRes] = await Promise.all([
+    fetch('/api/file?name=tasks.md'),
+    fetch('/api/state'),
+    fetch('/api/file?name=implementation_report.md'),
+  ]);
+  const tasksText = tasksRes.ok ? await tasksRes.text() : '';
+  const state = stateRes.ok ? await stateRes.json() : {};
+  const reportText = reportRes.ok ? await reportRes.text() : '';
+
+  const milestones = parseMilestonesFromMarkdown(tasksText);
+  const { finalReport, milestoneSections } = splitReportSections(reportText);
+
+  let html = '<div class="md-content"><h1>Reports</h1></div>';
+  html += `<div class="report-status">${escHtml(schematicStatusLine(state, milestones))}</div>`;
+
+  for (const milestone of milestones) {
+    const gate = milestoneGateState(milestone, state.milestones, milestones);
+    const section = milestoneSections[milestone.id];
+    const body = section
+      ? DOMPurify.sanitize(marked.parse(section.split('\n').slice(1).join('\n')))
+      : '<p style="font-size:11px;color:var(--text-dim)">Not reported yet — the CLI writes this section when the milestone is hit.</p>';
+    const anchored = anchoredMilestoneId === milestone.id ? ' anchored' : '';
+    html += `<div class="report-entry${anchored}" id="report-${escHtml(milestone.id)}">
+      <div class="report-entry-header">
+        <span class="kanban-milestone">${escHtml(milestone.id)}</span>${escHtml(milestone.title)}
+        <span class="report-gate ${gate.cls}">${gate.label}</span>
       </div>
-      <div class="kanban-col">
-        <div class="kanban-col-header" style="border-top-color:var(--accent)">In Progress <span class="kanban-count">${columns.in_progress.length}</span></div>
-        <div class="kanban-cards">${columns.in_progress.length ? columns.in_progress.map(renderKanbanCard).join('') : kanbanEmptyState('in progress')}</div>
-      </div>
-      <div class="kanban-col">
-        <div class="kanban-col-header" style="border-top-color:var(--yellow)">Awaiting You <span class="kanban-count">${columns.pendingInput.length}</span></div>
-        <div class="kanban-cards">${columns.pendingInput.length ? columns.pendingInput.map(renderKanbanCard).join('') : kanbanEmptyState('awaiting you')}</div>
-      </div>
-      <div class="kanban-col">
-        <div class="kanban-col-header" style="border-top-color:var(--mauve)">Review <span class="kanban-count">${columns.review.length}</span></div>
-        <div class="kanban-cards">${columns.review.length ? columns.review.map(renderKanbanCard).join('') : kanbanEmptyState('in review')}</div>
-      </div>
-      <div class="kanban-col">
-        <div class="kanban-col-header" style="border-top-color:var(--green)">Done <span class="kanban-count">${columns.complete.length}</span></div>
-        <div class="kanban-cards">${columns.complete.length ? columns.complete.map(renderKanbanCard).join('') : kanbanEmptyState('completed')}</div>
+      <div class="report-entry-body md-content">${body}</div>
+      <div class="report-qa">
+        <h3>Ask about ${escHtml(milestone.id)}</h3>
+        <div class="report-qa-bubble" data-context="${escHtml(`milestone:${milestone.id} — ${milestone.title}`)}" style="position:relative;min-height:80px"></div>
       </div>
     </div>`;
+  }
+
+  const finalBody = finalReport
+    ? DOMPurify.sanitize(marked.parse(finalReport))
+    : '<p style="font-size:11px;color:var(--text-dim)">No implementation_report.md yet — Phase 8 creates it.</p>';
+  html += `<div class="report-entry">
+    <div class="report-entry-header">Final report <span class="report-gate">implementation_report.md</span></div>
+    <div class="report-entry-body md-content">${finalBody}</div>
+    <div class="report-qa">
+      <h3>Ask about the final report</h3>
+      <div class="report-qa-bubble" data-context="report:implementation_report.md" style="position:relative;min-height:80px"></div>
+    </div>
+  </div>`;
+
+  content.innerHTML = html;
+  content.querySelectorAll('.report-qa-bubble').forEach(bubbleContainer => {
+    mountInlineQABubble(bubbleContainer, bubbleContainer.dataset.context);
+  });
+  if (anchoredMilestoneId) {
+    document.getElementById(`report-${anchoredMilestoneId}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
+
+// The optional `## Milestones` table: one row per named checkpoint over task groups.
+function parseMilestonesFromMarkdown(text) {
+  const headed = '\n' + text;
+  const start = headed.indexOf('\n## Milestones');
+  if (start === -1) return [];
+  const rest = headed.slice(start + 1);
+  const nextHeading = rest.indexOf('\n## ', 1);
+  const section = nextHeading === -1 ? rest : rest.slice(0, nextHeading);
+
+  const milestones = [];
+  const rowRegex = /^\|\s*(M\d+)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|$/gm;
+  let match;
+  while ((match = rowRegex.exec(section)) !== null) {
+    milestones.push({
+      id: match[1],
+      title: match[2].trim(),
+      scope: match[3].split(',').map(token => token.trim()).filter(Boolean),
+      proves: match[4].trim(),
+    });
+  }
+  return milestones;
+}
+
+// An explicit tag in a scope cell beats a group letter that would also claim the task.
+function milestoneIdOfTag(tag, milestones) {
+  let groupOwnerId = null;
+  for (const milestone of milestones) {
+    for (const token of milestone.scope) {
+      if (token === tag) return milestone.id;
+      if (/^[a-z]$/.test(token) && tag.startsWith(token + '.') && !groupOwnerId) groupOwnerId = milestone.id;
+    }
+  }
+  return groupOwnerId;
 }
 
 function parseTasksFromMarkdown(text) {
   const tasks = [];
+  const milestones = parseMilestonesFromMarkdown(text);
   const taskRegex = /^## ([a-z]\.\d+) \| (\w+) \| (.+)$/gm;
   let match;
   while ((match = taskRegex.exec(text)) !== null) {
@@ -706,6 +902,7 @@ function parseTasksFromMarkdown(text) {
       tag, action, target,
       status: statusMatch ? statusMatch[1] : 'pending',
       blockedBy: blockedMatch ? blockedMatch[1].trim() : '—',
+      milestone: milestoneIdOfTag(tag, milestones),
       rawBlock: text.substring(match.index, text.indexOf('\n## ', match.index + 1) > -1 ? text.indexOf('\n## ', match.index + 1) : text.length),
     });
   }
@@ -731,10 +928,12 @@ function renderKanbanCard(task) {
   const color = actionColors[task.action] || 'var(--text-dim)';
   const blocked = task.blockedBy !== '—' ? `<div style="font-size:9px;color:var(--yellow);margin-top:4px">⚠ ${task.blockedBy}</div>` : '';
   const question = task.openQuestion ? `<div class="kanban-question">❓ ${escHtml(task.openQuestion)}</div>` : '';
+  const milestone = task.milestone ? `<span class="kanban-milestone">${escHtml(task.milestone)}</span>` : '';
   return `<div class="kanban-card" tabindex="0" onclick="openTaskModal('${task.tag}')" onkeydown="if(event.key==='Enter')openTaskModal('${task.tag}')">
     <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
       <span style="font-size:9px;font-weight:700;color:var(--text-dim)">${task.tag}</span>
       <span style="font-size:9px;font-weight:600;color:${color}">${task.action}</span>
+      ${milestone}
     </div>
     <div style="font-size:11px;color:var(--text)">${task.target}</div>
     ${blocked}
@@ -786,41 +985,46 @@ function openTaskModal(tag) {
 
     // Instantiate shared QABubble in the task modal
     const bubbleContainer = document.getElementById(`td-qa-bubble-${safeTag}`);
-    const taskBubble = new QABubble(bubbleContainer, {
-      context: `task:${tag} — ${task.action} ${task.target}`,
-      position: { x: 0, y: 0 },
-      onQuestion: async (text, ctx, thread) => {
-        const res = await fetch('/api/question', {
-          method: 'POST',
-          body: JSON.stringify({ text, context: ctx, thread, ts: new Date().toISOString(), type: 'question' }),
-          headers: { 'Content-Type': 'application/json' }
-        });
-        const { idx: serverIdx } = await res.json();
-        return { serverIdx };
-      },
-      pollAnswers: async (serverIdx) => {
-        try {
-          const r = await fetch('/api/answers');
-          const answers = await r.json();
-          const matching = answers.filter(a => Number(a.idx) === Number(serverIdx));
-          if (matching.length > 0) return matching[matching.length - 1].answer || matching[matching.length - 1].text;
-        } catch(e) {}
-        return null;
-      },
-    });
-    // Make it inline (not absolute)
-    taskBubble.el.style.position = 'relative';
-    taskBubble.el.style.left = '0';
-    taskBubble.el.style.top = '0';
-    taskBubble.el.style.maxWidth = '100%';
-    taskBubble.el.style.border = 'none';
-    taskBubble.el.style.boxShadow = 'none';
-    taskBubble.el.style.borderRadius = '6px';
-    taskBubble.el.style.background = 'var(--surface2)';
-    taskBubble.el.querySelector('.qa-drag').style.display = 'none';
-    taskBubble.el.querySelector('.qa-close').style.display = 'none';
-    taskBubble.el.classList.remove('wave');
+    mountInlineQABubble(bubbleContainer, `task:${tag} — ${task.action} ${task.target}`);
   });
+}
+
+// The shared QABubble, mounted inline (not floating) — the task modal and every Reports entry.
+function mountInlineQABubble(bubbleContainer, context) {
+  const inlineBubble = new QABubble(bubbleContainer, {
+    context,
+    position: { x: 0, y: 0 },
+    onQuestion: async (text, ctx, thread) => {
+      const res = await fetch('/api/question', {
+        method: 'POST',
+        body: JSON.stringify({ text, context: ctx, thread, ts: new Date().toISOString(), type: 'question' }),
+        headers: { 'Content-Type': 'application/json' }
+      });
+      const { idx: serverIdx } = await res.json();
+      return { serverIdx };
+    },
+    pollAnswers: async (serverIdx) => {
+      try {
+        const r = await fetch('/api/answers');
+        const answers = await r.json();
+        const matching = answers.filter(a => Number(a.idx) === Number(serverIdx));
+        if (matching.length > 0) return matching[matching.length - 1].answer || matching[matching.length - 1].text;
+      } catch(e) {}
+      return null;
+    },
+  });
+  // Make it inline (not absolute)
+  inlineBubble.el.style.position = 'relative';
+  inlineBubble.el.style.left = '0';
+  inlineBubble.el.style.top = '0';
+  inlineBubble.el.style.maxWidth = '100%';
+  inlineBubble.el.style.border = 'none';
+  inlineBubble.el.style.boxShadow = 'none';
+  inlineBubble.el.style.borderRadius = '6px';
+  inlineBubble.el.style.background = 'var(--surface2)';
+  inlineBubble.el.querySelector('.qa-drag').style.display = 'none';
+  inlineBubble.el.querySelector('.qa-close').style.display = 'none';
+  inlineBubble.el.classList.remove('wave');
 }
 
 function closeTaskModal() {

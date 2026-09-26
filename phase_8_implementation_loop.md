@@ -90,7 +90,7 @@ For each task in `tasks.md`, in order:
 4. Sketch → Confirm → Implement, per ~/.claude/CLAUDE.md sketch loop.
    NO AUTO-IMPLEMENTATION. The sketch gate is mandatory regardless of how
    small or mechanical the task appears.
-5. Run tests (the new tests for this class AND the full suite at milestones)
+5. Run tests (the new tests for this class AND the full suite at each milestone boundary)
 6. Move the task to REVIEW — this emits the review request:
        schematic task status <tag> review --schematic <name>
    Launch the printed prompt as a review-model subagent (Agent tool), then record
@@ -240,7 +240,7 @@ enters this mode on its own — only the user runs that command.
 while `schematic task next` returns a task:
   1. READ the component file (+ _overview.md if a cross-cutting concern is flagged)
   2. implement the task directly — no sketch, no confirm
-  3. run its tests + the full suite at milestones
+  3. run its tests + the full suite at each milestone boundary
   4. per-task review gate, diff-scoped to THIS task only:
        schematic task status <tag> review        → dispatch review-model subagent on the task's diff
        schematic task review-result <tag> clean|findings --summary "..."
@@ -250,6 +250,11 @@ while `schematic task next` returns a task:
 
 The per-task review here is the same gate as manual mode — scoped to that one
 task's diff. Auto mode only removes the sketch step in front of implementation.
+
+**The loop exits at a milestone boundary by construction.** When the bundle declares
+milestones, `schematic task next` serves nothing from milestone n+1 until milestone n is
+signed off — so the `while` condition simply stops being true at the boundary. There is no
+"remember to stop" instruction that can be forgotten. See "Milestone boundary" below.
 
 **Decision ledger (mandatory):** see "Decision ledger (both modes)" above — auto
 mode records every unanswered decision via `schematic task decision <tag> "<what> —
@@ -267,6 +272,49 @@ mode records every unanswered decision via `schematic task decision <tag> "<what
 
 `#1` is the driver loop's per-task gate above. `#2` runs each time a task group
 completes; `#3` and `#4` run once the board is drained.
+
+**Where the layers close when milestones are declared (binding split).** `#1` and `#2` are
+**per-milestone** — `schematic milestone sign-off` refuses unless every task in the stage holds
+a clean per-task verdict AND (in auto mode) a sweep stamped with that milestone recorded
+PRISTINE. `#3` and `#4` stay at **feature end**, unchanged, because both read properties a
+partial diff cannot show: duplication is a cross-file property of the whole change set, and
+entry-point tracing reads the finished system (a stage's entry point may be rewritten by a
+later stage). A milestone sign-off is therefore "this stage is built to standard", never "this
+stage is correct end to end".
+
+In **manual mode** there is no sweep to record — `review sweep` is an auto-mode command — so
+sign-off requires only the per-task verdicts, and the CLI says so on the sign-off line rather
+than implying a sweep happened.
+
+### Milestone boundary (when the last task of a stage completes)
+
+`schematic task next` finds nothing servable, detects that the open milestone is fully
+complete, and does three things in one breath:
+
+1. writes/refreshes that milestone's section of `implementation_report.md` — tasks with their
+   divergence flags, the autonomous decisions recorded against them, each task's review
+   verdict and summary, the sweep result, the suite's last lines (if recorded), and every open
+   `task ask` question belonging to the stage;
+2. prints the section, so the terminal holds the report regardless of the browser;
+3. opens the dashboard on that milestone's Reports entry (fail-closed: the command exits 1 if the
+   dashboard never reports a URL). Set `SCHEMATIC_NO_BROWSER=1` to skip the launch — unattended
+   or CI runs; the report is still written and printed.
+
+Then it stops. **Present the report and STOP** — the user rules on the stage:
+
+```
+schematic milestone report M<n> --schematic <name> [--suite "<suite last lines>"]   # re-read / record suite output
+schematic milestone sign-off M<n> --schematic <name>                               # on the user's y → opens M<n+1>
+```
+
+`--suite` is how the suite's last lines reach the report; without it the section reads
+`not recorded` rather than pretending. Sign-off refuses while any task of the stage is
+incomplete or `pendingInput`, while any task lacks a clean review, while an earlier milestone
+is unsigned, and — in auto mode — until its groups are swept PRISTINE. `schematic phase
+complete 8` refuses while any milestone is unsigned (`--override "<reason>"` records the
+exception). On the Phase-8 lock the CLI opens the dashboard on the finished bundle — non-fatal:
+the lock is already saved, so a dashboard that never starts only prints a warning and the
+`schematic overview <name>` command to run by hand. `SCHEMATIC_NO_BROWSER=1` skips it here too.
 
 ### #2 — per-group standards sweep
 

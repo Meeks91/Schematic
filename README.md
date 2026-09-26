@@ -23,7 +23,7 @@
 | Arm | What you get |
 |---|---|
 | **Plan** | Feature ACs → class topology → per-class contracts + tests → injection DAG → sequence diagram → agent-ready tasks. Boxed cards, dependency grids, interactive diagrams — structure exposes design flaws that prose hides. |
-| **Implement** | Task-by-task execution against the blueprint: CLI-driven kanban, sketch gates (manual) or an autonomous driver loop (auto), drift receipts on every completion. |
+| **Implement** | Task-by-task execution against the blueprint: CLI-driven kanban, sketch gates (manual) or an autonomous driver loop (auto), drift receipts on every completion. Optionally staged into **milestones** — the loop drains the board to the checkpoint, reports, and stops until you sign it off. |
 | **Review** | Continuous automated scrubbing, not one model doing the right thing: phase audits, a diff-scoped review on every task, a batch-until-pristine sweep, a master e2e gate — every verdict recorded in state the agent cannot forge. |
 | **Standards** | Modular slots — architecture, component types, styling per language, testing, review. Point them at skills you already like, or **learn** them from your codebase's exemplars. Greenfield (bring your style) and brownfield (absorb the existing one) with the same mechanism. |
 | **Compress** | Durable knowledge (sequence, decisions, core summary) merges into your repo's arch docs; the planning bundle retires clean. |
@@ -84,6 +84,8 @@ Invoke `/schematic` in Claude Code, or ask to architect a feature end-to-end bef
 
 Phase 8 runs **manual** (sketch → confirm → implement, per task) or **auto** (user-opted autonomous loop with per-task diff reviews, a batch-until-pristine style sweep, and a master-agent correctness gate). Re-sweeps are incremental: files unchanged since their last clean review are skipped, not re-reviewed.
 
+**Milestones (optional).** Phase 7 asks whether the task set ships in stages. On `yes` the agent proposes a `## Milestones` table over the task graph — one row per checkpoint, with what it proves — and one `y` locks it. From then on `task next` serves nothing from the next stage until the current one is signed off, so the auto driver loop exits at the boundary by construction. Hitting one writes a milestone section into `implementation_report.md` (tasks with divergence flags, autonomous decisions, review verdicts, sweep result, suite output, open questions) and opens the dashboard on it (`SCHEMATIC_NO_BROWSER=1` skips the launch for unattended runs). Sign-off additionally requires every task in the stage to hold a clean review and — in auto mode — its groups to be swept PRISTINE. No table = one implicit stage and nothing changes.
+
 **Phase 1 — the objective**, human-readable in two minutes, and **Phase 3 — the feature's footprint**, every file annotated with the AC that necessitated it:
 
 <p>
@@ -114,6 +116,10 @@ Phase 8 runs **manual** (sketch → confirm → implement, per task) or **auto**
 | `phase complete` audit + sign-off | Locking a phase without its quality gate |
 | `task next` auto-claim | Implementation starting without a kanban state change |
 | `task status` legal transitions | Illegal task state jumps |
+| `phase complete 7` milestone decision | Locking the plan without answering whether delivery is staged |
+| `task next` milestone boundary | Work on the next stage starting before you signed the last one off |
+| `milestone sign-off` review + sweep check | Signing a stage off with an unreviewed task, or an unswept group in auto mode |
+| `phase complete 8` unsigned-milestone check | Calling the feature done with a stage you never signed off |
 | `task complete` / `schematic-task-done` review check | Completing a task that never passed review |
 | `schematic-task-done --matched/--updated` | Silent schematic drift — divergence is recorded, always |
 | `schematic validate` | Cross-reference rot (blockers, component files, AC pyramid) |
@@ -127,9 +133,10 @@ Phase 8 runs **manual** (sketch → confirm → implement, per task) or **auto**
 schematic init|status|validate|mermaid            bundle lifecycle + integrity
 schematic phase audit|sign-off|complete           gate state, phases 1-9 (audit: 1,2,4,6,7)
 schematic task next|show|status|note|review-result|complete    task loop
+schematic milestone decide|propose|lock|status|sign-off|report|amend   staged delivery
 schematic review start|sweep|batch-result|e2e|e2e-result|status  phase 8 review
 schematic questions / schematic answer            dashboard Q&A relay
-schematic overview                                browser dashboard
+schematic overview [--fragment <hash>]            browser dashboard (e.g. milestone:M2)
 schematic track init|validate|show                execution traces
 schematic-task-done <tag> --matched y|n --updated y|n   completion + drift report
 ```
@@ -153,7 +160,7 @@ Resolution order: repo `.schematic/standards.json` (else `.claude/standards.json
 
 ## Visual tools
 
-**Overview dashboard** — `schematic overview` renders the full bundle (objective, components, DAG, sequence, tasks, traces) in one browser view.
+**Overview dashboard** — `schematic overview` renders the full bundle (objective, components, DAG, sequence, tasks, traces) in one browser view. The **Reports** tab carries one entry per milestone report, the final report, and the schematic's status (phase, gate state, current milestone); the kanban tags each card with its milestone and can be grouped by one. When a milestone is hit — and when Phase 8 locks — the CLI opens this dashboard for you.
 
 **Live Mermaid editor** — round-trips any `.mmd` on disk with live preview, zoom/pan, notes, and per-node IDE jump. Ctrl+S saves; **Save & Close** ends the session and hands the file back to the agent. Handles very large diagrams. *(Pictured at the top.)*
 
@@ -210,6 +217,9 @@ schematic/
 
 ## Tests
 
+Stdlib only — no pytest required:
+
 ```bash
-python3 -m pytest scripts/test_schematic.py scripts/test_schematic_task_done.py -v
+python3 -m unittest discover -s scripts -p "test_schematic*.py"
+python3 -m unittest discover -s scripts -p "test_python_compat.py"
 ```

@@ -2,6 +2,8 @@
 
 > **CLI gate commands:**
 > - `schematic phase audit --schematic <name> 7 "clean" | "<findings>"` — after end-to-end audit returns.
+> - `schematic milestone decide yes|no --schematic <name>` — the milestone question, asked immediately after the task-graph `y`. **`phase complete 7` REFUSES until this is recorded.**
+> - `schematic milestone propose --schematic <name>` → `schematic milestone lock --schematic <name>` — on `yes` only: validate the proposed table, then lock it on the user's `y`.
 > - `schematic phase sign-off --schematic <name> 7` — on user `y`.
 > - `schematic phase complete --schematic <name> 7` — immediately after sign-off.
 > - `schematic task show|status|complete|next` — drive the Phase 8 implementation loop (see `phase_8_implementation_loop.md`).
@@ -52,6 +54,49 @@ Present the full graph for sign-off **before** writing any detailed blocks. The 
 
 **Detailed task blocks are auto-written (no per-gate sign-off).** On the graph `y`, write the graph as the header of `tasks.md` and then write ALL detailed task blocks in one pass. Rationale: every Feature AC, Class AC, Function AC, contract, dependency, and test was already gathered and signed off in Phases 1–6 — the detailed block is a pure mechanical projection of the locked `components/<class>.md` cards onto the task skeleton. Re-gating it at ≤3/gate re-litigates already-approved content and adds no decision. The graph (deps, ordering, ship-lines) is where the user's judgement is needed; the blocks are derivation. After writing all blocks, run the end-to-end audit and present the whole `tasks.md` for the single Phase-7 content lock.
 
+## Milestones (BINDING step — asked immediately after the graph `y`)
+
+The graph `y` is the moment the user can see the whole shape of the build. Ask, in one line, before any detailed block is written:
+
+> **Question:** Split this task set into a multi-stage delivery using milestones?
+> **Why:** a milestone stops the build at a checkpoint you sign off, instead of running to the end in one pass.
+
+Record the answer through the CLI — it is the state of record, and `schematic phase complete 7` refuses without it:
+
+```
+schematic milestone decide yes|no --schematic <name>
+```
+
+**`no`** — delivery is exactly as it has always been: one implicit milestone, no boundary, no gate. Nothing else in the bundle changes. Proceed to the audit hook.
+
+**`yes`** — propose milestones over the graph's **groups** (never over individual tasks unless one must be pulled forward) as a `## Milestones` table written into `tasks.md` directly beneath the task graph:
+
+```markdown
+## Milestones
+
+| Milestone | Title | Scope | Proves |
+|---|---|---|---|
+| M1 | Resolver reachable | a, b | A caption-miss returns provider text through the real client. |
+| M2 | Recovery wired and persisted | c, d | An ingestion run stores a recovered transcript with its source. |
+| M3 | Composition and live probe | e, f | Every root builds; the paid probe returns text. |
+```
+
+- **Ids** run `M1, M2, …` in table order; the order IS the delivery order.
+- **Scope** takes group letters (`a`) and/or explicit task tags (`c.1`). An explicit tag beats a group letter that would also claim the task — that is how one task gets pulled into an earlier stage without splitting its group.
+- **Proves** is the whole point of the row: what the user can *see working* when that stage lands. A milestone that proves nothing observable is a milestone in name only — fold it into its neighbour.
+- Every task must belong to **exactly one** milestone, and no task may depend on a task in a **later** one. Both rules are mechanical: before lock, `schematic milestone propose` (and `lock`) refuses, printing the offending tags — `schematic validate` does NOT check a table until it is locked; after lock, `schematic validate` keeps failing for as long as the table is wrong.
+- The section holds the table and nothing else — footnotes go under the graph.
+
+Then gate it, in this order:
+
+```
+schematic milestone propose --schematic <name>   # prints the RESOLVED membership: which tasks each stage claims
+                                                 # present that output — the user gates on membership, not on prose
+schematic milestone lock --schematic <name>      # on the user's y
+```
+
+**Post-lock re-scope is an amendment, never a hand-edit:** `schematic milestone amend --schematic <name> --move <tags> --to M<n> --reason "<why>"` (or `--add M<n> --title … --scope … --proves …`). It rewrites the table, expanding a group letter into its remaining tags when one leaves, and records the delta in state.
+
 ## Detailed task block shape (BINDING)
 
 Every detail block under `## Detailed Task Blocks` MUST use this skeleton:
@@ -76,7 +121,7 @@ Blocked by: <tag>, <tag>   (or "—" if none)
 - **`Status: pending`** is mandatory — the CLI flips it to `complete` and refuses to operate on blocks missing it.
 - **`Component file:`** (CLI key, bare — not `**Contract:**`) gives the agent its contract card and is existence-checked by `schematic validate`. OMIT the line for tasks with no card (migrations, deletions, composition root, smoke test) — a dangling path fails validate.
 - **`Blocked by:`** (CLI key, bare) drives `schematic task next` ordering; list the dependency tags or `—`. Must mirror the graph's Deps column exactly. Tags here that aren't real task tags fail validate.
-- These three bare keys (`Component file:`, `Blocked by:`, `Status:`) are the only CLI-parsed lines; everything else (`**Feature ACs:**`, `**Class AC:**`, `**Scope:**`, `**Test files (NEW):**`) is human context the CLI ignores.
+- These three bare keys (`Component file:`, `Blocked by:`, `Status:`) are the only CLI-parsed lines an author writes; everything else (`**Feature ACs:**`, `**Class AC:**`, `**Scope:**`, `**Test files (NEW):**`) is human context the CLI ignores. A fourth bare key, `Divergence:`, is written by `schematic-task-done` on completion and read back into the milestone report — never author it by hand.
 
 ## Audit hook (mandatory — at end of Phase 7, after all task gates locked)
 

@@ -187,7 +187,7 @@ class OverviewHandler(BaseHTTPRequestHandler):
         d = self.schematic_dir
         manifest: dict = {"name": d.name, "files": {}, "components": [], "diagrams": [], "research": [], "trace": None}
 
-        for md_file in ["objective.md", "tasks.md"]:
+        for md_file in ["objective.md", "tasks.md", "implementation_report.md"]:
             p = d / md_file
             if p.exists():
                 manifest["files"][md_file] = True
@@ -282,7 +282,7 @@ class OverviewHandler(BaseHTTPRequestHandler):
         del format, args
 
 
-def launch_overview(schematic_dir: Path) -> None:
+def launch_overview(schematic_dir: Path, fragment: str) -> None:
     # Set project root from schematic location so IDE paths resolve correctly
     search = schematic_dir.resolve()
     while search != search.parent:
@@ -294,14 +294,15 @@ def launch_overview(schematic_dir: Path) -> None:
     OverviewHandler.schematic_dir = schematic_dir
     server = ThreadingHTTPServer(("127.0.0.1", 0), OverviewHandler)
     url = f"http://127.0.0.1:{server.server_address[1]}/"
+    opened_url = f"{url}#{fragment}" if fragment else url
 
-    print(f"Schematic overview: {url}")
+    print(f"Schematic overview: {url}", flush=True)
     print(f"Schematic: {schematic_dir.name}")
     print("Dashboard questions route to the session agent —")
     print("  list:   schematic questions")
     print("  reply:  schematic answer <id> \"<text>\"   (bubble updates live)")
     print("Press Ctrl+C to stop")
-    webbrowser.open(url)
+    webbrowser.open(opened_url)
 
     # Watch for questions and answer via claude CLI
     questions_path = schematic_dir / "overview.questions.json"

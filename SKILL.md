@@ -19,10 +19,13 @@ description: Multi-phase feature planning skill. Grills the user to produce a fe
 > schematic init|status|validate|mermaid          # bundle lifecycle + integrity
 > schematic phase audit|sign-off|complete         # gate state per phase 1-9 (audit: 1,2,4,6,7 only)
 > schematic task next|show|status|note|ask|decision|review-result|complete  # phase 8 task loop
+> schematic milestone decide|propose|lock|status|sign-off|report|amend  # staged delivery: P7 decision, P8 boundary
 > schematic review start|sweep|batch-result|e2e|e2e-result|status  # phase 8 review
 > schematic questions / schematic answer          # Q&A relay: dashboard, editor, AND `task ask`
 > schematic overview / schematic track            # dashboard + execution traces
 > ```
+>
+> **Milestones are CLI-gated, not remembered:** `phase complete 7` REFUSES until `milestone decide yes|no` is recorded, `task next` serves nothing past an unsigned boundary, and `phase complete 8` refuses while any milestone is unsigned. See `phase_7_tasks.md` → "Milestones" and `phase_8_implementation_loop.md` → "Milestone boundary".
 >
 > **Edit any `.mmd` visually (on request, any phase):** launch the bundled live-preview editor — `python3 <skill_dir>/reference/mermaid_edit/bridge.py <path-to.mmd>` (backgrounded; blocks until the user clicks Save & Close, then re-read the file — Ctrl+S in the editor saves without closing). Handles very large diagrams. See `phase_6_sequence.md` → "Visual round-trip editor".
 >
@@ -128,7 +131,7 @@ docs/schematics/<feature_name>/
 | 4 end: Traceability matrix | `components/_overview.md` |
 | 5: DAG + App Integration | `dag.mmd` + `components/_overview.md` |
 | 6: Sequence diagram | `sequence.mmd` + `components/_overview.md` (ASCII) |
-| 7: Tasks | `tasks.md` |
+| 7: Tasks | `tasks.md` (task graph + detailed blocks, plus the optional `## Milestones` table) |
 | 8: Implementation loop | `implementation_report.md` (created at phase start, updated as gates/reviews/amendments land; link it from the top of `objective.md` so it is reachable from the dashboard) |
 | 9: Compression | Writes to `<archDocsPath>/<feature>.md` + sequence; deletes schematic dir per config |
 
@@ -539,6 +542,13 @@ Feature AC → Class AC → Function AC → AC Test
 ```markdown
 # Tasks
 
+## Milestones                                        [Phase 7 — OPTIONAL]
+
+| Milestone | Title | Scope | Proves |
+|---|---|---|---|
+| M1 | <title> | a, b | <what shipping this stage demonstrates> |
+| M2 | <title> | c, d.3 | <…> |
+
 ## <tag> | <Action> | <Target>
 Status: pending | in_progress | pendingInput | review | complete
 
@@ -553,6 +563,8 @@ Test hierarchy:
   Branch Tests (secondary):
     - <test name>
 ```
+
+**`## Milestones` (optional, Phase 7).** Four columns, ids running `M1, M2, …` in table order. `Scope` holds group letters (`a`) and/or explicit task tags (`c.1`), comma-separated — an explicit tag beats a group letter that would also claim the task. The section holds **the table and nothing else** (`schematic milestone amend` regenerates it). Every task must land in exactly one milestone and no task may depend on a task in a later one — before lock `schematic milestone propose` (and `lock`) refuses otherwise; `schematic validate` enforces the same rules only AFTER lock. Omit the section entirely to deliver as one stage.
 
 ---
 
@@ -590,6 +602,10 @@ When a design change occurs mid-session (user feedback, discovered constraint, r
 ├─────────────────────────────────┼──────────────────────────────────────────────────┤
 │ Model fields changed            │ components/<class>.md (models section)            │
 │                                 │ (no cascade unless signature changes)            │
+├─────────────────────────────────┼──────────────────────────────────────────────────┤
+│ Milestone scope changed         │ tasks.md (## Milestones table) — via the CLI:    │
+│ (mid-build re-scope)            │ schematic milestone amend --move/--add --reason  │
+│                                 │ (never hand-edit the table after lock)           │
 └─────────────────────────────────┴──────────────────────────────────────────────────┘
 ```
 

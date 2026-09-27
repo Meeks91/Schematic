@@ -7,6 +7,7 @@ per the matched/updated matrix, exit codes correct on error paths.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -504,6 +505,11 @@ class TestSchematicTaskDoneStdout:
 
 _STATE_REVIEW_PENDING = '{"phases": {}, "tasks": {"b.6": {"review_request": {"tag": "b.6", "status": "pending"}}}, "overrides": []}'
 _STATE_REVIEW_CLEAN = '{"phases": {}, "tasks": {"b.6": {"review_request": {"tag": "b.6", "status": "clean"}}}, "overrides": []}'
+_STATE_REVIEW_CLEAN_WITH_QUESTION = (
+    '{"phases": {}, "tasks": {"b.6": {"review_request": {"tag": "b.6", "status": "clean"},'
+    ' "questions": [{"idx": 3, "text": "which key?"}]}}, "overrides": []}'
+)
+_ANSWER_TO_QUESTION_THREE = '[{"idx": 3, "text": "the pepper"}]'
 
 
 def _write_state_file(tmp_path: Path, content: str) -> Path:
@@ -601,6 +607,37 @@ class TestSchematicTaskDoneReviewGate:
         assert result.returncode == 0
         assert "✓ Task b.6 marked complete" in result.stdout
 
+    def test_marks_the_task_complete_in_the_state_file_too(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # Given
+        tasks_file = _write_tasks_file(
+            tmp_path=tmp_path,
+            content=_TASKS_FIXTURE_TWO_TASKS,
+        )
+        state_file = _write_state_file(
+            tmp_path=tmp_path,
+            content=_STATE_REVIEW_CLEAN,
+        )
+
+        # When
+        result = _run_cli(
+            args=[
+                "b.6",
+                "--matched", "y",
+                "--updated", "y",
+                "--tasks-file", str(tasks_file),
+            ],
+        )
+
+        # Then — the state file carries the same status as tasks.md, review verdict untouched
+        assert result.returncode == 0
+        assert json.loads(state_file.read_text())["tasks"]["b.6"] == {
+            "review_request": {"tag": "b.6", "status": "clean"},
+            "status": "complete",
+        }
+
     def test_force_bypasses_review_gate(
         self,
         tmp_path: Path,
@@ -610,7 +647,7 @@ class TestSchematicTaskDoneReviewGate:
             tmp_path=tmp_path,
             content=_TASKS_FIXTURE_TWO_TASKS,
         )
-        _write_state_file(
+        state_file = _write_state_file(
             tmp_path=tmp_path,
             content=_STATE_REVIEW_PENDING,
         )
@@ -626,8 +663,12 @@ class TestSchematicTaskDoneReviewGate:
             ],
         )
 
-        # Then
+        # Then — completes, and the state file says so beside the untouched pending verdict
         assert result.returncode == 0
+        assert json.loads(state_file.read_text())["tasks"]["b.6"] == {
+            "review_request": {"tag": "b.6", "status": "pending"},
+            "status": "complete",
+        }
 
     def test_passes_when_no_state_file_exists(
         self,
@@ -651,3 +692,66 @@ class TestSchematicTaskDoneReviewGate:
 
         # Then
         assert result.returncode == 0
+        assert not (tmp_path / ".schematic-state.json").exists()
+
+
+class TestSchematicTaskDoneQuestionGate:
+
+    def test_exits_7_when_a_filed_question_is_unanswered_even_with_force(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # Given
+        tasks_file = _write_tasks_file(
+            tmp_path=tmp_path,
+            content=_TASKS_FIXTURE_TWO_TASKS,
+        )
+        _write_state_file(
+            tmp_path=tmp_path,
+            content=_STATE_REVIEW_CLEAN_WITH_QUESTION,
+        )
+
+        # When
+        result = _run_cli(
+            args=[
+                "b.6",
+                "--matched", "y",
+                "--updated", "y",
+                "--tasks-file", str(tasks_file),
+                "--force",
+            ],
+        )
+
+        # Then — refused, and tasks.md untouched
+        assert result.returncode == 7
+        assert "tasks#3" in result.stderr
+        assert tasks_file.read_text() == _TASKS_FIXTURE_TWO_TASKS
+
+    def test_completes_once_the_filed_question_is_answered(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # Given
+        tasks_file = _write_tasks_file(
+            tmp_path=tmp_path,
+            content=_TASKS_FIXTURE_TWO_TASKS,
+        )
+        _write_state_file(
+            tmp_path=tmp_path,
+            content=_STATE_REVIEW_CLEAN_WITH_QUESTION,
+        )
+        (tmp_path / "tasks.answers.json").write_text(_ANSWER_TO_QUESTION_THREE)
+
+        # When
+        result = _run_cli(
+            args=[
+                "b.6",
+                "--matched", "y",
+                "--updated", "y",
+                "--tasks-file", str(tasks_file),
+            ],
+        )
+
+        # Then
+        assert result.returncode == 0
+        assert "✓ Task b.6 marked complete" in result.stdout

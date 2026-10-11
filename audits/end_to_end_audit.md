@@ -5,7 +5,7 @@ Final quality gate. Walk the entire schematic bundle and verify everything cross
 ## Files to read
 
 - `<schematic_dir>/objective.md` (Phase 1 + directory structure)
-- `<schematic_dir>/components/_overview.md` (Component Summary, traceability matrix, DAG, sequence)
+- `<schematic_dir>/components/_overview.md` (Component Summary, AC coverage tally, DAG, sequence)
 - `<schematic_dir>/components/*.md` (every class contract)
 - `<schematic_dir>/dag.mmd`
 - `<schematic_dir>/sequence.mmd`
@@ -17,7 +17,7 @@ Final quality gate. Walk the entire schematic bundle and verify everything cross
 - **Every Feature AC** in `objective.md` §1 has ≥1 Class AC referencing it.
 - **Every Class AC** has ≥1 Function AC traceable to it.
 - **Every Function AC** has ≥1 AC Test.
-- Cross-check against the traceability matrix in `_overview.md`.
+- Run `schematic validate <name>` — it fails on any Feature AC no card test cites and any card whose tests cite no Feature AC.
 - Flag any orphan ACs at any level.
 
 ### 2. Topology integrity

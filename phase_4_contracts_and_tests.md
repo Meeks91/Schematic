@@ -7,7 +7,7 @@
 
 The goal of this phase is to define **what each method must achieve** — producing Function ACs, models, and the tests that prove them.
 
-Writes to `<schematic_dir>/components/<class>.md` (one per class) and, at phase-end, `<schematic_dir>/components/_overview.md` (AC Traceability Matrix).
+Writes to `<schematic_dir>/components/<class>.md` (one per class) and, at phase-end, the tally line in `<schematic_dir>/components/_overview.md` §AC Coverage.
 
 ## Per-class lock order (single atomic gate per class, do NOT split)
 
@@ -51,7 +51,7 @@ Fixed order:
 8. **Failure modes** — *(mandatory, every class)* a bold heading `**Failure modes**` then, per method, one line naming what it **raises**, what it **propagates**, and what it **converts**. This is the loud-failure behaviour Phase 2 defers here; a method that cannot fail states `never fails` explicitly. Never omitted.
 9. **Models / Config** — *(only if any)* a table per shape, with the model/file named above it: `Field | Type | Note` (models) or `Key | Value | Note` (config).
 10. **Errors** — *(only if the class raises domain errors)* table: `Code | Meaning`.
-11. **Tests** — ALWAYS two tables (never an inline `·`-separated list): **Feature tests** then **Branch tests**, each with columns `Test | Proves`. If a behaviour is already covered by an existing unchanged test, do NOT repeat it — note the coverage in one line.
+11. **Tests** — ALWAYS two tables (never an inline `·`-separated list): **Feature tests** then **Branch tests**, each with columns `Test | Proves`. `Proves` names the Feature AC(s) the test covers (`1.A — …`); `schematic validate` reads these refs for the coverage check. If a behaviour is already covered by an existing unchanged test, do NOT repeat it — note the coverage in one line.
 
 Rules:
 - **Separator between cards (when a gate shows >1 card):** put a long red rule between consecutive cards — a `diff` fenced block containing a single `-`-prefixed line of ~95 dashes (renderers colour `-` lines red, giving a strong section break). NOT a bare `---` (too short, renders grey). Example:
@@ -96,13 +96,13 @@ Rules:
 Feature tests
 | Test | Proves |
 |---|---|
-| `test_complete_promotes_user_to_default_registered_tier` | promotion happens |
-| `test_complete_rolls_back_promotion_when_settings_insert_fails` | atomicity |
+| `test_complete_promotes_user_to_default_registered_tier` | 1.A — promotion happens |
+| `test_complete_rolls_back_promotion_when_settings_insert_fails` | 1.B — atomicity |
 
 Branch tests
 | Test | Proves |
 |---|---|
-| `test_complete_reads_registered_tier_from_options_provider` | config-driven tier |
+| `test_complete_reads_registered_tier_from_options_provider` | 1.A — config-driven tier |
 ```
 
 **Function AC examples (content):** see `reference/good_bad_function_ac.md`.
@@ -131,38 +131,27 @@ meaningfully fail?"* If no — it belongs in the collaborator's card.
 
 ---
 
-## Phase 4 End: AC Traceability Check
+## Phase 4 End: AC Coverage Check
 
-After all class contracts are locked, produce the traceability matrix (proving the AC pyramid from
-`SKILL.md` is complete). Write to `components/_overview.md`.
+Each card already links its tests to Feature ACs through the `Proves` column, so the coverage
+links live in the cards and nowhere else — no matrix is written. After all class contracts are
+locked, run:
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-AC TRACEABILITY MATRIX
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Feature AC-1: <title>  (objective.md)
-  └── Class AC: <ClassName> — <responsibility>  (components/_overview.md component summary)
-       └── Behaviour: <method> — <title>  (components/<class>.md)
-            └── test_<name>  (components/<class>.md)
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-VALIDATION
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-- Every Feature AC covered: ✓ / ✗
-- Every Class AC traces to ≥1 behaviour: ✓ / ✗
-- Every behaviour has a Feature test: ✓ / ✗
-- Orphan check (components with no Feature AC): <list or "none">
-- Tally: N Feature ACs, M Class ACs, P behaviours, Q Feature tests, R Branch tests
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+schematic validate <name>
 ```
 
-This references by section/card only — it does NOT restate test names or contract details.
+It fails on any Feature AC in `objective.md` that no card test cites, and on any card whose tests
+cite no Feature AC. Fix the cards (or the ACs) until it is clean, then write the one tally line to
+`components/_overview.md` §AC Coverage:
 
-### Audit hook (mandatory — fires once, after traceability matrix is written)
+```
+Tally: N Feature ACs · M cards · P Feature tests · R Branch tests
+```
 
-Earlier sub-gates (each ≤3-class batch) do NOT trigger an audit. This fires once when all contract cards are content-signed-off and the traceability matrix is written.
+### Audit hook (mandatory — fires once, after the coverage check is clean)
+
+Earlier sub-gates (each ≤3-class batch) do NOT trigger an audit. This fires once when all contract cards are content-signed-off and `schematic validate` reports no AC coverage findings.
 
 1. Dispatch `audits/contract_audit.md` per `audits/README.md`. Wait for it to return.
 2. Surface findings above the sigil.

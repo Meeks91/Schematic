@@ -93,7 +93,7 @@ docs/schematics/<feature_name>/
 │       ├── <trace-name>/           ← per-flow execution trace (trace.json, trace.mmd, trace.paths.json, trace.md)
 │       └── _index.json             ← registry of all traces
 ├── components/
-│   ├── _overview.md                ← cross-cutting: DAG edge inventory, sequence (ASCII), traceability matrix, app integration
+│   ├── _overview.md                ← cross-cutting: DAG edge inventory, sequence (ASCII), AC coverage tally, app integration
 │   ├── effects_linker.md           ← self-contained: Class AC, contract, models, Function ACs, AC tests, branch tests
 │   ├── conviction_resolver.md
 │   └── ...
@@ -112,7 +112,7 @@ docs/schematics/<feature_name>/
 | `research/<name>.md` | Investigation artifacts — field mappings, schema comparisons, gap analysis | Human — "what we learned" |
 | `research/traces/<name>/` | End-to-end flow trace through existing code (see `track_subskill.md`) | Human + Agent — "how the existing system works" |
 | `components/<class>.md` | Full contract per class — self-contained, no cross-file dependency needed | Human + Agent — "how, exactly" |
-| `components/_overview.md` | Component summary table + cross-cutting views: DAG text, sequence ASCII, traceability matrix, integration | Human + Agent — "how it all wires together" |
+| `components/_overview.md` | Component summary table + cross-cutting views: DAG text, sequence ASCII, AC coverage tally, integration | Human + Agent — "how it all wires together" |
 | `tasks.md` | One task per class, references component files by name | Agent — "do this" |
 | `dag.mmd` | Mermaid injection DAG (authoritative when >8 nodes) | Visual tool rendering |
 | `sequence.mmd` | Mermaid sequence diagram | Visual tool rendering |
@@ -128,7 +128,7 @@ docs/schematics/<feature_name>/
 | 2: Topology (class summary + Class ACs) | `components/_overview.md` (summary table) |
 | 3: Directory structure | `objective.md` |
 | 4: Contracts, models, Function ACs, tests | `components/<class>.md` (one per class) |
-| 4 end: Traceability matrix | `components/_overview.md` |
+| 4 end: AC coverage tally | `components/_overview.md` |
 | 5: DAG + App Integration | `dag.mmd` + `components/_overview.md` |
 | 6: Sequence diagram | `sequence.mmd` + `components/_overview.md` (ASCII) |
 | 7: Tasks | `tasks.md` (task graph + detailed blocks, plus the optional `## Milestones` table) |
@@ -148,7 +148,7 @@ Feature AC   (Phase 1 — grill)      → "what must the feature achieve?"
             └── AC Test   (Phase 4 — tests)     → "proof that the method delivers"
 ```
 
-The traceability check at end of Phase 4 validates this pyramid is complete — every Feature AC is covered by Class ACs, every Class AC by Function ACs, every Function AC by an AC Test. Nothing orphaned, nothing assumed.
+Each card's tests cite the Feature ACs they prove in their `Proves` column — that is the only place the link is written. `schematic validate` checks it mechanically at end of Phase 4: every Feature AC is cited by ≥1 card test, and every card's tests cite ≥1 Feature AC. Nothing orphaned, nothing assumed.
 
 ---
 
@@ -178,7 +178,7 @@ The traceability check at end of Phase 4 validates this pyramid is complete — 
 | 1: Feature Spec + Feature ACs | `phase_1_objective_and_acs.md` |
 | 2: Topology (class responsibilities = Class ACs) | `phase_2_topology.md` |
 | 3: Directory Structure | `phase_3_directory.md` |
-| 4: Contracts + Models + Function ACs + Tests + Traceability | `phase_4_contracts_and_tests.md` |
+| 4: Contracts + Models + Function ACs + Tests + AC coverage check | `phase_4_contracts_and_tests.md` |
 | 5: Injection DAG + App Integration | `phase_5_injection_dag.md` |
 | 6: Sequence Diagram | `phase_6_sequence.md` |
 | 7: Tasks | `phase_7_tasks.md` |
@@ -532,9 +532,9 @@ Integration type, wiring location, downstream call chain (ASCII)
 ASCII inline (full call flow)
 > Mermaid: ../sequence.mmd
 
-## AC Traceability Matrix                             [Phase 4 end]
-Feature AC → Class AC → Function AC → AC Test
-(references by file/section, no restating)
+## AC Coverage                                       [Phase 4 end]
+Tally: N Feature ACs · M cards · P Feature tests · R Branch tests
+(the AC → test links live in each card's Proves column; `schematic validate` checks them)
 ```
 
 ### tasks.md
@@ -578,12 +578,13 @@ When a design change occurs mid-session (user feedback, discovered constraint, r
 ├─────────────────────────────────┼──────────────────────────────────────────────────┤
 │ Feature AC added/modified       │ objective.md (Feature AC list)                   │
 │                                 │ components/<affected>.md (if Function ACs shift) │
-│                                 │ components/_overview.md (traceability matrix)    │
+│                                 │ components/<card>.md (Proves column AC refs)      │
+│                                 │ components/_overview.md (AC coverage tally)      │
 │                                 │ tasks.md (Feature AC refs on affected tasks)     │
 ├─────────────────────────────────┼──────────────────────────────────────────────────┤
 │ Class added/removed/renamed     │ _overview.md (summary table); objective.md (dir) │
 │                                 │ components/<class>.md (create/delete/rename)      │
-│                                 │ components/_overview.md (DAG, sequence, matrix)  │
+│                                 │ components/_overview.md (DAG, sequence, tally)   │
 │                                 │ tasks.md (add/remove/rename task)                │
 │                                 │ dag.mmd (node added/removed)                     │
 │                                 │ sequence.mmd (participant added/removed)         │
@@ -597,7 +598,7 @@ When a design change occurs mid-session (user feedback, discovered constraint, r
 │                                 │ dag.mmd (edge added/removed)                     │
 ├─────────────────────────────────┼──────────────────────────────────────────────────┤
 │ Test added/removed              │ components/<class>.md (test list)                 │
-│                                 │ components/_overview.md (traceability tally)     │
+│                                 │ components/_overview.md (AC coverage tally)      │
 │                                 │ tasks.md (test hierarchy on affected task)       │
 ├─────────────────────────────────┼──────────────────────────────────────────────────┤
 │ Model fields changed            │ components/<class>.md (models section)            │

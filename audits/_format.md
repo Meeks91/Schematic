@@ -34,7 +34,7 @@ Before emitting any line, ask the two questions in the column header for that se
 
 **Examples by severity:**
 - **BLOCKER:** AC pyramid orphan, naming mismatch between files, swallowed exception, missing failure-mode propagation, contract self-contradiction.
-- **NIT:** missing exception type in a failure mode, count drift between matrix and components, stale section header text.
+- **NIT:** missing exception type in a failure mode, count drift between the AC coverage tally and components, stale section header text.
 - **OBSERVATION:** "production codebase already has X — consider reusing instead of creating Y." Not: phrasing nits, restated-what-we-already-know observations.
 
 **OBSERVATION suppression rule (strict):** If the finding would not change a downstream decision — if the user's response would be "noted, no action" — DROP IT. Borderline test-name clarity nits, stylistic phrasing concerns, and "this could be reworded" notes are NOT OBSERVATIONs. They are noise. Either escalate to NIT with a concrete fix, or omit entirely.

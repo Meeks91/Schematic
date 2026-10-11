@@ -805,6 +805,209 @@ class TestValidate(unittest.TestCase):
 # Fixtures
 
 
+# Fixtures:
+_FOUNDATION_CARD = "foundation_service.md"
+_ENRICHMENT_CARD = "reel_enrichment_service.md"
+_ANOTHER_CARD = "another_service.md"
+_ROSTER_FILE = "_roster.md"
+_COVERAGE_FINDING_SUFFIX = "in its Proves column"
+_UNCITED_1B_FINDING = "objective.md 1.B — no card test cites this Feature AC in its Proves column"
+_ANOTHER_CARD_WITHOUT_AC_FINDING = (
+    "components/another_service.md — no test in this card cites a Feature AC in its Proves column"
+)
+
+
+def _gen_objective_text(feature_ac_rows: list[str]) -> str:
+    """A Functional ACs table holding one row per Feature AC tag (repeats allowed)."""
+    ac_rows = "".join(f"| {feature_ac} | title | what | why |\n" for feature_ac in feature_ac_rows)
+    return f"# objective\n\n## Functional ACs\n\n| AC | Title | What | Why |\n|---|---|---|---|\n{ac_rows}"
+
+
+def _gen_card_text(proves_cells: list[str]) -> str:
+    """A contract card whose Feature tests table has one test per Proves cell."""
+    test_rows = "".join(
+        f"| `test_case_{position}` | {proves_cell} |\n"
+        for position, proves_cell in enumerate(proves_cells)
+    )
+    return f"## Contract\n\nFeature tests\n| Test | Proves |\n|---|---|\n{test_rows}"
+
+
+def _gen_coverage_schematic_dir(
+    tmp: str,
+    feature_ac_rows: list[str],
+    card_name_to_text: dict[str, str],
+) -> Path:
+    schematic_dir = _make_schematic_dir(tmp)
+    (schematic_dir / "objective.md").write_text(_gen_objective_text(feature_ac_rows=feature_ac_rows))
+    for card_name, card_text in card_name_to_text.items():
+        (schematic_dir / "components" / card_name).write_text(card_text)
+    return schematic_dir
+
+
+def _coverage_findings_of(schematic_dir: Path) -> list[str]:
+    return [
+        finding
+        for finding in _cli._validate_schematic(schematic_dir)
+        if finding.endswith(_COVERAGE_FINDING_SUFFIX)
+    ]
+# Fixtures
+
+
+class TestValidateAcCoverage(unittest.TestCase):
+
+    def test_validate_flags_a_feature_ac_no_card_test_cites(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            schematic_dir = _gen_coverage_schematic_dir(
+                tmp=tmp,
+                feature_ac_rows=["1.A", "1.B"],
+                card_name_to_text={
+                    _FOUNDATION_CARD: _gen_card_text(proves_cells=["1.A — happy path"]),
+                    _ENRICHMENT_CARD: _gen_card_text(proves_cells=["1.A — enriches"]),
+                    _ANOTHER_CARD: _gen_card_text(proves_cells=["1.A — wiring"]),
+                },
+            )
+
+            # When
+            coverage_findings = _coverage_findings_of(schematic_dir=schematic_dir)
+
+            # Then
+            self.assertEqual(coverage_findings, [_UNCITED_1B_FINDING])
+
+    def test_validate_flags_a_card_whose_tests_cite_no_feature_ac(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            schematic_dir = _gen_coverage_schematic_dir(
+                tmp=tmp,
+                feature_ac_rows=["1.A"],
+                card_name_to_text={
+                    _FOUNDATION_CARD: _gen_card_text(proves_cells=["1.A — happy path"]),
+                    _ENRICHMENT_CARD: _gen_card_text(proves_cells=["1.A — enriches"]),
+                    _ANOTHER_CARD: _gen_card_text(proves_cells=["keyset order"]),
+                },
+            )
+
+            # When
+            coverage_findings = _coverage_findings_of(schematic_dir=schematic_dir)
+
+            # Then
+            self.assertEqual(coverage_findings, [_ANOTHER_CARD_WITHOUT_AC_FINDING])
+
+    def test_validate_flags_a_card_with_no_test_table_once_another_card_has_tests(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            schematic_dir = _gen_coverage_schematic_dir(
+                tmp=tmp,
+                feature_ac_rows=["1.A"],
+                card_name_to_text={
+                    _FOUNDATION_CARD: _gen_card_text(proves_cells=["1.A — happy path"]),
+                    _ENRICHMENT_CARD: _gen_card_text(proves_cells=["1.A — enriches"]),
+                    _ANOTHER_CARD: "## Contract\ncontent\n",
+                },
+            )
+
+            # When
+            coverage_findings = _coverage_findings_of(schematic_dir=schematic_dir)
+
+            # Then
+            self.assertEqual(coverage_findings, [_ANOTHER_CARD_WITHOUT_AC_FINDING])
+
+    def test_validate_reports_no_coverage_findings_when_every_ac_and_card_is_cited(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            schematic_dir = _gen_coverage_schematic_dir(
+                tmp=tmp,
+                feature_ac_rows=["1.A", "1.B"],
+                card_name_to_text={
+                    _FOUNDATION_CARD: _gen_card_text(proves_cells=["1.A — happy path"]),
+                    _ENRICHMENT_CARD: _gen_card_text(proves_cells=["1.B — enriches"]),
+                    _ANOTHER_CARD: _gen_card_text(proves_cells=["1.A, 1.B — wiring"]),
+                },
+            )
+
+            # When
+            coverage_findings = _coverage_findings_of(schematic_dir=schematic_dir)
+
+            # Then
+            self.assertEqual(coverage_findings, [])
+
+    def test_validate_skips_the_coverage_check_before_any_card_has_tests(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            schematic_dir = _gen_coverage_schematic_dir(
+                tmp=tmp,
+                feature_ac_rows=["1.A"],
+                card_name_to_text={},
+            )
+
+            # When
+            coverage_findings = _coverage_findings_of(schematic_dir=schematic_dir)
+
+            # Then
+            self.assertEqual(coverage_findings, [])
+
+    def test_validate_ignores_ac_refs_outside_the_proves_column(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            behaviour_row_citing_1b = (
+                "| Name | Behaviour |\n|---|---|\n| `enrich` | covers 1.B |\n\n"
+            )
+            schematic_dir = _gen_coverage_schematic_dir(
+                tmp=tmp,
+                feature_ac_rows=["1.A", "1.B"],
+                card_name_to_text={
+                    _FOUNDATION_CARD: _gen_card_text(proves_cells=["1.A — happy path"]),
+                    _ENRICHMENT_CARD: behaviour_row_citing_1b + _gen_card_text(proves_cells=["1.A — enriches"]),
+                    _ANOTHER_CARD: _gen_card_text(proves_cells=["1.A — wiring"]),
+                },
+            )
+
+            # When
+            coverage_findings = _coverage_findings_of(schematic_dir=schematic_dir)
+
+            # Then
+            self.assertEqual(coverage_findings, [_UNCITED_1B_FINDING])
+
+    def test_validate_ignores_underscore_prefixed_files(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            schematic_dir = _gen_coverage_schematic_dir(
+                tmp=tmp,
+                feature_ac_rows=["1.A"],
+                card_name_to_text={
+                    _FOUNDATION_CARD: _gen_card_text(proves_cells=["1.A — happy path"]),
+                    _ENRICHMENT_CARD: _gen_card_text(proves_cells=["1.A — enriches"]),
+                    _ANOTHER_CARD: _gen_card_text(proves_cells=["1.A — wiring"]),
+                    _ROSTER_FILE: "# Roster\n\nno tests here\n",
+                },
+            )
+
+            # When
+            coverage_findings = _coverage_findings_of(schematic_dir=schematic_dir)
+
+            # Then
+            self.assertEqual(coverage_findings, [])
+
+    def test_validate_reports_an_ac_mentioned_twice_in_the_objective_once(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            schematic_dir = _gen_coverage_schematic_dir(
+                tmp=tmp,
+                feature_ac_rows=["1.A", "1.B", "1.B"],
+                card_name_to_text={
+                    _FOUNDATION_CARD: _gen_card_text(proves_cells=["1.A — happy path"]),
+                    _ENRICHMENT_CARD: _gen_card_text(proves_cells=["1.A — enriches"]),
+                    _ANOTHER_CARD: _gen_card_text(proves_cells=["1.A — wiring"]),
+                },
+            )
+
+            # When
+            coverage_findings = _coverage_findings_of(schematic_dir=schematic_dir)
+
+            # Then
+            self.assertEqual(coverage_findings, [_UNCITED_1B_FINDING])
+
+
 class TestMermaidHeuristics(unittest.TestCase):
 
     def _check(self, content: str) -> list[str]:

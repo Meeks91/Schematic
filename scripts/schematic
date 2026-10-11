@@ -147,6 +147,8 @@ EXEMPLARS_SLOT = "exemplars"
 
 TASK_HEADER_RE = re.compile(r"^## ([a-z]\.\d+) \| (\w+) \| (.+)$")
 FEATURE_AC_RE = re.compile(r"(\d+\.[A-Z])\b")
+CARD_TEST_PROVES_RE = re.compile(r"^\|\s*`test_[^`]+`\s*\|(.*)$", re.MULTILINE)
+NON_CARD_FILENAME_PREFIX = "_"
 FEATURE_HEADING_RE = re.compile(r"^### (\d+)\. (.+)$", re.MULTILINE)
 BLOCKED_BY_TAG_RE = re.compile(r"\b([a-z]\.\d+)\b")
 MILESTONE_ID_RE = re.compile(r"^M\d+$")
@@ -869,10 +871,9 @@ Edge inventory (by layer):
 ## Sequence Diagram
 > Mermaid: ../sequence.mmd
 
-## AC Traceability Matrix
+## AC Coverage
 
-| Feature AC | Class AC | Function AC | AC Test |
-|---|---|---|---|
+Tally: N Feature ACs · M cards · P Feature tests · R Branch tests
 """
 
 _TASKS_STUB = "# Tasks\n"
@@ -1174,6 +1175,46 @@ def _milestone_findings(
     return _milestone_table_findings(tasks=tasks, milestones=milestones)
 
 
+def _feature_acs_cited_by_card_tests(card_text: str) -> set[str]:
+    """Feature AC refs named in the Proves column of a card's test tables."""
+    return {
+        feature_ac
+        for proves_cell in CARD_TEST_PROVES_RE.findall(card_text)
+        for feature_ac in FEATURE_AC_RE.findall(proves_cell)
+    }
+
+
+def _ac_coverage_findings(schematic_dir: Path) -> list[str]:
+    """Feature ACs no card test cites, and cards whose tests cite no Feature AC — once any card has tests."""
+    card_name_to_text = {
+        card_path.name: card_path.read_text()
+        for card_path in sorted((schematic_dir / "components").glob("*.md"))
+        if not card_path.name.startswith(NON_CARD_FILENAME_PREFIX)
+    }
+    if not any(
+        CARD_TEST_PROVES_RE.search(card_text)
+        for card_text in card_name_to_text.values()
+    ):
+        return []
+
+    card_name_to_cited_acs = {
+        card_name: _feature_acs_cited_by_card_tests(card_text=card_text)
+        for card_name, card_text in card_name_to_text.items()
+    }
+    all_cited_acs = set().union(*card_name_to_cited_acs.values())
+    uncited_ac_findings = [
+        f"objective.md {feature_ac} — no card test cites this Feature AC in its Proves column"
+        for feature_ac in dict.fromkeys(parse_feature_acs(schematic_dir / "objective.md"))
+        if feature_ac not in all_cited_acs
+    ]
+    card_without_ac_findings = [
+        f"components/{card_name} — no test in this card cites a Feature AC in its Proves column"
+        for card_name, cited_acs in card_name_to_cited_acs.items()
+        if not cited_acs
+    ]
+    return uncited_ac_findings + card_without_ac_findings
+
+
 def _validate_schematic(schematic_dir: Path) -> list[str]:
     findings: list[str] = []
     tasks = parse_tasks(schematic_dir / "tasks.md")
@@ -1198,6 +1239,8 @@ def _validate_schematic(schematic_dir: Path) -> list[str]:
     objective_md = schematic_dir / "objective.md"
     if objective_md.exists() and not parse_feature_acs(objective_md):
         findings.append("objective.md — no Feature ACs found in Functional ACs section")
+
+    findings.extend(_ac_coverage_findings(schematic_dir=schematic_dir))
 
     for task in tasks:
         state_task = state.get("tasks", {}).get(task["tag"])

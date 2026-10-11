@@ -298,7 +298,7 @@ function buildSidebar() {
     const overview = manifest.components.filter(c => c === '_overview.md');
     const contracts = manifest.components.filter(c => c !== '_overview.md');
     overview.forEach(c => {
-      html += `<div class="nav-item" data-view="comp-${c}" onclick="navigate('file','components/${escHtml(c)}')"><span class="icon">⚡</span>Traceability &amp; Integration</div>`;
+      html += `<div class="nav-item" data-view="comp-${c}" onclick="navigate('file','components/${escHtml(c)}')"><span class="icon">⚡</span>Coverage &amp; Integration</div>`;
     });
     if (contracts.length) {
       html += `<div style="padding:4px 16px;font-size:9px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.6px;margin-top:4px">Contracts (${contracts.length})</div>`;
@@ -457,7 +457,7 @@ function showComponents() {
     const isOverview = c === '_overview.md';
     html += `<div class="card" onclick="navigate('file','components/${c}')">
       <div class="card-title"><span class="icon">${isOverview?'⚡':'◆'}</span>${label}</div>
-      <div class="card-meta">${isOverview?'Cross-cutting: DAG, sequence, traceability':'Component spec'}</div>
+      <div class="card-meta">${isOverview?'Cross-cutting: DAG, sequence, AC coverage':'Component spec'}</div>
     </div>`;
   }
   html += '</div>';

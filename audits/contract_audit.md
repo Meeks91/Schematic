@@ -62,6 +62,9 @@ MUST be flagged in the contract with `⚠️ USER SIGN-OFF REQUIRED` per the ski
 - Constructor deps match the topology in `components/_overview.md` §Component Summary.
 - Type names match models defined in `<class>.md` or imported from another `components/*.md`. Flag dangling type refs.
 
+### 10. Design quality
+The architecture design implied by the contracts conforms to the architecture standards and is high quality. Real issues or simplifications are flagged in the review.
+
 ## Output
 
 Return findings strictly in the format from `audits/_format.md`.

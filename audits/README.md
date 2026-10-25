@@ -48,6 +48,7 @@ At each gate-end, BEFORE printing the `Confirm: y/comment` sigil:
    - **Clean** → print `✓ Audit (<phase>): clean` above the Confirm sigil.
    - **Findings** → print `⚠️ Audit (<phase>) flagged:` followed by the bulleted list. User decides whether to address before locking or accept and proceed.
 5. **NEVER lock without the audit having returned.** If parallel run hasn't completed by the time you'd print the sigil, wait.
+6. **Every reviewer, phase audit or ad hoc (per-flow, per-gate), is briefed with `_format.md` § Architecture rules, and every `Confirm: y/comment` pastes `schematic validate`'s architecture lines (or `✓`) above the sigil.**
 
 ## Output contract (every audit MUST follow)
 

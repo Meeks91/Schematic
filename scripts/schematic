@@ -120,6 +120,24 @@ PHASE_MERMAID_CHECKS: dict[int, list[str]] = {
 }
 PHASE_STATUS_LOCKED = "locked"
 PHASE_AUDIT_CLEAN = "clean"
+PHASES_REQUIRING_ARCH_SIGN_OFF = {2, 3, 4, 5, 6, 7}
+ARCH_DEVIATIONS_HEADING = "## Architecture Deviations"
+MARKDOWN_H2_PREFIX = "\n## "
+PUBLIC_CLASS_SUFFIXES = ("Service", "Client")
+SERVICE_SUFFIX = "Service"
+SOURCE_ROOT_DIRNAME = "src"
+SHARED_INFRA_DIRNAME = "src/shared"
+PYTHON_SOURCE_GLOB = "*.py"
+DAG_FILENAME = "dag.mmd"
+DAG_CLASS_LIST_SEPARATOR = ","
+DAG_EDGE_PATTERN = re.compile(r"^\s*(?P<dependency>\w+) --> (?P<consumer>\w+)\s*$", re.MULTILINE)
+DAG_CONFIG_CLASS_PATTERN = re.compile(r"^\s*class (?P<nodes>\S+) config\s*$", re.MULTILINE)
+CARD_DIR_PATTERN = re.compile(r"^## `(?P<class_name>\w+)`\n\*\*Dir:\*\* `(?P<path>[^`]+)`", re.MULTILINE)
+CARD_BASE_PATTERN = re.compile(
+    r"^## `(?P<class_name>\w+)`\n\*\*Dir:\*\*[^\n]*subclass of `(?P<base_name>\w+)`",
+    re.MULTILINE,
+)
+DEVIATION_PATTERN = re.compile(r"`(?P<consumer>\w+)` ← `(?P<dependency>\w+)`")
 
 # ── roster gate (Phase 2 topology present) ──────────────────────────────────────
 # The roster gate is the ONLY legitimate way to present the topology: it validates the
@@ -1241,6 +1259,7 @@ def _validate_schematic(schematic_dir: Path) -> list[str]:
         findings.append("objective.md — no Feature ACs found in Functional ACs section")
 
     findings.extend(_ac_coverage_findings(schematic_dir=schematic_dir))
+    findings.extend(_boundary_findings(schematic_dir=schematic_dir))
 
     for task in tasks:
         state_task = state.get("tasks", {}).get(task["tag"])
@@ -1481,10 +1500,230 @@ def _write_hook(settings_path: Path) -> None:
 
 # ── phase commands ─────────────────────────────────────────────────────────────
 
+# ── architecture gate (internals never cross service folders undeclared) ──────
+
+
+@dataclass(frozen=True)
+class WiredDependency:
+    consumer: str
+    dependency: str
+
+
+def _class_to_folder(schematic_dir: Path) -> dict[str, Path]:
+    """Every class the bundle can name → its folder: the card's Dir, else its source file's."""
+    project_root = find_project_root()
+    class_to_folder = {
+        source_path.stem: source_path.parent
+        for source_path in (project_root / SOURCE_ROOT_DIRNAME).rglob(PYTHON_SOURCE_GLOB)
+    }
+    for card_path in (schematic_dir / "components").glob("*.md"):
+        for card_dir_match in CARD_DIR_PATTERN.finditer(card_path.read_text()):
+            class_to_folder[card_dir_match["class_name"]] = (project_root / card_dir_match["path"]).parent
+    return class_to_folder
+
+
+def _class_to_base(schematic_dir: Path) -> dict[str, str]:
+    """Every carded subclass → the base class its card names."""
+    return {
+        card_base_match["class_name"]: card_base_match["base_name"]
+        for card_path in (schematic_dir / "components").glob("*.md")
+        for card_base_match in CARD_BASE_PATTERN.finditer(card_path.read_text())
+    }
+
+
+def _owning_service_folder(class_folder: Path, service_folders: frozenset[Path]) -> Path:
+    """The nearest folder at or above the class's that holds a Service; a folder with none is its own unit."""
+    return next(
+        (
+            folder
+            for folder in (class_folder, *class_folder.parents)
+            if folder in service_folders
+        ),
+        class_folder,
+    )
+
+
+def _wired_internal_dependencies(dag_text: str) -> list[WiredDependency]:
+    """Every DAG edge whose dependency is neither a Service, a shared Client nor a config node."""
+    config_nodes = {
+        node
+        for config_match in DAG_CONFIG_CLASS_PATTERN.finditer(dag_text)
+        for node in config_match["nodes"].split(DAG_CLASS_LIST_SEPARATOR)
+    }
+    return [
+        WiredDependency(
+            consumer=edge_match["consumer"],
+            dependency=edge_match["dependency"],
+        )
+        for edge_match in DAG_EDGE_PATTERN.finditer(dag_text)
+        if not edge_match["dependency"].endswith(PUBLIC_CLASS_SUFFIXES)
+        and edge_match["dependency"] not in config_nodes
+    ]
+
+
+def _listed_architecture_deviations(schematic_dir: Path) -> frozenset[WiredDependency]:
+    """The `Consumer` ← `Dependency` pairs objective.md lists under § Architecture Deviations."""
+    _, _, text_after_heading = (schematic_dir / "objective.md").read_text().partition(ARCH_DEVIATIONS_HEADING)
+    deviations_text, _, _ = text_after_heading.partition(MARKDOWN_H2_PREFIX)
+    return frozenset(
+        WiredDependency(
+            consumer=deviation_match["consumer"],
+            dependency=deviation_match["dependency"],
+        )
+        for deviation_match in DEVIATION_PATTERN.finditer(deviations_text)
+    )
+
+
+def _service_folders_open_to(
+    consumer: str,
+    class_to_base: dict[str, str],
+    class_to_service_folder: dict[str, Path],
+) -> frozenset[Path]:
+    """The service folders whose internals a class may take: its own, and its base's when it subclasses one."""
+    class_names = (
+        (consumer, class_to_base[consumer])
+        if consumer in class_to_base
+        else (consumer,)
+    )
+    return frozenset(
+        class_to_service_folder[class_name]
+        for class_name in class_names
+    )
+
+
+def _classes_named_by(wired_dependency: WiredDependency, class_to_base: dict[str, str]) -> tuple[str, ...]:
+    """The classes a wired dependency needs placed: its consumer, the consumer's base when it has one, and the dependency."""
+    consumer_and_base = (
+        (wired_dependency.consumer, class_to_base[wired_dependency.consumer])
+        if wired_dependency.consumer in class_to_base
+        else (wired_dependency.consumer,)
+    )
+    return (*consumer_and_base, wired_dependency.dependency)
+
+
+def _undeclared_crossings(
+    wired_dependencies: list[WiredDependency],
+    class_to_folder: dict[str, Path],
+    class_to_base: dict[str, str],
+    listed_deviations: frozenset[WiredDependency],
+) -> list[WiredDependency]:
+    """Internals owned by another service than their consumer's or its base's, outside shared infra and the deviations."""
+    service_folders = frozenset(
+        folder
+        for class_name, folder in class_to_folder.items()
+        if class_name.endswith(SERVICE_SUFFIX)
+    )
+    class_to_service_folder = {
+        class_name: _owning_service_folder(
+            class_folder=folder,
+            service_folders=service_folders,
+        )
+        for class_name, folder in class_to_folder.items()
+    }
+    shared_infra_folder = find_project_root() / SHARED_INFRA_DIRNAME
+    return [
+        wired_dependency
+        for wired_dependency in wired_dependencies
+        if wired_dependency not in listed_deviations
+        and not class_to_folder[wired_dependency.dependency].is_relative_to(shared_infra_folder)
+        and class_to_service_folder[wired_dependency.dependency]
+        not in _service_folders_open_to(
+            consumer=wired_dependency.consumer,
+            class_to_base=class_to_base,
+            class_to_service_folder=class_to_service_folder,
+        )
+    ]
+
+
+def _boundary_findings(schematic_dir: Path) -> list[str]:
+    """The DAG's wired classes with no folder, and its internals wired across service folders undeclared."""
+    dag_path = schematic_dir / DAG_FILENAME
+    if not dag_path.exists():
+        return []
+
+    wired_dependencies = _wired_internal_dependencies(dag_text=dag_path.read_text())
+    class_to_folder = _class_to_folder(schematic_dir=schematic_dir)
+    class_to_base = _class_to_base(schematic_dir=schematic_dir)
+    unplaced_classes = sorted(
+        {
+            class_name
+            for wired_dependency in wired_dependencies
+            for class_name in _classes_named_by(
+                wired_dependency=wired_dependency,
+                class_to_base=class_to_base,
+            )
+            if class_name not in class_to_folder
+        },
+    )
+    undeclared_crossings = _undeclared_crossings(
+        wired_dependencies=[
+            wired_dependency
+            for wired_dependency in wired_dependencies
+            if set(unplaced_classes).isdisjoint(
+                _classes_named_by(
+                    wired_dependency=wired_dependency,
+                    class_to_base=class_to_base,
+                ),
+            )
+        ],
+        class_to_folder=class_to_folder,
+        class_to_base=class_to_base,
+        listed_deviations=_listed_architecture_deviations(schematic_dir=schematic_dir),
+    )
+    return [
+        *(
+            f"{DAG_FILENAME} — `{class_name}` is wired but has no card Dir or source file"
+            for class_name in unplaced_classes
+        ),
+        *(
+            f"{DAG_FILENAME} — `{crossing.consumer}` ← `{crossing.dependency}`: an internal used across "
+            f"service folders, not listed under {ARCH_DEVIATIONS_HEADING}"
+            for crossing in undeclared_crossings
+        ),
+    ]
+
+
+def _deviation_lines(schematic_dir: Path) -> list[str]:
+    """The listed deviations as sorted `Consumer ← Dependency` lines, the form a sign-off records."""
+    return sorted(
+        f"{deviation.consumer} ← {deviation.dependency}"
+        for deviation in _listed_architecture_deviations(schematic_dir=schematic_dir)
+    )
+
+
+def _phase_arch_signoff(args: argparse.Namespace) -> None:
+    schematic_dir = resolve_schematic_dir(args.schematic)
+    boundary_findings = _boundary_findings(schematic_dir=schematic_dir)
+    if boundary_findings:
+        _exit_error(
+            f"architecture sign-off blocked — fix each, or list it under {ARCH_DEVIATIONS_HEADING} "
+            "in objective.md for the user to sign:\n"
+            + "\n".join(f"  {finding}" for finding in boundary_findings),
+        )
+
+    signed_deviations = _deviation_lines(schematic_dir=schematic_dir)
+    state = load_state(schematic_dir)
+    state["phases"].setdefault(str(args.num), {})["arch_signed_deviations"] = signed_deviations
+    save_state(schematic_dir, state)
+    print(f"phase {args.num} architecture signed off ✓ ({len(signed_deviations)} deviations)")
+
+
+def _arch_sign_off_refusal(schematic_dir: Path, phase_entry: dict, num: int, schematic_name: str) -> str:
+    """Why the phase cannot lock on architecture; empty when signed and nothing has moved since."""
+    signed_deviations = phase_entry.get("arch_signed_deviations")
+    rerun_hint = f"  run: schematic phase arch-sign-off {num} --schematic {schematic_name}"
+    if signed_deviations is None:
+        return f"phase {num} needs the user's architecture sign-off.\n{rerun_hint}"
+    if signed_deviations != _deviation_lines(schematic_dir=schematic_dir) or _boundary_findings(schematic_dir=schematic_dir):
+        return f"phase {num}'s architecture moved since its sign-off (a new crossing or deviation).\n{rerun_hint}"
+    return ""
+
+
 def cmd_phase(args: argparse.Namespace) -> None:
     phase_handlers = {
         "audit": _phase_audit,
         "sign-off": _phase_signoff,
+        "arch-sign-off": _phase_arch_signoff,
         "complete": _phase_complete,
     }
     phase_handlers[args.phase_command](args)
@@ -1551,6 +1790,16 @@ def _phase_complete(args: argparse.Namespace) -> None:
                 f"  or:  schematic phase complete {args.num} --schematic {args.schematic} "
                 f"--override \"<reason>\""
             )
+
+    if args.num in PHASES_REQUIRING_ARCH_SIGN_OFF:
+        arch_refusal = _arch_sign_off_refusal(
+            schematic_dir=schematic_dir,
+            phase_entry=phase_entry,
+            num=args.num,
+            schematic_name=args.schematic,
+        )
+        if arch_refusal:
+            _exit_error(arch_refusal)
 
     milestone_refusal = _milestone_phase_refusal(
         schematic_dir=schematic_dir,
@@ -3911,6 +4160,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_ps = phase_sub.add_parser("sign-off", help="Record user sign-off for a phase")
     p_ps.add_argument("num", type=int, choices=sorted(VALID_PHASES))
     p_ps.add_argument("--schematic", required=True, metavar="NAME")
+
+    p_pas = phase_sub.add_parser(
+        "arch-sign-off",
+        help="Record the user's architecture sign-off with every listed deviation",
+    )
+    p_pas.add_argument("num", type=int, choices=sorted(PHASES_REQUIRING_ARCH_SIGN_OFF))
+    p_pas.add_argument("--schematic", required=True, metavar="NAME")
 
     p_pc = phase_sub.add_parser("complete", help="Lock a phase (enforces audit + sign-off)")
     p_pc.add_argument("num", type=int, choices=sorted(VALID_PHASES))

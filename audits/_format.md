@@ -48,6 +48,10 @@ Before emitting any line, ask the two questions in the column header for that se
 - **Style-preference findings** — capitalization, ordering of equivalent items, list-vs-table choice. If the skill rules don't mandate one form, it's not a finding.
 - **Forward-looking concerns** — "this might be hard to test later", "future maintainers may find this confusing". Audits review present state, not future risk.
 
+## Architecture rules (every audit and every reviewer, BINDING)
+
+Check the bundle against every rule in the resolved `architecture` and `types` modules. A breach is a `BLOCKER` unless `objective.md` § Architecture Deviations lists it. Most-missed: an internal type (not a Service or shared Client) used from another service folder. A subclass may take its base's dependencies.
+
 ## Clean case
 
 If nothing flags, return exactly:

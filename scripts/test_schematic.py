@@ -409,7 +409,7 @@ class TestPhaseEnforcement(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             schematic_dir = _make_schematic_dir(tmp)
             state = _cli.load_state(schematic_dir)
-            state["phases"]["3"] = {"signed_off": True}
+            state["phases"]["3"] = {"signed_off": True, "arch_signed_deviations": []}
             _cli.save_state(schematic_dir, state)
             args = _make_args(num=3, schematic="test-feature", override=None)
             _with_resolved_dir(schematic_dir, _cli._phase_complete, args)
@@ -455,9 +455,9 @@ class TestPhaseEnforcement(unittest.TestCase):
             (schematic_dir / "components" / "_overview.md").write_text(
                 "# Overview\n## Injection DAG\nedges\n## App Integration\nwiring\n"
             )
-            (schematic_dir / "dag.mmd").write_text("flowchart TD\nA --> B\n")
+            (schematic_dir / "dag.mmd").write_text("flowchart TD\nAService --> BService\n")
             state = _cli.load_state(schematic_dir)
-            state["phases"]["5"] = {"signed_off": True}
+            state["phases"]["5"] = {"signed_off": True, "arch_signed_deviations": []}
             _cli.save_state(schematic_dir, state)
             # When completing / Then the mermaid check rejects
             args = _make_args(num=5, schematic="test-feature", override=None)
@@ -472,9 +472,9 @@ class TestPhaseEnforcement(unittest.TestCase):
             (schematic_dir / "components" / "_overview.md").write_text(
                 "# Overview\n## Injection DAG\nedges\n## App Integration\nwiring\n"
             )
-            (schematic_dir / "dag.mmd").write_text("flowchart TD\nA --> B\n")
+            (schematic_dir / "dag.mmd").write_text("flowchart TD\nAService --> BService\n")
             state = _cli.load_state(schematic_dir)
-            state["phases"]["5"] = {"signed_off": True}
+            state["phases"]["5"] = {"signed_off": True, "arch_signed_deviations": []}
             _cli.save_state(schematic_dir, state)
             # When completing
             args = _make_args(num=5, schematic="test-feature", override=None)
@@ -490,9 +490,9 @@ class TestPhaseEnforcement(unittest.TestCase):
             (schematic_dir / "components" / "_overview.md").write_text(
                 "# Overview\n## Injection DAG\nedges\n## App Integration\nwiring\n"
             )
-            (schematic_dir / "dag.mmd").write_text("flowchart TD\nA --> B\n")
+            (schematic_dir / "dag.mmd").write_text("flowchart TD\nAService --> BService\n")
             state = _cli.load_state(schematic_dir)
-            state["phases"]["5"] = {"signed_off": True, "audit_result": "clean"}
+            state["phases"]["5"] = {"signed_off": True, "audit_result": "clean", "arch_signed_deviations": []}
             _cli.save_state(schematic_dir, state)
             # When completing with an override
             args = _make_args(num=5, schematic="test-feature", override="diagram fix deferred")
@@ -2812,7 +2812,7 @@ class TestMilestoneDecideGate(unittest.TestCase):
 
     def _seed_gated_phase(self, schematic_dir: Path, num: int) -> None:
         state = _cli.load_state(schematic_dir)
-        state["phases"][str(num)] = {"audit_result": "clean", "signed_off": True}
+        state["phases"][str(num)] = {"audit_result": "clean", "signed_off": True, "arch_signed_deviations": []}
         _cli.save_state(schematic_dir, state)
 
     def test_phase_7_complete_fails_without_a_milestone_decision(self) -> None:
@@ -4380,6 +4380,429 @@ class TestUiUrlPolling(unittest.TestCase):
             # Then it fails closed with the editor-silent wording
             self.assertEqual(exit_code, 1)
             self.assertIn("editor did not report a URL", error_text)
+
+
+# Fixtures
+
+
+# Fixtures:
+
+_A_SERVICE = "AService"
+_A_REPOSITORY = "ARepository"
+_A_RESOLVER = "AResolver"
+_B_SERVICE = "BService"
+_B_SUBCLASS_SERVICE = "BSubclassService"
+_SHARED_CLOCK = "Clock"
+_PROMPT_CONFIG = "ScriptPromptConfig"
+_GHOST_RESOLVER = "GhostResolver"
+_CLASS_TO_DIR = {
+    _A_SERVICE: "src/services/a/AService.py",
+    _A_REPOSITORY: "src/services/a/repos/ARepository.py",
+    _A_RESOLVER: "src/services/a/utils/AResolver.py",
+    _B_SERVICE: "src/services/b/BService.py",
+    _B_SUBCLASS_SERVICE: "src/services/b/BSubclassService.py",
+    _SHARED_CLOCK: "src/shared/utils/Clock.py",
+}
+_NO_BASES: dict[str, str] = {}
+_NO_DEVIATIONS: list[str] = []
+_REPOSITORY_INTO_B = f"{_A_REPOSITORY} --> {_B_SERVICE}"
+_RESOLVER_INTO_B = f"{_A_RESOLVER} --> {_B_SERVICE}"
+_REPOSITORY_DEVIATION_ROW = f"| `{_B_SERVICE}` ← `{_A_REPOSITORY}` | the founder's reason | signed 2026-10-25 |"
+_RESOLVER_DEVIATION_ROW = f"| `{_B_SERVICE}` ← `{_A_RESOLVER}` | the founder's reason | signed 2026-10-25 |"
+_REPOSITORY_CROSSING_FINDING = (
+    f"dag.mmd — `{_B_SERVICE}` ← `{_A_REPOSITORY}`: an internal used across service folders, "
+    "not listed under ## Architecture Deviations"
+)
+_GHOST_UNPLACED_FINDING = f"dag.mmd — `{_GHOST_RESOLVER}` is wired but has no card Dir or source file"
+_ARCH_PHASE = 3
+_AUDITED_ARCH_PHASE = 6
+
+
+def _gen_card_header_text(class_name: str, card_dir: str, class_to_base: dict[str, str]) -> str:
+    """A card header naming the class, its Dir, and its base when it subclasses one."""
+    base_clause = (
+        f" (subclass of `{class_to_base[class_name]}`)"
+        if class_name in class_to_base
+        else ""
+    )
+    return f"## `{class_name}`\n**Dir:** `{card_dir}` · **Type:** New{base_clause}\n"
+
+
+def _gen_arch_schematic_dir(
+    tmp: str,
+    dag_edges: list[str],
+    class_to_base: dict[str, str],
+    deviation_rows: list[str],
+) -> Path:
+    """A bundle carding every _CLASS_TO_DIR class, wiring dag_edges, listing deviation_rows."""
+    schematic_dir = _make_schematic_dir(tmp)
+    for class_name, card_dir in _CLASS_TO_DIR.items():
+        (schematic_dir / "components" / f"{class_name}.md").write_text(
+            _gen_card_header_text(
+                class_name=class_name,
+                card_dir=card_dir,
+                class_to_base=class_to_base,
+            ),
+        )
+    (schematic_dir / "dag.mmd").write_text("flowchart TB\n" + "".join(f"  {edge}\n" for edge in dag_edges))
+    deviations_section = "\n## Architecture Deviations\n\n| Crossing | Why | Signed |\n|---|---|---|\n" + "".join(
+        f"{deviation_row}\n"
+        for deviation_row in deviation_rows
+    )
+    (schematic_dir / "objective.md").write_text(_OBJECTIVE_MD + deviations_section)
+    return schematic_dir
+
+
+def _arch_findings_of(schematic_dir: Path, project_root: Path) -> list[str]:
+    with patch.object(_cli, "find_project_root", return_value=project_root):
+        return [
+            finding
+            for finding in _cli._validate_schematic(schematic_dir)
+            if finding.startswith("dag.mmd —")
+        ]
+
+
+def _run_in_project(schematic_dir: Path, project_root: Path, fn: Any, args: Any) -> None:
+    with patch.object(_cli, "find_project_root", return_value=project_root):
+        _with_resolved_dir(schematic_dir, fn, args)
+
+
+def _seed_phase_entry(schematic_dir: Path, num: int, phase_entry: dict) -> None:
+    state = _cli.load_state(schematic_dir)
+    state["phases"][str(num)] = phase_entry
+    _cli.save_state(schematic_dir, state)
+
+# Fixtures
+
+
+class TestArchitectureBoundary(unittest.TestCase):
+    """validate's boundary check: internals never cross service folders undeclared."""
+
+    def _findings_for(self, dag_edges: list[str], class_to_base: dict[str, str], deviation_rows: list[str]) -> list[str]:
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _gen_arch_schematic_dir(
+                tmp=tmp,
+                dag_edges=dag_edges,
+                class_to_base=class_to_base,
+                deviation_rows=deviation_rows,
+            )
+            return _arch_findings_of(
+                schematic_dir=schematic_dir,
+                project_root=Path(tmp),
+            )
+
+    def test_validate_flags_an_internal_used_across_service_folders(self) -> None:
+        # Given / When
+        arch_findings = self._findings_for(
+            dag_edges=[_REPOSITORY_INTO_B],
+            class_to_base=_NO_BASES,
+            deviation_rows=_NO_DEVIATIONS,
+        )
+
+        # Then
+        self.assertEqual(arch_findings, [_REPOSITORY_CROSSING_FINDING])
+
+    def test_validate_passes_an_internal_used_inside_its_own_service(self) -> None:
+        # Given / When
+        arch_findings = self._findings_for(
+            dag_edges=[f"{_A_REPOSITORY} --> {_A_SERVICE}"],
+            class_to_base=_NO_BASES,
+            deviation_rows=_NO_DEVIATIONS,
+        )
+
+        # Then
+        self.assertEqual(arch_findings, [])
+
+    def test_validate_passes_a_service_used_across_folders(self) -> None:
+        # Given / When
+        arch_findings = self._findings_for(
+            dag_edges=[f"{_A_SERVICE} --> {_B_SERVICE}"],
+            class_to_base=_NO_BASES,
+            deviation_rows=_NO_DEVIATIONS,
+        )
+
+        # Then
+        self.assertEqual(arch_findings, [])
+
+    def test_validate_passes_a_listed_deviation(self) -> None:
+        # Given / When
+        arch_findings = self._findings_for(
+            dag_edges=[_REPOSITORY_INTO_B],
+            class_to_base=_NO_BASES,
+            deviation_rows=[_REPOSITORY_DEVIATION_ROW],
+        )
+
+        # Then
+        self.assertEqual(arch_findings, [])
+
+    def test_validate_passes_shared_infra(self) -> None:
+        # Given / When
+        arch_findings = self._findings_for(
+            dag_edges=[f"{_SHARED_CLOCK} --> {_B_SERVICE}"],
+            class_to_base=_NO_BASES,
+            deviation_rows=_NO_DEVIATIONS,
+        )
+
+        # Then
+        self.assertEqual(arch_findings, [])
+
+    def test_validate_flags_a_wired_class_with_no_folder(self) -> None:
+        # Given / When
+        arch_findings = self._findings_for(
+            dag_edges=[f"{_GHOST_RESOLVER} --> {_B_SERVICE}"],
+            class_to_base=_NO_BASES,
+            deviation_rows=_NO_DEVIATIONS,
+        )
+
+        # Then
+        self.assertEqual(arch_findings, [_GHOST_UNPLACED_FINDING])
+
+    def test_validate_skips_config_nodes(self) -> None:
+        # Given / When
+        arch_findings = self._findings_for(
+            dag_edges=[
+                f"{_PROMPT_CONFIG} --> {_B_SERVICE}",
+                f"class {_PROMPT_CONFIG} config",
+            ],
+            class_to_base=_NO_BASES,
+            deviation_rows=_NO_DEVIATIONS,
+        )
+
+        # Then
+        self.assertEqual(arch_findings, [])
+
+    def test_validate_passes_a_subclass_using_its_bases_internals(self) -> None:
+        # Given / When
+        arch_findings = self._findings_for(
+            dag_edges=[f"{_A_REPOSITORY} --> {_B_SUBCLASS_SERVICE}"],
+            class_to_base={
+                _B_SUBCLASS_SERVICE: _A_SERVICE,
+            },
+            deviation_rows=_NO_DEVIATIONS,
+        )
+
+        # Then
+        self.assertEqual(arch_findings, [])
+
+
+class TestArchitectureSignOff(unittest.TestCase):
+    """phase arch-sign-off records the user's architecture sign-off; phase complete holds to it, no override."""
+
+    def test_arch_sign_off_refuses_while_a_crossing_is_undeclared(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            schematic_dir = _gen_arch_schematic_dir(
+                tmp=tmp,
+                dag_edges=[_REPOSITORY_INTO_B],
+                class_to_base=_NO_BASES,
+                deviation_rows=_NO_DEVIATIONS,
+            )
+            args = _make_args(
+                num=_ARCH_PHASE,
+                schematic=schematic_dir.name,
+            )
+
+            # Then
+            with self.assertRaises(SystemExit):
+                # Given / When
+                _run_in_project(
+                    schematic_dir=schematic_dir,
+                    project_root=Path(tmp),
+                    fn=_cli._phase_arch_signoff,
+                    args=args,
+                )
+            self.assertEqual(_cli.load_state(schematic_dir)["phases"], {})
+
+    def test_arch_sign_off_records_the_listed_deviations(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            schematic_dir = _gen_arch_schematic_dir(
+                tmp=tmp,
+                dag_edges=[
+                    _REPOSITORY_INTO_B,
+                    _RESOLVER_INTO_B,
+                ],
+                class_to_base=_NO_BASES,
+                deviation_rows=[
+                    _RESOLVER_DEVIATION_ROW,
+                    _REPOSITORY_DEVIATION_ROW,
+                ],
+            )
+            args = _make_args(
+                num=_ARCH_PHASE,
+                schematic=schematic_dir.name,
+            )
+
+            # When
+            _run_in_project(
+                schematic_dir=schematic_dir,
+                project_root=Path(tmp),
+                fn=_cli._phase_arch_signoff,
+                args=args,
+            )
+
+            # Then
+            self.assertEqual(
+                _cli.load_state(schematic_dir)["phases"][str(_ARCH_PHASE)],
+                {
+                    "arch_signed_deviations": [
+                        f"{_B_SERVICE} ← {_A_REPOSITORY}",
+                        f"{_B_SERVICE} ← {_A_RESOLVER}",
+                    ],
+                },
+            )
+
+    def test_phase_complete_refuses_without_arch_sign_off(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            schematic_dir = _gen_arch_schematic_dir(
+                tmp=tmp,
+                dag_edges=[],
+                class_to_base=_NO_BASES,
+                deviation_rows=_NO_DEVIATIONS,
+            )
+            _seed_phase_entry(
+                schematic_dir=schematic_dir,
+                num=_AUDITED_ARCH_PHASE,
+                phase_entry={
+                    "audit_result": "clean",
+                    "signed_off": True,
+                },
+            )
+            args = _make_args(
+                num=_AUDITED_ARCH_PHASE,
+                schematic=schematic_dir.name,
+                override=None,
+            )
+
+            # Then
+            with self.assertRaises(SystemExit):
+                # Given / When
+                _run_in_project(
+                    schematic_dir=schematic_dir,
+                    project_root=Path(tmp),
+                    fn=_cli._phase_complete,
+                    args=args,
+                )
+            self.assertNotIn("status", _cli.load_state(schematic_dir)["phases"][str(_AUDITED_ARCH_PHASE)])
+
+    def test_phase_complete_refuses_when_deviations_changed_after_sign_off(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            schematic_dir = _gen_arch_schematic_dir(
+                tmp=tmp,
+                dag_edges=[_REPOSITORY_INTO_B],
+                class_to_base=_NO_BASES,
+                deviation_rows=[_REPOSITORY_DEVIATION_ROW],
+            )
+            _seed_phase_entry(
+                schematic_dir=schematic_dir,
+                num=_ARCH_PHASE,
+                phase_entry={
+                    "signed_off": True,
+                },
+            )
+            _run_in_project(
+                schematic_dir=schematic_dir,
+                project_root=Path(tmp),
+                fn=_cli._phase_arch_signoff,
+                args=_make_args(
+                    num=_ARCH_PHASE,
+                    schematic=schematic_dir.name,
+                ),
+            )
+            objective_md = schematic_dir / "objective.md"
+            objective_md.write_text(objective_md.read_text() + f"{_RESOLVER_DEVIATION_ROW}\n")
+            args = _make_args(
+                num=_ARCH_PHASE,
+                schematic=schematic_dir.name,
+                override=None,
+            )
+
+            # Then
+            with self.assertRaises(SystemExit):
+                # Given / When
+                _run_in_project(
+                    schematic_dir=schematic_dir,
+                    project_root=Path(tmp),
+                    fn=_cli._phase_complete,
+                    args=args,
+                )
+            self.assertNotIn("status", _cli.load_state(schematic_dir)["phases"][str(_ARCH_PHASE)])
+
+    def test_phase_complete_arch_gate_ignores_override(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            schematic_dir = _gen_arch_schematic_dir(
+                tmp=tmp,
+                dag_edges=[],
+                class_to_base=_NO_BASES,
+                deviation_rows=_NO_DEVIATIONS,
+            )
+            _seed_phase_entry(
+                schematic_dir=schematic_dir,
+                num=_ARCH_PHASE,
+                phase_entry={
+                    "signed_off": True,
+                },
+            )
+            args = _make_args(
+                num=_ARCH_PHASE,
+                schematic=schematic_dir.name,
+                override="ship it anyway",
+            )
+
+            # Then
+            with self.assertRaises(SystemExit):
+                # Given / When
+                _run_in_project(
+                    schematic_dir=schematic_dir,
+                    project_root=Path(tmp),
+                    fn=_cli._phase_complete,
+                    args=args,
+                )
+            self.assertNotIn("status", _cli.load_state(schematic_dir)["phases"][str(_ARCH_PHASE)])
+
+    def test_phase_complete_locks_when_arch_signed_and_unchanged(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            schematic_dir = _gen_arch_schematic_dir(
+                tmp=tmp,
+                dag_edges=[_REPOSITORY_INTO_B],
+                class_to_base=_NO_BASES,
+                deviation_rows=[_REPOSITORY_DEVIATION_ROW],
+            )
+            _seed_phase_entry(
+                schematic_dir=schematic_dir,
+                num=_ARCH_PHASE,
+                phase_entry={
+                    "signed_off": True,
+                },
+            )
+            _run_in_project(
+                schematic_dir=schematic_dir,
+                project_root=Path(tmp),
+                fn=_cli._phase_arch_signoff,
+                args=_make_args(
+                    num=_ARCH_PHASE,
+                    schematic=schematic_dir.name,
+                ),
+            )
+
+            # When
+            _run_in_project(
+                schematic_dir=schematic_dir,
+                project_root=Path(tmp),
+                fn=_cli._phase_complete,
+                args=_make_args(
+                    num=_ARCH_PHASE,
+                    schematic=schematic_dir.name,
+                    override=None,
+                ),
+            )
+
+            # Then
+            self.assertEqual(_cli.load_state(schematic_dir)["phases"][str(_ARCH_PHASE)]["status"], "locked")
 
 
 # Fixtures

@@ -1543,6 +1543,14 @@ def _owning_service_folder(class_folder: Path, service_folders: frozenset[Path])
     )
 
 
+def _is_inside_a_service(class_folder: Path, service_folders: frozenset[Path]) -> bool:
+    """Whether a Service sits in the class's folder or above it; a helper outside every service is shared."""
+    return any(
+        folder in service_folders
+        for folder in (class_folder, *class_folder.parents)
+    )
+
+
 def _wired_internal_dependencies(dag_text: str) -> list[WiredDependency]:
     """Every DAG edge whose dependency is neither a Service, a shared Client nor a config node."""
     config_nodes = {
@@ -1607,7 +1615,7 @@ def _undeclared_crossings(
     class_to_base: dict[str, str],
     listed_deviations: frozenset[WiredDependency],
 ) -> list[WiredDependency]:
-    """Internals owned by another service than their consumer's or its base's, outside shared infra and the deviations."""
+    """Internals owned by another service than their consumer's or its base's; shared helpers, shared infra and the deviations pass."""
     service_folders = frozenset(
         folder
         for class_name, folder in class_to_folder.items()
@@ -1626,6 +1634,10 @@ def _undeclared_crossings(
         for wired_dependency in wired_dependencies
         if wired_dependency not in listed_deviations
         and not class_to_folder[wired_dependency.dependency].is_relative_to(shared_infra_folder)
+        and _is_inside_a_service(
+            class_folder=class_to_folder[wired_dependency.dependency],
+            service_folders=service_folders,
+        )
         and class_to_service_folder[wired_dependency.dependency]
         not in _service_folders_open_to(
             consumer=wired_dependency.consumer,

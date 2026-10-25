@@ -4395,6 +4395,7 @@ _B_SUBCLASS_SERVICE = "BSubclassService"
 _SHARED_CLOCK = "Clock"
 _PROMPT_CONFIG = "ScriptPromptConfig"
 _GHOST_RESOLVER = "GhostResolver"
+_SHARED_MESSAGE_BUILDER = "StudioUserMessageBuilder"
 _CLASS_TO_DIR = {
     _A_SERVICE: "src/services/a/AService.py",
     _A_REPOSITORY: "src/services/a/repos/ARepository.py",
@@ -4402,6 +4403,7 @@ _CLASS_TO_DIR = {
     _B_SERVICE: "src/services/b/BService.py",
     _B_SUBCLASS_SERVICE: "src/services/b/BSubclassService.py",
     _SHARED_CLOCK: "src/shared/utils/Clock.py",
+    _SHARED_MESSAGE_BUILDER: "src/services/studioMessage/StudioUserMessageBuilder.py",
 }
 _NO_BASES: dict[str, str] = {}
 _NO_DEVIATIONS: list[str] = []
@@ -4539,6 +4541,17 @@ class TestArchitectureBoundary(unittest.TestCase):
         # Given / When
         arch_findings = self._findings_for(
             dag_edges=[f"{_SHARED_CLOCK} --> {_B_SERVICE}"],
+            class_to_base=_NO_BASES,
+            deviation_rows=_NO_DEVIATIONS,
+        )
+
+        # Then
+        self.assertEqual(arch_findings, [])
+
+    def test_validate_passes_a_helper_in_a_folder_with_no_service(self) -> None:
+        # Given / When
+        arch_findings = self._findings_for(
+            dag_edges=[f"{_SHARED_MESSAGE_BUILDER} --> {_B_SERVICE}"],
             class_to_base=_NO_BASES,
             deviation_rows=_NO_DEVIATIONS,
         )

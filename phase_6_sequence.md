@@ -6,7 +6,7 @@
 > - `schematic phase sign-off --schematic <name> 6` — on user `y`.
 > - `schematic phase complete --schematic <name> 6` — immediately after sign-off.
 
-Write ASCII sequence to `<schematic_dir>/components/_overview.md`. Write Mermaid to `<schematic_dir>/sequence.mmd`.
+Write ASCII sequence to `<schematic_dir>/components/_overview.md`. Write Mermaid to `<schematic_dir>/sequence.mmd`. In `components/_overview.md` § Sequence Diagram, also list every flow file with its purpose and the ACs it covers.
 
 > **Multi-flow features → one `.mmd` per flow (user rule 2026-07-22).** When the feature has
 > several distinct runtime flows, do NOT pack them into one diagram: `sequence.mmd` holds the
@@ -20,13 +20,47 @@ Write ASCII sequence to `<schematic_dir>/components/_overview.md`. Write Mermaid
 
 > **Surface the visual tools (mandatory, once per phase):** when presenting the sequence gate, tell the user the diagram is viewable and hand-editable right now — `schematic overview` renders it in the dashboard (Diagrams tab), and the live editor below round-trips it on disk. Don't leave these discoverable-only.
 
-**Presentation (BINDING — user rule 2026-07-15):** ALWAYS create the Mermaid diagram (`sequence.mmd`, validated) and AUTO-OPEN it in the schematic editor — no asking (`python3 <skill_dir>/reference/mermaid_edit/bridge.py <schematic_dir>/sequence.mmd`, backgrounded, + arm the Q&A watcher). The user reviews the diagram in the editor BEFORE the gate's Confirm — never present a diagram gate the user hasn't been shown. Never hand-draw ASCII graph art in chat. The on-disk `.mmd` is the source of truth; editor saves round-trip to it.
+**Presentation (BINDING — user rule 2026-07-15):** ALWAYS create the Mermaid diagram (`sequence.mmd`, validated) and AUTO-OPEN it in the schematic editor — no asking (`python3 <skill_dir>/reference/mermaid_edit/bridge.py <schematic_dir>/sequence.mmd`, backgrounded, + arm the Q&A watcher). The user reviews the diagram in the editor BEFORE the gate's Confirm — never present a diagram gate the user hasn't been shown. Never hand-draw ASCII graph art in chat. The on-disk `.mmd` is the source of truth; editor saves round-trip to it. Every diagram marks new / changed / removed calls per § Change Status Colours.
 
 ## Mermaid Theme Requirements
 
 - The schematic dashboard is dark by default; Mermaid diagrams must render correctly in dark mode.
 - Do not use light `rect rgb(...)`, light node fills, or pale backgrounds that wash out dark-theme text.
 - Prefer Mermaid's default dark theme styling. If grouping frames or custom colours are necessary, use dark fills with sufficient contrast.
+
+## Change Status Colours (BINDING — user rule 2026-10-04)
+
+Every sequence diagram marks what the feature changes with Mermaid `rect` boxes (dark fills only):
+
+| Status | Box | Covers |
+|---|---|---|
+| NEW | `rect rgb(20, 83, 45)` (dark green) | new call, rule, or branch |
+| CHANGED | `rect rgb(120, 53, 15)` (dark amber) | existing call with new args / behaviour / fields |
+| REMOVED | `rect rgb(127, 29, 29)` (dark red) | existing call the flow drops — only when showing it helps; message text prefixed `REMOVED:` |
+| unchanged | no box | existing call, as-is |
+
+- **Key line first:** every diagram opens with `Note over <first>,<last>: KEY · green box = NEW call or rule · amber box = CHANGED call · red box = REMOVED · no box = unchanged` — drop the red clause when the diagram has no removed calls.
+- **Never straddle a branch:** a `rect` cannot split an `alt`/`else` or `par`/`and` frame — put the rects INSIDE each branch. A `rect` may wrap a whole `alt`/`par` only when every branch shares the same status.
+- **Rules box too:** a new rule shown as a self-call gets a green `rect` (see § Readable Diagrams).
+
+```
+Note over MIY,Req: KEY · green box = NEW call or rule · amber box = CHANGED call · no box = unchanged
+rect rgb(120, 53, 15)
+    MIY->>Gen: generate(request)
+end
+rect rgb(20, 83, 45)
+    Gen->>Req: top_comments (same ≤ 50)
+end
+alt zero candidates
+    rect rgb(20, 83, 45)
+        Gen-->>MIY: empty (no judge call)
+    end
+else
+    rect rgb(120, 53, 15)
+        Gen-->>MIY: candidates
+    end
+end
+```
 
 ## Visual round-trip editor (bundled)
 
@@ -62,6 +96,8 @@ The editor handles **very large** sequence diagrams: mermaid `maxTextSize` is
 raised to 5,000,000 chars and `maxEdges` to 100,000, with zoom/pan controls and a
 debounced render so large diagrams stay navigable and don't thrash on each keystroke.
 
+**No disk reload:** the open editor does NOT pick up edits made to the `.mmd` on disk — a Save in the editor overwrites them. Stop the bridge (and its watcher) before editing the file outside the editor, then relaunch both.
+
 ## ASCII Quality Requirements
 
 - Participants spaced wide across the top with clear column separation
@@ -70,7 +106,17 @@ debounced render so large diagrams stay navigable and don't thrash on each keyst
 - Return values as dashed arrows `◄─ ─ ─ ─ ─ ─ ─ ─` with return type **above** the arrow
 - Loop/branch frames as clearly boxed regions with label
 - Generous vertical spacing between interactions
-- **Driving AC ref on each major flow segment** — label the loop/branch frame (or the opening call of a distinct sub-flow) with the Feature AC it realises (e.g. frame title `verify token  [<AC>]`). Keeps the call flow tied to the intent it proves, not just the mechanics.
+- Change status mirrors the Mermaid boxes: suffix NEW calls `★`, CHANGED `~`, REMOVED `✗` (unchanged unmarked)
+
+## Readable Diagrams (BINDING — user rule 2026-10-29)
+
+- **Calls keep their signed names.** Every arrow is the real method from the contract card (`calculateConvictionModel(groupContainer, adjustments)`); returns are the real type. Participants are the real class names.
+- **Self-arrows for internal steps.** A rule the receiver applies itself is a self-call (`CMC->>CMC: scaledTo(target exposure)`), not a Note.
+- **No grey Notes** beyond the KEY line. A rule worth showing is a call or a self-call; detail lives in the contract card.
+- **Branch conditions in plain English.** Write the condition after the keyword as a full clause: `alt the request has conviction model settings` / `else the request has no conviction model settings` / `opt the request is a report` / `loop for each day and each group`. The renderer prints them as `IF …` / `ELSE …` / `IF ONLY …` / `LOOP …` (`reference/mermaid_edit/sequence-frame-labels.js`); every frame gets a blue dotted border and blue branch text.
+- **`autonumber`** on every sequence diagram so a step can be named by number.
+- **No AC tags** on calls, frames or notes — the traceability matrix in `components/_overview.md` maps every AC.
+- **Enforced mechanically, not by review.** `schematic mermaid` fails any sequence diagram that breaks these rules, and `phase complete` refuses an invalid `.mmd`: no `autonumber`, an AC tag, a Note other than the KEY line, a branch condition under 3 words, a call with more than 3 arguments (elide the rest as `…`), or a call label repeated verbatim (draw a pass-through hop once, the next as `…`).
 
 ## Supplementary: Concurrency Diagram (when applicable)
 

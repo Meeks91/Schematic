@@ -405,6 +405,7 @@ class MermaidEditor {
       const {svg} = await mermaid.render('me-g'+this.renderCount, this.textarea.value);
       this.preview.querySelectorAll('.me-sticky,.me-qa').forEach(el => el.remove()); // preserve? no — rerender clears svg
       this.preview.innerHTML = svg;
+      relabelSequenceFrames(this.preview);
       this._attachNodeClicks();
       this.statusEl.textContent = '✓';
     } catch(e) {

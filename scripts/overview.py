@@ -25,6 +25,7 @@ MERMAID_MIN_JS = Path(__file__).parent.parent / "reference" / "mermaid_edit" / "
 MARKED_MIN_JS = Path(__file__).parent.parent / "reference" / "overview_ui" / "marked.min.js"
 PURIFY_MIN_JS = Path(__file__).parent.parent / "reference" / "overview_ui" / "purify.min.js"
 QA_BUBBLE_JS = Path(__file__).parent.parent / "reference" / "mermaid_edit" / "qa-bubble-component.js"
+FRAME_LABELS_JS = Path(__file__).parent.parent / "reference" / "mermaid_edit" / "sequence-frame-labels.js"
 
 
 class OverviewHandler(BaseHTTPRequestHandler):
@@ -56,6 +57,10 @@ class OverviewHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/purify.min.js":
             self._respond(PURIFY_MIN_JS.read_text(encoding=ENCODING), "application/javascript")
+            return
+
+        if parsed.path == "/sequence-frame-labels.js":
+            self._respond(FRAME_LABELS_JS.read_text(encoding=ENCODING), "application/javascript")
             return
 
         if parsed.path == "/qa-bubble-component.js":

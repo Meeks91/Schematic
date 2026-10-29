@@ -56,7 +56,7 @@ Required structural rules:
 4. Use `curve: 'linear'` — orthogonal edges are easier to follow than splines.
 5. No fill colour for styled nodes — border-only (`stroke-width`, `stroke-dasharray`).
 6. Edge labels only when they add information.
-7. **Driving AC ref per node** — annotate each NEW node with the Feature AC that necessitated it (Mermaid: a `%% <AC>` comment or node-label suffix; ASCII: a trailing `← <AC>`). Keeps the *why* present so the DAG isn't a wiring diagram floating free of intent.
+7. **No AC tags on nodes** — the traceability matrix in `components/_overview.md` maps every AC; a node label carries the class name and its change status (NEW / MOD / DELETED) only.
 8. **Dashboard theme compatibility** — the schematic dashboard is dark by default; any explicit Mermaid colours must be dark-mode safe. Do not use light `rect rgb(...)`, light node fills, or pale backgrounds that wash out dark-theme text. Prefer no explicit fills unless the user asks for them.
 
 **ASCII DAG rules (when ≤8 nodes):**

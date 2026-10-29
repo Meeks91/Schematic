@@ -42,6 +42,10 @@ MUST be flagged in the contract with `⚠️ USER SIGN-OFF REQUIRED` per the ski
 - Test names follow `test_<scenario>` (underscore-separated, lowercase; scenario = the event under test + qualifying `when_<condition>` clause, e.g. `test_successful_submission`, `test_submission_when_slot_limit_reached`; the event is omitted only when the test class scopes to exactly it; numbered suffixes banned). Flag CamelCase, mechanism-chain names (`X_then_Y`), outcome-slice fragmentation, or vague names.
 - Every Function AC has ≥1 AC Test. Flag uncovered ACs.
 - Each test name is unambiguous about outcome AND condition. Flag "test_works" or similar.
+- Flag contrast clauses — the name states what happens instead of something else (`, not X`, `, never Y`,
+  `rather than`, `exactly as before`, `unchanged`). A negative is fine only when the absence is the behaviour under test.
+- Flag vague verbs that hide what is asserted (`advertises`, `is used`, `configured correctly`, `handles`, `processes`).
+- Flag sequence names (`X then Y`) and same-shape scenarios split into separate tests instead of one parameterised test.
 
 ### 6. Model location
 - Public models live in `models.py` next to the consuming class.

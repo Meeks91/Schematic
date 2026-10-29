@@ -42,6 +42,7 @@ For each call `A → B`:
 - Every participant in Mermaid appears in ASCII.
 - Every call in Mermaid appears in ASCII (and vice versa).
 - Flag drift — Mermaid is authoritative; ASCII is the mirror.
+- `_overview.md` § Sequence Diagram lists every flow `.mmd` with its purpose and ACs. Flag a missing or incomplete list.
 
 ### 6. No "skipped" calls
 - If a class is constructor-injected into the orchestrator of this flow but appears nowhere in the diagram, flag it. Either the diagram is incomplete OR the dependency is dead.
@@ -59,6 +60,15 @@ For each call `A → B`:
   flow of a given kind must show (e.g. an auth step on every endpoint flow, an audit-event
   emission on every mutation), verify each applicable flow shows them.
 - Skip this check entirely when no such project mandate exists — do NOT invent one.
+
+### 10. Change status marked
+- Every NEW or CHANGED call sits in its green/amber `rect` per `phase_6_sequence.md` §Change Status Colours; the KEY line is present; no `rect` straddles an `alt`/`par` branch.
+- Flag unmarked new/changed calls (BLOCKER) and a missing KEY line (NIT).
+
+### 11. Readable diagram
+- Per `phase_6_sequence.md` § Readable Diagrams: calls carry contract method names; branch conditions are plain-English clauses;
+  `autonumber` present; no grey Notes beyond the KEY line; no AC tags on calls, frames or notes.
+- Flag each violation (NIT).
 
 ## Output
 

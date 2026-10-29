@@ -13,6 +13,7 @@ from agent_responder import spawn_answer
 EDITOR_HTML = Path(__file__).parent / "editor.html"
 MERMAID_JS = Path(__file__).parent / "mermaid.min.js"
 QA_BUBBLE_JS = Path(__file__).parent / "qa-bubble-component.js"
+FRAME_LABELS_JS = Path(__file__).parent / "sequence-frame-labels.js"
 CONTENT_PATH = "/content"
 SAVE_PATH = "/save"
 NOTE_PATH = "/note"
@@ -87,6 +88,12 @@ class MermaidBridgeHandler(BaseHTTPRequestHandler):
         if self.path == "/mermaid.min.js":
             self._respond(
                 content=MERMAID_JS.read_text(encoding=ENCODING),
+                content_type="application/javascript",
+            )
+            return
+        if self.path == "/sequence-frame-labels.js":
+            self._respond(
+                content=FRAME_LABELS_JS.read_text(encoding=ENCODING),
                 content_type="application/javascript",
             )
             return

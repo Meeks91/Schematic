@@ -21,6 +21,8 @@ Pattern: `test_<scenario>` — the scenario is the event under test plus its qua
 ### Bad
 
 - `test_compute_1` — a numeral is not a scenario.
+- `test_averaged_across_the_period_not_compounded` — contrast clause; state what happens, not what doesn't.
+- `test_lineage_advertises_types` — vague verb; name what is asserted ("lists").
 - `test_works` / `test_empty` — no event.
 - `test_post_authenticates_then_adds_entry` — mechanism chain; internal steps are not the scenario.
 - `test_submit_returns_subscription` — outcome slice (submit also charges and activates); the scenario's full contract belongs in ONE test.

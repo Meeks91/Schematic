@@ -344,6 +344,7 @@
   </div>
 <script src="/mermaid.min.js"></script>
 <script src="/qa-bubble-component.js"></script>
+<script src="/sequence-frame-labels.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script type="module">
 
@@ -443,6 +444,7 @@ async function render() {
     else out.classList.remove("first-render");
     const { svg } = await mermaid.render("g" + renderCount, src.value);
     out.innerHTML = svg;
+    relabelSequenceFrames(out);
     // Fix truncation: override mermaid's tight inline width constraints
     out.querySelectorAll(".node foreignObject").forEach(el => {
       el.style.overflow = "visible";

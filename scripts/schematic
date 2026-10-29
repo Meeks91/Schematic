@@ -1332,9 +1332,103 @@ def cmd_mermaid(args: argparse.Namespace) -> None:
 
 def _validate_mermaid_file(path: Path) -> list[str]:
     mmdc_result = _try_mmdc(path)
-    if mmdc_result is not None:
-        return mmdc_result
-    return _heuristic_mermaid_check(path)
+    parse_findings = mmdc_result if mmdc_result is not None else _heuristic_mermaid_check(path)
+    return parse_findings + _readability_findings(path)
+
+
+# Readable-diagram rules (phase_6_sequence.md § Readable Diagrams), enforced on every sequence diagram.
+SEQUENCE_DECLARATION = "sequenceDiagram"
+AUTONUMBER_KEYWORD = "autonumber"
+AUTONUMBER_WINDOW = slice(1, 3)
+AC_TAG_RE = re.compile(r"\[\s*\d+\.[A-Z](?:\s*[–,\- ]\s*\d+\.[A-Z])*\s*\]|\b\d+\.[A-Z]\b")
+KEY_NOTE_PREFIX = "Note over "
+KEY_NOTE_MARKER = ": KEY"
+NOTE_KEYWORD = "Note"
+MAX_CALL_ARGUMENTS = 3
+ELIDED_ARGUMENTS = "…"
+CALL_ARROW_RE = re.compile(r"^\s*\w+\s*-{1,2}>>\s*\w+\s*:\s*(.*)$")
+CALL_ARGUMENT_LIST_RE = re.compile(r"\(([^()]*)\)")
+BRANCH_KEYWORDS = ("alt", "else", "opt", "loop")
+MIN_BRANCH_CONDITION_WORDS = 3
+COMMENT_PREFIX = "%%"
+
+
+def _readability_findings(path: Path) -> list[str]:
+    diagram_lines = path.read_text().splitlines()
+    content_lines = [
+        diagram_line.strip()
+        for diagram_line in diagram_lines
+        if diagram_line.strip() and not diagram_line.strip().startswith(COMMENT_PREFIX)
+    ]
+    if not content_lines or content_lines[0] != SEQUENCE_DECLARATION:
+        return []
+
+    findings: list[str] = []
+    if AUTONUMBER_KEYWORD not in content_lines[AUTONUMBER_WINDOW]:
+        findings.append(f"readable: add '{AUTONUMBER_KEYWORD}' straight after '{SEQUENCE_DECLARATION}'")
+
+    call_label_to_first_lineno: dict[str, int] = {}
+    for lineno, raw_line in enumerate(diagram_lines, start=1):
+        stripped_line = raw_line.strip()
+        if not stripped_line or stripped_line.startswith(COMMENT_PREFIX):
+            continue
+        findings += _readability_line_findings(
+            line=stripped_line,
+            lineno=lineno,
+            call_label_to_first_lineno=call_label_to_first_lineno,
+        )
+    return findings
+
+
+def _readability_line_findings(line: str, lineno: int, call_label_to_first_lineno: dict[str, int]) -> list[str]:
+    findings: list[str] = []
+    if AC_TAG_RE.search(line):
+        findings.append(f"readable: line {lineno}: AC tag — the traceability matrix maps ACs, diagrams carry none")
+    if line.startswith(NOTE_KEYWORD) and not (line.startswith(KEY_NOTE_PREFIX) and KEY_NOTE_MARKER in line):
+        findings.append(f"readable: line {lineno}: grey Note — show the rule as a call or self-call instead")
+
+    first_word = line.split()[0].lower()
+    if first_word in BRANCH_KEYWORDS:
+        branch_condition = line[len(first_word):].strip()
+        if len(branch_condition.split()) < MIN_BRANCH_CONDITION_WORDS:
+            findings.append(
+                f"readable: line {lineno}: '{first_word}' needs a plain-English condition of at least "
+                f"{MIN_BRANCH_CONDITION_WORDS} words (e.g. 'alt the request has conviction model settings')",
+            )
+
+    call_match = CALL_ARROW_RE.match(line)
+    if call_match:
+        findings += _readability_call_findings(
+            call_label=call_match.group(1),
+            lineno=lineno,
+            call_label_to_first_lineno=call_label_to_first_lineno,
+        )
+    return findings
+
+
+def _readability_call_findings(call_label: str, lineno: int, call_label_to_first_lineno: dict[str, int]) -> list[str]:
+    argument_list_match = CALL_ARGUMENT_LIST_RE.search(call_label)
+    if not argument_list_match:
+        return []
+
+    findings: list[str] = []
+    argument_text = argument_list_match.group(1).strip()
+    if argument_text not in ("", ELIDED_ARGUMENTS):
+        argument_count = len([argument for argument in argument_text.split(",") if argument.strip()])
+        if argument_count > MAX_CALL_ARGUMENTS:
+            findings.append(
+                f"readable: line {lineno}: {argument_count} arguments — show at most {MAX_CALL_ARGUMENTS}, "
+                f"elide unchanged ones as '{ELIDED_ARGUMENTS}'",
+            )
+
+    if call_label in call_label_to_first_lineno:
+        findings.append(
+            f"readable: line {lineno}: repeats line {call_label_to_first_lineno[call_label]}'s call — draw a "
+            f"pass-through hop as one call, the next hop as '{ELIDED_ARGUMENTS}'",
+        )
+    else:
+        call_label_to_first_lineno[call_label] = lineno
+    return findings
 
 
 MMDC_INVOCATIONS = (

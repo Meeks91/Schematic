@@ -50,7 +50,7 @@ Before emitting any line, ask the two questions in the column header for that se
 
 ## Architecture rules (every audit and every reviewer, BINDING)
 
-Check the bundle against every rule in the resolved `architecture` and `types` modules. A breach is a `BLOCKER` unless `objective.md` § Architecture Deviations lists it. Most-missed: an internal type (not a Service or shared Client) used from another service's folder. A helper in a folder with no Service of its own is shared and may be used from any service. A subclass may take its base's dependencies.
+Check the bundle against every rule in the resolved `architecture` and `types` modules. A breach is a `BLOCKER` unless `objective.md` § Architecture Deviations lists it. Most-missed: an internal type (not a Service or shared Client) used from another service's folder. A helper in a folder with no Service of its own is shared and may be used from any service. A subclass may take its base's dependencies. A repository may read another service's tables in SQL when that is faster or simpler; a write to another service's table is a breach unless listed under Architecture Deviations.
 
 ## Clean case
 

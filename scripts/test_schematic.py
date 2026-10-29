@@ -5,6 +5,8 @@ import contextlib
 import importlib.util
 import io
 import json
+import shutil
+import subprocess
 import textwrap
 import unittest
 from pathlib import Path
@@ -80,12 +82,28 @@ _OBJECTIVE_MD = textwrap.dedent("""\
 
 _VALID_SEQUENCE_MMD = textwrap.dedent("""\
     sequenceDiagram
+    autonumber
     participant A
     participant B
     A->>B: request
     B-->>A: response
-    loop retry
+    loop for each retry attempt
     A->>B: retry
+    end
+""")
+
+_READABLE_SEQUENCE_MMD = textwrap.dedent("""\
+    sequenceDiagram
+    autonumber
+    participant A
+    participant B
+    Note over A,B: KEY · green box = NEW call or rule · no box = unchanged
+    alt the request has settings
+    A->>B: calculate(group, settings)
+    B->>B: scaledTo(target exposure)
+    B-->>A: null
+    else the request has no settings
+    B-->>A: null
     end
 """)
 
@@ -1044,6 +1062,125 @@ class TestMermaidHeuristics(unittest.TestCase):
 
 
 # Fixtures
+
+
+_FRAME_LABELS_JS = Path(__file__).parent.parent / "reference" / "mermaid_edit" / "sequence-frame-labels.js"
+
+_FRAME_LABELS_HARNESS = r"""
+const assert = require("assert");
+class FakeStyle { constructor() { this.values = {}; } setProperty(k, v) { this.values[k] = v; } }
+class FakeElement {
+  constructor(tag, cls, text, attrs) {
+    this.tagName = tag; this.classList = { add() {} }; this.className = cls || ""; this.textContent = text || "";
+    this.attrs = Object.assign({}, attrs || {}); this.style = new FakeStyle(); this.children = []; this.parentNode = null;
+  }
+  getAttribute(n) { return this.attrs[n] === undefined ? null : this.attrs[n]; }
+  setAttribute(n, v) { this.attrs[n] = v; }
+  removeAttribute(n) { delete this.attrs[n]; }
+  appendChild(c) { if (c.parentNode) c.remove(); c.parentNode = this; this.children.push(c); return c; }
+  insertBefore(c, ref) { c.parentNode = this; this.children.splice(this.children.indexOf(ref), 0, c); return c; }
+  remove() { const p = this.parentNode; if (p) { p.children.splice(p.children.indexOf(this), 1); this.parentNode = null; } }
+  get previousSibling() { const p = this.parentNode; return p.children[p.children.indexOf(this) - 1]; }
+  get ownerSVGElement() { let n = this; while (n.parentNode) n = n.parentNode; return n; }
+  getBBox() { return { x: 0, y: 0, width: 10, height: 10 }; }
+  querySelectorAll(sel) {
+    const want = sel.split(",").map(x => x.trim().replace(":scope > ", ""));
+    return this.children.filter(c => want.some(w => { const [t, cl] = w.split("."); return c.tagName === t && (!cl || c.className === cl); }));
+  }
+  querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
+}
+function frame(keyword, condition, elseCondition) {
+  const g = new FakeElement("g", "", "", { "data-et": "control-structure" });
+  g.appendChild(new FakeElement("line", "loopLine"));
+  g.appendChild(new FakeElement("polygon", "labelBox", "", { points: "64,123 114,123" }));
+  g.appendChild(new FakeElement("text", "labelText", keyword, { y: "136" }));
+  g.appendChild(new FakeElement("text", "loopText", "[" + condition + "]", { y: "141" }));
+  if (elseCondition) g.appendChild(new FakeElement("text", "sectionTitle", "[" + elseCondition + "]", { y: "239" }));
+  return g;
+}
+const svg = new FakeElement("svg");
+const frames = [frame("alt", "the request has settings", "no settings"), frame("opt", "the request is a report"), frame("loop", "for each day")];
+frames.forEach(f => svg.appendChild(f));
+svg.querySelectorAll = sel => sel.includes("control-structure") ? frames : [];
+global.window = {};
+global.document = { createElementNS: (_ns, tag) => new FakeElement(tag, "frame-label-plate") };
+require(process.argv[2]);
+window.relabelSequenceFrames(svg);
+const labels = svg.children.filter(c => c.tagName === "text").map(t => t.textContent);
+assert.deepStrictEqual(labels, ["IF the request has settings", "ELSE no settings", "IF ONLY the request is a report", "LOOP for each day"]);
+const blue = svg.children.filter(c => c.tagName === "text").every(t => t.style.values.fill === "#89b4fa");
+assert.ok(blue, "every frame label is blue");
+frames.forEach(f => assert.strictEqual(f.children.find(c => c.tagName === "line").style.values.stroke, "#89b4fa"));
+console.log("ok");
+"""
+
+
+class TestSequenceFrameLabels(unittest.TestCase):
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_frames_render_as_blue_if_else_if_only_and_loop(self) -> None:
+        # Given
+        with TemporaryDirectory() as tmp:
+            harness_path = Path(tmp) / "harness.js"
+            harness_path.write_text(_FRAME_LABELS_HARNESS)
+
+            # When
+            harness_run = subprocess.run(
+                ["node", str(harness_path), str(_FRAME_LABELS_JS)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+        # Then
+        self.assertEqual(harness_run.returncode, 0, msg=harness_run.stderr)
+
+
+class TestReadableSequenceRules(unittest.TestCase):
+
+    def _readability(self, content: str) -> list[str]:
+        with TemporaryDirectory() as tmp:
+            mmd_file = Path(tmp) / "flow.mmd"
+            mmd_file.write_text(content)
+            return _cli._readability_findings(mmd_file)
+
+    def test_a_readable_diagram_has_no_findings(self) -> None:
+        self.assertEqual(self._readability(_READABLE_SEQUENCE_MMD), [])
+
+    def test_a_missing_autonumber_is_flagged(self) -> None:
+        findings = self._readability(_READABLE_SEQUENCE_MMD.replace("autonumber\n", ""))
+        self.assertEqual(findings, ["readable: add 'autonumber' straight after 'sequenceDiagram'"])
+
+    def test_an_ac_tag_is_flagged(self) -> None:
+        findings = self._readability(
+            _READABLE_SEQUENCE_MMD.replace("calculate(group, settings)", "calculate(group, settings)  [2.A]"),
+        )
+        self.assertEqual(len([finding for finding in findings if "AC tag" in finding]), 1)
+
+    def test_a_grey_note_is_flagged_and_the_key_note_is_allowed(self) -> None:
+        findings = self._readability(
+            _READABLE_SEQUENCE_MMD.replace("B->>B: scaledTo(target exposure)", "Note over B: rescale"),
+        )
+        self.assertEqual(len([finding for finding in findings if "grey Note" in finding]), 1)
+
+    def test_a_short_branch_condition_is_flagged(self) -> None:
+        findings = self._readability(_READABLE_SEQUENCE_MMD.replace("alt the request has settings", "alt settings"))
+        self.assertEqual(len([finding for finding in findings if "plain-English condition" in finding]), 1)
+
+    def test_more_than_three_arguments_are_flagged(self) -> None:
+        findings = self._readability(
+            _READABLE_SEQUENCE_MMD.replace("calculate(group, settings)", "calculate(a, b, c, d)"),
+        )
+        self.assertEqual(len([finding for finding in findings if "arguments" in finding]), 1)
+
+    def test_a_repeated_call_is_flagged_and_repeated_returns_are_allowed(self) -> None:
+        findings = self._readability(
+            _READABLE_SEQUENCE_MMD.replace("B->>B: scaledTo(target exposure)", "B->>B: calculate(group, settings)"),
+        )
+        self.assertEqual(len([finding for finding in findings if "repeats line" in finding]), 1)
+
+    def test_flowcharts_are_not_checked(self) -> None:
+        self.assertEqual(self._readability(_VALID_FLOWCHART_MMD), [])
 
 
 class TestSetup(unittest.TestCase):

@@ -4570,6 +4570,28 @@ class TestArchitectureBoundary(unittest.TestCase):
         # Then
         self.assertEqual(arch_findings, [_GHOST_UNPLACED_FINDING])
 
+    def test_validate_places_an_uncarded_class_by_its_kotlin_source_file(self) -> None:
+        # Given
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _gen_arch_schematic_dir(
+                tmp=tmp,
+                dag_edges=[f"{_GHOST_RESOLVER} --> {_B_SERVICE}"],
+                class_to_base=_NO_BASES,
+                deviation_rows=_NO_DEVIATIONS,
+            )
+            kotlin_source = Path(tmp) / "src" / "main" / "kotlin" / "b" / f"{_GHOST_RESOLVER}.kt"
+            kotlin_source.parent.mkdir(parents=True)
+            kotlin_source.write_text(f"class {_GHOST_RESOLVER}\n")
+
+            # When
+            arch_findings = _arch_findings_of(
+                schematic_dir=schematic_dir,
+                project_root=Path(tmp),
+            )
+
+        # Then
+        self.assertEqual(arch_findings, [])
+
     def test_validate_skips_config_nodes(self) -> None:
         # Given / When
         arch_findings = self._findings_for(

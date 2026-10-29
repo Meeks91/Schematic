@@ -127,7 +127,7 @@ PUBLIC_CLASS_SUFFIXES = ("Service", "Client")
 SERVICE_SUFFIX = "Service"
 SOURCE_ROOT_DIRNAME = "src"
 SHARED_INFRA_DIRNAME = "src/shared"
-PYTHON_SOURCE_GLOB = "*.py"
+SOURCE_FILE_GLOBS = ("*.py", "*.kt", "*.ts")
 DAG_FILENAME = "dag.mmd"
 DAG_CLASS_LIST_SEPARATOR = ","
 DAG_EDGE_PATTERN = re.compile(r"^\s*(?P<dependency>\w+) --> (?P<consumer>\w+)\s*$", re.MULTILINE)
@@ -1514,7 +1514,8 @@ def _class_to_folder(schematic_dir: Path) -> dict[str, Path]:
     project_root = find_project_root()
     class_to_folder = {
         source_path.stem: source_path.parent
-        for source_path in (project_root / SOURCE_ROOT_DIRNAME).rglob(PYTHON_SOURCE_GLOB)
+        for source_file_glob in SOURCE_FILE_GLOBS
+        for source_path in (project_root / SOURCE_ROOT_DIRNAME).rglob(source_file_glob)
     }
     for card_path in (schematic_dir / "components").glob("*.md"):
         for card_dir_match in CARD_DIR_PATTERN.finditer(card_path.read_text()):

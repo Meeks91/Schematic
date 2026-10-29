@@ -42,7 +42,7 @@ Each class is ONE card in `components/<class_name>.md`. The same layout renders 
 Fixed order:
 
 1. **Heading** — an `H2` that is the class name in backticks: `## \`ClassName\``. One card = one class; the heading IS that class. NEVER a prose sentence, NEVER "Card N — ClassName — MODIFIED".
-2. **Identity line** — `**Dir:** \`path\` · **Type:** New | Modified`
+2. **Identity line** — `**Dir:** \`path\` · **Type:** New | Modified` — `path` from the repo root
 3. **Change Required** — a `**Change Required**` bold heading then a bullet list, **max 2 lines, fewer is better**. What the change is / why the class exists.
 4. **Constructor changes** — *(only if new or changed deps)* a bold heading `**Constructor changes**` then a table: `Dependency | Type | Role`. Contains ONLY constructor dependencies — never methods.
 5. **New methods** — *(only methods that did not exist before)* a bold heading `**New methods**` then a table: `Name | Parameters | Returns | Behaviour` (`Behaviour` one line). Routes use `Name | Route | Returns | Behaviour`.

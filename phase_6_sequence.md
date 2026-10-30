@@ -111,6 +111,7 @@ debounced render so large diagrams stay navigable and don't thrash on each keyst
 ## Readable Diagrams (BINDING — user rule 2026-10-29)
 
 - **Calls keep their signed names.** Every arrow is the real method from the contract card (`calculateConvictionModel(groupContainer, adjustments)`); returns are the real type. Participants are the real class names.
+- **Calls point forward.** Order participants in call order so every call arrow points left to right; only returns point right to left. A call that would point back means the participants are out of order — reorder them.
 - **Self-arrows for internal steps.** A rule the receiver applies itself is a self-call (`CMC->>CMC: scaledTo(target exposure)`), not a Note.
 - **No grey Notes** beyond the KEY line. A rule worth showing is a call or a self-call; detail lives in the contract card.
 - **Branch conditions in plain English.** Write the condition after the keyword as a full clause: `alt the request has conviction model settings` / `else the request has no conviction model settings` / `opt the request is a report` / `loop for each day and each group`. The renderer prints them as `IF …` / `ELSE …` / `IF ONLY …` / `LOOP …` (`reference/mermaid_edit/sequence-frame-labels.js`); every frame gets a blue dotted border and blue branch text.

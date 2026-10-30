@@ -114,7 +114,8 @@ Phase 8 runs **manual** (sketch → confirm → implement, per task) or **auto**
 | `phase complete` artifact checks | Artifacts shown in chat but never written to disk |
 | `phase complete` mermaid checks (P5/P6) | Locking a DAG or sequence diagram that doesn't parse |
 | `phase complete` audit + sign-off | Locking a phase without its quality gate |
-| `task next` auto-claim | Implementation starting without a kanban state change |
+| `task next` auto-claim + package check | Implementation starting without a kanban state change, or on a card whose types are missing or owned by an unbuilt card |
+| `phase complete 4` card sections | A Repository card with no signed Table, a Router card with no Access patterns |
 | `task status` legal transitions | Illegal task state jumps |
 | `phase complete 7` milestone decision | Locking the plan without answering whether delivery is staged |
 | `task next` milestone boundary | Work on the next stage starting before you signed the last one off |
@@ -132,6 +133,7 @@ Phase 8 runs **manual** (sketch → confirm → implement, per task) or **auto**
 schematic init|status|validate|mermaid            bundle lifecycle + integrity
 schematic phase audit|sign-off|complete           gate state, phases 1-9 (audit: 1,2,4,6,7)
 schematic task next|show|status|note|review-result|complete    task loop
+schematic package check <tags…> | --all           type ownership before a builder starts
 schematic milestone decide|propose|lock|status|sign-off|report|amend   staged delivery
 schematic review start|consistency|consistency-result|e2e|e2e-result|status  phase 8 review
 schematic questions / schematic answer            dashboard Q&A relay
@@ -152,7 +154,7 @@ Schematic absorbs the conventions of the repo it runs in. Each **slot** maps to 
 | `testing` | test planning, naming, assertion style | P4, P7, P8 (cited in per-task review briefs) |
 | `review` | review lenses, gate criteria | audits + P8 review prompts |
 | `exemplars` | known-good directories to imitate | learn mode, P8 |
-| `schematic.reviewModel` | model for review subagents (default `sonnet`) | P8 |
+| `schematic.reviewModel` · `reviewBatchSize` · `reviewerContextCap` | review model (default `sonnet`), tasks per shared-reviewer pass (5), context before a fresh reviewer (250000) | P8 |
 | `schematic.completionCompression` | what survives into repo docs after Phase 9 | P9 |
 
 Resolution order: repo `.schematic/standards.json` (else `.claude/standards.json`, back-compat) → user-global `~/.schematic/standards.json` (else `~/.claude/standards.json`; confirmed + copied in) → discover skills by frontmatter → interview → **learn from the codebase**. `schematic init` prints slot-by-slot coverage so gaps are visible on day one.

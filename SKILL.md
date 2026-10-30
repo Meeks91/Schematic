@@ -19,6 +19,7 @@ description: Multi-phase feature planning skill. Grills the user to produce a fe
 > schematic init|status|validate|mermaid          # bundle lifecycle + integrity
 > schematic phase audit|sign-off|complete         # gate state per phase 1-9 (audit: 1,2,4,6,7 only)
 > schematic task next|show|status|note|ask|decision|review-result|complete  # phase 8 task loop
+> schematic package check <tags…> | --all          # type ownership: P4/P7 audits + the P8 dispatch gate
 > schematic milestone decide|propose|lock|status|sign-off|report|amend  # staged delivery: P7 decision, P8 boundary
 > schematic review start|consistency|consistency-result|e2e|e2e-result|status  # phase 8 review
 > schematic questions / schematic answer          # Q&A relay: dashboard, editor, AND `task ask`
@@ -127,7 +128,7 @@ docs/schematics/<feature_name>/
 | 1: Traces (optional, on request) | `research/traces/<name>/` |
 | 2: Topology (class summary + Class ACs) | `components/_overview.md` (summary table) |
 | 3: Directory structure | `objective.md` |
-| 4: Contracts, models, Function ACs, tests | `components/<class>.md` (one per class) |
+| 4: Contracts, models, Function ACs, tests | `components/<class>.md` (one per class) + `_overview.md` § Wire Rules |
 | 4 end: AC coverage tally | `components/_overview.md` |
 | 5: DAG + App Integration | `dag.mmd` + `components/_overview.md` |
 | 6: Sequence diagram | `sequence.mmd` + `components/_overview.md` (ASCII) |
@@ -518,6 +519,9 @@ path, producers before consumers).
 |---|---|---|---|---|
 | 3.3 | TimelineMetricsService | Service | Owns per-period timeline math | 2.B — per-period growth series |
 
+## Wire Rules                                         [Phase 4 — decided once]
+Enum spelling, body casing, path-id types; cards cite, never restate
+
 ## Injection DAG                                      [Phase 5]
 > Authoritative: ../dag.mmd (when >8 nodes)
 
@@ -549,19 +553,7 @@ Tally: N Feature ACs · M cards · P Feature tests · R Branch tests
 | M1 | <title> | a, b | <what shipping this stage demonstrates> |
 | M2 | <title> | c, d.3 | <…> |
 
-## <tag> | <Action> | <Target>
-Status: pending | in_progress | pendingInput | review | complete
-
-Feature ACs: <ref> — <title>, <ref> — <title>
-Class AC: <from objective.md summary>
-Component file: ./components/<class_name>.md
-Integration point: <from _overview.md>
-
-Test hierarchy:
-  AC Tests (primary):
-    - <test name> (proves AC-N.1 with 1 line reminder)
-  Branch Tests (secondary):
-    - <test name>
+## <tag> | <Action> | <Target>        ← one block per task: phase_7_tasks.md § Detailed task block shape
 ```
 
 **`## Milestones` (optional, Phase 7).** Four columns, ids running `M1, M2, …` in table order. `Scope` holds group letters (`a`) and/or explicit task tags (`c.1`), comma-separated — an explicit tag beats a group letter that would also claim the task. The section holds **the table and nothing else** (`schematic milestone amend` regenerates it). Every task must land in exactly one milestone and no task may depend on a task in a later one — before lock `schematic milestone propose` (and `lock`) refuses otherwise; `schematic validate` enforces the same rules only AFTER lock. Omit the section entirely to deliver as one stage.
@@ -640,5 +632,4 @@ Operationalised via `schematic-task-done --matched [y|n] --updated [y|n]` — fo
 - **Explore the codebase** if it can answer a question — don't ask the user what the code already tells you.
 - **All names are binding** — public method names, parameter names, model field names, and return types are locked once signed off. Any deviation requires re-sign-off.
 - **DAG integrity** — the injection graph must remain acyclic. If a proposed design introduces a cycle, flag it and redesign.
-- **Code review gate** — after each class is implemented, verify alignment with the schematic and code quality standards.
-- **Mark tasks complete** — after each task is implemented and reviewed, mark it complete before moving to the next. The user must always be able to see progress.
+- **Review and completion** — Phase 8's gates (`phase_8_implementation_loop.md`): no builder starts before a clean package check, no task completes before a clean review.

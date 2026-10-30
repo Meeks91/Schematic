@@ -9,18 +9,7 @@
 > - `schematic task show|status|complete|next` — drive the Phase 8 implementation loop (see `phase_8_implementation_loop.md`).
 > - `schematic validate` — final AC-pyramid + cross-ref integrity check before handing off to implementation.
 
-Write all tasks to `<schematic_dir>/tasks.md`.
-
-Each task must be self-contained enough for a cold-start agent. Each task includes:
-
-- **Feature ACs** it satisfies (by number from `objective.md`)
-- **Class AC** (from `components/_overview.md` component summary)
-- **Function ACs** (from `components/<class>.md`)
-- **Constructor dependencies** (from `components/<class>.md`)
-- **Integration point** (from `components/_overview.md`)
-- **Test hierarchy**: AC Tests (primary) + Branch Tests (secondary) — referenced from `components/<class>.md`
-
-Use the `tasks.md` format defined in `SKILL.md` → Schematic File Structure.
+Write all tasks to `<schematic_dir>/tasks.md`. Each task is self-contained enough for a cold-start agent: its block (shape below) plus the component file it names carry everything.
 
 ## Task graph overview (BINDING — present BEFORE Phase 7 gates)
 
@@ -107,6 +96,7 @@ Every detail block under `## Detailed Task Blocks` MUST use this skeleton:
 Status: pending
 Component file: components/<class>.md
 Blocked by: <tag>, <tag>   (or "—" if none)
+Model: opus | sonnet
 
 **Feature ACs:** <ref> — <title>, <ref> — <title>
 **Class AC:** see `objective.md` §<n>
@@ -121,7 +111,8 @@ Blocked by: <tag>, <tag>   (or "—" if none)
 - **`Status: pending`** is mandatory — the CLI flips it to `complete` and refuses to operate on blocks missing it.
 - **`Component file:`** (CLI key, bare — not `**Contract:**`) gives the agent its contract card and is existence-checked by `schematic validate`. OMIT the line for tasks with no card (migrations, deletions, composition root, smoke test) — a dangling path fails validate.
 - **`Blocked by:`** (CLI key, bare) drives `schematic task next` ordering; list the dependency tags or `—`. Must mirror the graph's Deps column exactly. Tags here that aren't real task tags fail validate.
-- These three bare keys (`Component file:`, `Blocked by:`, `Status:`) are the only CLI-parsed lines an author writes; everything else (`**Feature ACs:**`, `**Class AC:**`, `**Scope:**`, `**Test files (NEW):**`) is human context the CLI ignores. A fourth bare key, `Divergence:`, is written by `schematic-task-done` on completion and read back into the milestone report — never author it by hand.
+- **`Model:`** (CLI key, bare) is the builder's tier, per handover § Tier by complexity, plus: credits or locking, LLM-client and prompt-to-code work, and any card with a gap still open are `opus`; fix passes, wiring and docs are `sonnet` once every gap is ruled. A package holds at most 10 `opus` or 6 `sonnet` tasks (`schematic package check` reports more as a gap); a package with any `opus` task runs on `opus`. Phase 8 may re-tier after its pre-scan by editing this line.
+- These four bare keys (`Component file:`, `Blocked by:`, `Status:`, `Model:`) are the only CLI-parsed lines an author writes; everything else (`**Feature ACs:**`, `**Class AC:**`, `**Scope:**`, `**Test files (NEW):**`) is human context the CLI ignores. `Divergence:` is written by `schematic-task-done` on completion and read back into the milestone report — never author it by hand.
 
 ## Audit hook (mandatory — at end of Phase 7, after all task gates locked)
 
@@ -132,17 +123,4 @@ After every Phase 7 task gate is locked, dispatch the end-to-end audit — it wa
 
 **Confirm: y/comment**
 
----
-
-## Implementation
-
-Phase 7 ends when `tasks.md` is locked. Implementation happens in **Phase 8**.
-
-See `phase_8_implementation_loop.md` for:
-- Per-task protocol (read component file + `_overview.md` for cross-cutting concerns)
-- The `schematic-task-done` CLI used to mark tasks complete with honest divergence reporting
-- Post-all-tasks blueprint drift validation
-
-Either flow (collaborative sketch loop or autonomous execution) is valid — the
-schematic is designed so any agent can pick up `tasks.md` + the referenced
-`components/<class>.md` file and implement cold. Phase 8 covers both.
+Locking Phase 7 arms the Phase 8 package gate (`phase_8_implementation_loop.md` § Package dispatch).

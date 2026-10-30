@@ -4977,6 +4977,881 @@ class TestArchitectureSignOff(unittest.TestCase):
             self.assertEqual(_cli.load_state(schematic_dir)["phases"][str(_ARCH_PHASE)]["status"], "locked")
 
 
+
+# Fixtures:
+
+_PKG_REPOSITORY_CARD = textwrap.dedent("""\
+    ## `ScriptRepository`
+    **Dir:** `src/services/script/repos/ScriptRepository.py` · **Type:** New
+
+    **Models / Config** — `script/models.py`
+    | Type | Fields / values | Note |
+    |---|---|---|
+    | `Script` | `script_id: ScriptId`, `title: str` | |
+""")
+_PKG_DRAFT_CARD = textwrap.dedent("""\
+    ## `ScriptDraftFactory`
+    **Dir:** `src/services/script/utils/ScriptDraftFactory.py` · **Type:** New
+
+    **Models / Config** — `script/models.py`
+    | Type | Fields / values | Note |
+    |---|---|---|
+    | `ScriptDraft` | `title: str` | |
+""")
+_PKG_SOURCE_IDS = 'from typing import NewType\n\nUserId = NewType("UserId", str)\nScriptId = NewType("ScriptId", str)\n'
+_PKG_OWNED_DRAFT = "ScriptDraft"
+_PKG_UNDEFINED_DRAFT = "ScriptBlueprint"
+_PKG_SERVICE_CARD_FILE = "components/script_service.md"
+_PKG_OWNED_BY_DRAFT_TASK_GAP = (
+    "OWNED-BY-b.1   `ScriptDraft` — a.2 ScriptService Parameters (components/script_service.md)"
+)
+_PKG_MISSING_BLUEPRINT_GAP = (
+    "MISSING        `ScriptBlueprint` — a.2 ScriptService Parameters (components/script_service.md)"
+)
+_PKG_TASKLESS_MISSING_GAP = (
+    "MISSING        `ScriptBlueprint` — — ScriptService Parameters (components/script_service.md)"
+)
+_PKG_CHECKED_TAGS = ["a.1", "a.2"]
+_PKG_SONNET = "sonnet"
+_PKG_TASKS_OVER_SONNET_CAP = 7
+_PKG_CHECK_AT = "2026-10-30T00:00:00+00:00"
+_PKG_HOOK_CARD = textwrap.dedent("""\
+    ## `ScriptHookService`
+    **Dir:** `src/services/script/hook/ScriptHookService.py` · **Type:** New
+
+    **Constructor changes**
+    | Dependency | Type | Role |
+    |---|---|---|
+    | `hook_repository` | `ScriptHookRepository` | hook rows |
+
+    **New methods**
+    | Name | Parameters | Returns | Behaviour |
+    |---|---|---|---|
+    | `propose_hooks` | `user_id: UserId`, `connection: sa.Connection` | `ScriptHookBatch` | A batch of lines |
+
+    **Models / Config** — `script/hook/models.py`
+    | Type | Fields / values | Note |
+    |---|---|---|
+    | `ScriptHookMadeBy` | `AI_WRITTEN` · `CREATOR_OWN` | |
+    | `ScriptHookBatch` | `hooks: tuple[ScriptHook, ...]`, `parent: ScriptHookId \\| None` | |
+
+    `ScriptHookId` lives in `ids.py`:
+    | Field | Type | Note |
+    |---|---|---|
+    | `value` | `HookIdValue` | |
+
+    **Models** — `script/hook/wire.py`: `ScriptHookBody`
+""")
+_PKG_SOURCE_TEXT = textwrap.dedent("""\
+    from typing import NewType
+    from src.models import (
+        ReelId,
+        ScriptId as StudioScriptId,
+    )
+    import kotlinx.serialization.Serializable
+    import { CreatorBody, type ReelBody } from "./wire";
+
+    UserId = NewType("UserId", str)
+
+
+    class ScriptRepository:
+        pass
+""")
+
+
+def _gen_service_card(draft_type_name: str) -> str:
+    return textwrap.dedent(f"""\
+        ## `ScriptService`
+        **Dir:** `src/services/script/ScriptService.py` · **Type:** New
+
+        **New methods**
+        | Name | Parameters | Returns | Behaviour |
+        |---|---|---|---|
+        | `create_script` | `user_id: UserId`, `draft: {draft_type_name}` | `Script` | Saves the draft as a script |
+    """)
+
+
+def _gen_package_tasks_md(service_blocked_by: str, draft_status: str, service_card_owned: bool) -> str:
+    service_task = (
+        f"## a.2 | Create | ScriptService\nStatus: pending\n"
+        f"Component file: ./{_PKG_SERVICE_CARD_FILE}\nBlocked by: {service_blocked_by}\n\n"
+        if service_card_owned
+        else ""
+    )
+    return (
+        "# Tasks\n\n"
+        "## a.1 | Create | ScriptRepository\nStatus: pending\n"
+        "Component file: ./components/script_repository.md\nBlocked by: —\n\n"
+        f"{service_task}"
+        f"## b.1 | Create | ScriptDraftFactory\nStatus: {draft_status}\n"
+        "Component file: ./components/script_draft_factory.md\nBlocked by: —\n"
+    )
+
+
+def _gen_package_bundle(
+    tmp: str,
+    draft_type_name: str,
+    service_blocked_by: str,
+    draft_status: str,
+    service_card_owned: bool,
+) -> Path:
+    """A bundle whose ScriptService card names Script (a.1), UserId (src) and the draft type."""
+    schematic_dir = _make_schematic_dir(tmp)
+    components_dir = schematic_dir / "components"
+    (components_dir / "script_repository.md").write_text(_PKG_REPOSITORY_CARD)
+    (components_dir / "script_draft_factory.md").write_text(_PKG_DRAFT_CARD)
+    (components_dir / "script_service.md").write_text(_gen_service_card(draft_type_name=draft_type_name))
+    (schematic_dir / "tasks.md").write_text(
+        _gen_package_tasks_md(
+            service_blocked_by=service_blocked_by,
+            draft_status=draft_status,
+            service_card_owned=service_card_owned,
+        ),
+    )
+    source_dir = Path(tmp) / "src" / "shared"
+    source_dir.mkdir(parents=True)
+    (source_dir / "ids.py").write_text(_PKG_SOURCE_IDS)
+    return schematic_dir
+
+
+def _package_gaps_of(schematic_dir: Path, project_root: Path, package_tags: list[str]) -> list[str]:
+    tasks = _cli.parse_tasks(schematic_dir / "tasks.md")
+    with patch.object(_cli, "find_project_root", return_value=project_root):
+        ownership = _cli._type_ownership(
+            schematic_dir=schematic_dir,
+            tasks=tasks,
+        )
+    return _cli._type_gap_lines(
+        ownership=ownership,
+        checked_cards=_cli._package_checked_cards(
+            ownership=ownership,
+            tasks=tasks,
+            package_tags=frozenset(package_tags),
+        ),
+    )
+
+
+def _bundle_gaps_of(schematic_dir: Path, project_root: Path) -> list[str]:
+    tasks = _cli.parse_tasks(schematic_dir / "tasks.md")
+    with patch.object(_cli, "find_project_root", return_value=project_root):
+        ownership = _cli._type_ownership(
+            schematic_dir=schematic_dir,
+            tasks=tasks,
+        )
+    return _cli._type_gap_lines(
+        ownership=ownership,
+        checked_cards=_cli._bundle_checked_cards(
+            ownership=ownership,
+            tasks=tasks,
+        ),
+    )
+
+
+def _seed_package_state(schematic_dir: Path, gate_armed: bool, package_checks: list[dict]) -> None:
+    state = _cli.load_state(schematic_dir)
+    state["package_gate"] = gate_armed
+    state["package_checks"] = package_checks
+    _cli.save_state(schematic_dir, state)
+
+
+def _gen_package_check_entry(tags: list[str], gaps: list[str]) -> dict:
+    return {
+        "tags": tags,
+        "gaps": gaps,
+        "at": _PKG_CHECK_AT,
+    }
+
+
+def _run_package_task_next(schematic_dir: Path, override: str | None) -> None:
+    with patch.object(_cli, "_resolve_single_or_all", return_value=[schematic_dir]), \
+         contextlib.redirect_stdout(io.StringIO()):
+        _cli._task_next(
+            _make_args(
+                name=None,
+                peek=False,
+                override=override,
+            ),
+        )
+
+
+def _gen_tiered_task_block(tag: str, model: str | None) -> str:
+    model_line = (
+        f"Model: {model}\n"
+        if model
+        else ""
+    )
+    return f"## {tag} | Create | Unit\nStatus: pending\n{model_line}"
+
+
+def _gen_tiered_tasks(tag_to_model: dict[str, str | None]) -> list[dict]:
+    with TemporaryDirectory() as tmp:
+        tasks_md = Path(tmp) / "tasks.md"
+        tasks_md.write_text(
+            "".join(
+                _gen_tiered_task_block(
+                    tag=tag,
+                    model=model,
+                )
+                for tag, model in tag_to_model.items()
+            ),
+        )
+        return _cli.parse_tasks(tasks_md)
+
+
+def _gen_manifest_with_schematic_block(project_root: Path, schematic_block: dict[str, int]) -> None:
+    manifest_dir = project_root / ".schematic"
+    manifest_dir.mkdir()
+    (manifest_dir / "standards.json").write_text(
+        json.dumps(
+            {
+                "schematic": schematic_block,
+            },
+        ),
+    )
+
+# Fixtures
+
+
+class TestPackageCheckTypeOwnership(unittest.TestCase):
+    """package check <tags>: every type a package's cards name is in src, on a package card, or built."""
+
+    def test_package_is_clean_when_every_type_is_on_a_package_card_or_in_src(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            schematic_dir = _gen_package_bundle(
+                tmp=tmp,
+                draft_type_name=_PKG_OWNED_DRAFT,
+                service_blocked_by="a.1",
+                draft_status="pending",
+                service_card_owned=True,
+            )
+
+            # When
+            gap_lines = _package_gaps_of(
+                schematic_dir=schematic_dir,
+                project_root=Path(tmp),
+                package_tags=["a.1", "a.2", "b.1"],
+            )
+
+            # Then
+            self.assertEqual(gap_lines, [])
+
+    def test_package_reports_a_type_owned_by_an_unbuilt_task_outside_it(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            schematic_dir = _gen_package_bundle(
+                tmp=tmp,
+                draft_type_name=_PKG_OWNED_DRAFT,
+                service_blocked_by="a.1",
+                draft_status="pending",
+                service_card_owned=True,
+            )
+
+            # When
+            gap_lines = _package_gaps_of(
+                schematic_dir=schematic_dir,
+                project_root=Path(tmp),
+                package_tags=_PKG_CHECKED_TAGS,
+            )
+
+            # Then
+            self.assertEqual(gap_lines, [_PKG_OWNED_BY_DRAFT_TASK_GAP])
+
+    def test_package_passes_a_type_owned_by_a_completed_task(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            schematic_dir = _gen_package_bundle(
+                tmp=tmp,
+                draft_type_name=_PKG_OWNED_DRAFT,
+                service_blocked_by="a.1",
+                draft_status="complete",
+                service_card_owned=True,
+            )
+
+            # When
+            gap_lines = _package_gaps_of(
+                schematic_dir=schematic_dir,
+                project_root=Path(tmp),
+                package_tags=_PKG_CHECKED_TAGS,
+            )
+
+            # Then
+            self.assertEqual(gap_lines, [])
+
+    def test_package_reports_a_type_on_no_card_and_not_in_src_as_missing(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            schematic_dir = _gen_package_bundle(
+                tmp=tmp,
+                draft_type_name=_PKG_UNDEFINED_DRAFT,
+                service_blocked_by="a.1",
+                draft_status="pending",
+                service_card_owned=True,
+            )
+
+            # When
+            gap_lines = _package_gaps_of(
+                schematic_dir=schematic_dir,
+                project_root=Path(tmp),
+                package_tags=_PKG_CHECKED_TAGS,
+            )
+
+            # Then
+            self.assertEqual(gap_lines, [_PKG_MISSING_BLUEPRINT_GAP])
+
+    def test_package_check_records_its_gaps_and_arms_the_gate(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            schematic_dir = _gen_package_bundle(
+                tmp=tmp,
+                draft_type_name=_PKG_OWNED_DRAFT,
+                service_blocked_by="a.1",
+                draft_status="pending",
+                service_card_owned=True,
+            )
+
+            # When
+            with self.assertRaises(SystemExit), contextlib.redirect_stdout(io.StringIO()):
+                _run_in_project(
+                    schematic_dir=schematic_dir,
+                    project_root=Path(tmp),
+                    fn=_cli._package_check,
+                    args=_make_args(
+                        tags=_PKG_CHECKED_TAGS,
+                        all=False,
+                        schematic=schematic_dir.name,
+                    ),
+                )
+
+            # Then
+            state = _cli.load_state(schematic_dir)
+            recorded_checks = [
+                {
+                    **package_check,
+                    "at": _PKG_CHECK_AT,
+                }
+                for package_check in state["package_checks"]
+            ]
+            self.assertEqual(
+                (state["package_gate"], recorded_checks),
+                (
+                    True,
+                    [
+                        _gen_package_check_entry(
+                            tags=_PKG_CHECKED_TAGS,
+                            gaps=[_PKG_OWNED_BY_DRAFT_TASK_GAP],
+                        ),
+                    ],
+                ),
+            )
+
+    def test_package_over_its_tier_cap_is_a_gap(self) -> None:
+        # Given
+        sonnet_tasks = _gen_tiered_tasks(
+            tag_to_model={
+                f"a.{position}": _PKG_SONNET
+                for position in range(1, _PKG_TASKS_OVER_SONNET_CAP + 1)
+            },
+        )
+
+        # When
+        cap_lines = _cli._package_cap_lines(
+            package_tasks=sonnet_tasks,
+            tier=_cli._package_tier(package_tasks=sonnet_tasks),
+        )
+
+        # Then
+        self.assertEqual(cap_lines, ["CAP            7 tasks exceed the sonnet package cap of 6 — split the package"])
+
+    def test_package_with_an_untiered_task_is_tiered_opus(self) -> None:
+        # Given
+        mixed_tasks = _gen_tiered_tasks(
+            tag_to_model={
+                "a.1": _PKG_SONNET,
+                "a.2": None,
+            },
+        )
+
+        # When
+        tier = _cli._package_tier(package_tasks=mixed_tasks)
+
+        # Then
+        self.assertEqual(tier, "opus")
+
+
+class TestBundleCheckTypeOwnership(unittest.TestCase):
+    """package check --all: each task may use only its own, waited-on or completed tasks' types."""
+
+    def test_bundle_reports_a_task_that_does_not_wait_on_its_types_owner(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            schematic_dir = _gen_package_bundle(
+                tmp=tmp,
+                draft_type_name=_PKG_OWNED_DRAFT,
+                service_blocked_by="a.1",
+                draft_status="pending",
+                service_card_owned=True,
+            )
+
+            # When
+            gap_lines = _bundle_gaps_of(
+                schematic_dir=schematic_dir,
+                project_root=Path(tmp),
+            )
+
+            # Then
+            self.assertEqual(gap_lines, [_PKG_OWNED_BY_DRAFT_TASK_GAP])
+
+    def test_bundle_passes_a_task_that_waits_on_its_types_owner_through_another(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            schematic_dir = _gen_package_bundle(
+                tmp=tmp,
+                draft_type_name=_PKG_OWNED_DRAFT,
+                service_blocked_by="a.1",
+                draft_status="pending",
+                service_card_owned=True,
+            )
+            tasks_md = schematic_dir / "tasks.md"
+            tasks_md.write_text(
+                tasks_md.read_text().replace(
+                    "repository.md\nBlocked by: —",
+                    "repository.md\nBlocked by: b.1",
+                ),
+            )
+
+            # When
+            gap_lines = _bundle_gaps_of(
+                schematic_dir=schematic_dir,
+                project_root=Path(tmp),
+            )
+
+            # Then
+            self.assertEqual(gap_lines, [])
+
+    def test_bundle_judges_a_card_no_task_builds_for_missing_types_only(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            schematic_dir = _gen_package_bundle(
+                tmp=tmp,
+                draft_type_name=_PKG_UNDEFINED_DRAFT,
+                service_blocked_by="—",
+                draft_status="pending",
+                service_card_owned=False,
+            )
+
+            # When
+            gap_lines = _bundle_gaps_of(
+                schematic_dir=schematic_dir,
+                project_root=Path(tmp),
+            )
+
+            # Then
+            self.assertEqual(gap_lines, [_PKG_TASKLESS_MISSING_GAP])
+
+
+class TestCardTypeParsing(unittest.TestCase):
+    """The type names a card defines and references, and the names a source file holds."""
+
+    def test_card_types_come_from_signatures_fields_and_model_names(self) -> None:
+        # Given / When
+        card_types = _cli._card_file_types(card_text=_PKG_HOOK_CARD)
+
+        # Then
+        self.assertEqual(
+            card_types,
+            _cli.CardTypes(
+                defined=frozenset({
+                    "ScriptHookService",
+                    "ScriptHookMadeBy",
+                    "ScriptHookBatch",
+                    "ScriptHookId",
+                    "ScriptHookBody",
+                }),
+                references=(
+                    _cli.TypeReference(
+                        type_name="UserId",
+                        class_name="ScriptHookService",
+                        column="Parameters",
+                    ),
+                    _cli.TypeReference(
+                        type_name="ScriptHookBatch",
+                        class_name="ScriptHookService",
+                        column="Returns",
+                    ),
+                    _cli.TypeReference(
+                        type_name="ScriptHook",
+                        class_name="ScriptHookService",
+                        column="Fields / values",
+                    ),
+                    _cli.TypeReference(
+                        type_name="ScriptHookId",
+                        class_name="ScriptHookService",
+                        column="Fields / values",
+                    ),
+                    _cli.TypeReference(
+                        type_name="HookIdValue",
+                        class_name="ScriptHookService",
+                        column="Type",
+                    ),
+                ),
+            ),
+        )
+
+    def test_source_type_names_are_its_definitions_and_imports(self) -> None:
+        # Given / When
+        source_type_names = _cli._type_names_in_source(source_text=_PKG_SOURCE_TEXT)
+
+        # Then
+        self.assertEqual(
+            source_type_names,
+            {
+                "NewType",
+                "ReelId",
+                "ScriptId",
+                "as",
+                "StudioScriptId",
+                "Serializable",
+                "CreatorBody",
+                "type",
+                "ReelBody",
+                "UserId",
+                "ScriptRepository",
+            },
+        )
+
+
+class TestPackageGate(unittest.TestCase):
+    """Starting a task needs a clean package check once the bundle's gate is armed."""
+
+    def test_task_next_claims_when_the_gate_is_not_armed(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            schematic_dir = _make_schematic_dir(tmp)
+
+            # When
+            _run_package_task_next(
+                schematic_dir=schematic_dir,
+                override=None,
+            )
+
+            # Then
+            self.assertEqual(_status_of(schematic_dir, "b.1"), "in_progress")
+
+    def test_task_next_refuses_a_task_no_package_check_covers(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            schematic_dir = _make_schematic_dir(tmp)
+            _seed_package_state(
+                schematic_dir=schematic_dir,
+                gate_armed=True,
+                package_checks=[],
+            )
+
+            # Then
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                # When
+                _run_package_task_next(
+                    schematic_dir=schematic_dir,
+                    override=None,
+                )
+
+    def test_task_next_claims_a_task_a_clean_package_check_covers(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            schematic_dir = _make_schematic_dir(tmp)
+            _seed_package_state(
+                schematic_dir=schematic_dir,
+                gate_armed=True,
+                package_checks=[
+                    _gen_package_check_entry(
+                        tags=["b.1", "b.2"],
+                        gaps=[],
+                    ),
+                ],
+            )
+
+            # When
+            _run_package_task_next(
+                schematic_dir=schematic_dir,
+                override=None,
+            )
+
+            # Then
+            self.assertEqual(_status_of(schematic_dir, "b.1"), "in_progress")
+
+    def test_task_next_refuses_when_the_latest_covering_check_has_gaps(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            schematic_dir = _make_schematic_dir(tmp)
+            _seed_package_state(
+                schematic_dir=schematic_dir,
+                gate_armed=True,
+                package_checks=[
+                    _gen_package_check_entry(
+                        tags=["b.1"],
+                        gaps=[],
+                    ),
+                    _gen_package_check_entry(
+                        tags=["b.1"],
+                        gaps=[_PKG_OWNED_BY_DRAFT_TASK_GAP],
+                    ),
+                ],
+            )
+
+            # Then
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                # When
+                _run_package_task_next(
+                    schematic_dir=schematic_dir,
+                    override=None,
+                )
+
+    def test_task_next_claims_with_an_override_and_records_it(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            schematic_dir = _make_schematic_dir(tmp)
+            _seed_package_state(
+                schematic_dir=schematic_dir,
+                gate_armed=True,
+                package_checks=[],
+            )
+
+            # When
+            _run_package_task_next(
+                schematic_dir=schematic_dir,
+                override="types ruled in the card",
+            )
+
+            # Then
+            recorded_overrides = [
+                (override["context"], override["reason"])
+                for override in _cli.load_state(schematic_dir)["overrides"]
+            ]
+            self.assertEqual(
+                (_status_of(schematic_dir, "b.1"), recorded_overrides),
+                (
+                    "in_progress",
+                    [("start b.1 without a clean package check", "types ruled in the card")],
+                ),
+            )
+
+    def test_task_status_in_progress_refuses_a_task_no_package_check_covers(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            schematic_dir = _make_schematic_dir(tmp)
+            _seed_package_state(
+                schematic_dir=schematic_dir,
+                gate_armed=True,
+                package_checks=[],
+            )
+
+            # Then
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                # When
+                _with_resolved_dir(
+                    schematic_dir,
+                    _cli._task_status,
+                    _make_args(
+                        tag="b.1",
+                        status="in_progress",
+                        schematic=schematic_dir.name,
+                        override=None,
+                    ),
+                )
+
+    def test_phase_7_lock_arms_the_package_gate(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            schematic_dir = _make_schematic_dir(tmp)
+            _seed_phase_entry(
+                schematic_dir=schematic_dir,
+                num=7,
+                phase_entry={
+                    "audit_result": "clean",
+                    "signed_off": True,
+                    "arch_signed_deviations": [],
+                },
+            )
+            _seed_milestone_state(
+                schematic_dir,
+                decision="no",
+                locked=False,
+                signed_off_ids=[],
+            )
+
+            # When
+            with contextlib.redirect_stdout(io.StringIO()):
+                _run_in_project(
+                    schematic_dir=schematic_dir,
+                    project_root=Path(tmp),
+                    fn=_cli._phase_complete,
+                    args=_make_args(
+                        num=7,
+                        schematic=schematic_dir.name,
+                        override=None,
+                    ),
+                )
+
+            # Then
+            self.assertEqual(_cli.load_state(schematic_dir)["package_gate"], True)
+
+
+class TestPhase4CardSections(unittest.TestCase):
+    """Phase 4 cannot lock while a Repository card lacks a Table section or a Router card its access patterns."""
+
+    def _lock_phase_4(self, schematic_dir: Path, project_root: Path) -> None:
+        _seed_phase_entry(
+            schematic_dir=schematic_dir,
+            num=4,
+            phase_entry={
+                "audit_result": "clean",
+                "signed_off": True,
+                "arch_signed_deviations": [],
+            },
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            _run_in_project(
+                schematic_dir=schematic_dir,
+                project_root=project_root,
+                fn=_cli._phase_complete,
+                args=_make_args(
+                    num=4,
+                    schematic=schematic_dir.name,
+                    override=None,
+                ),
+            )
+
+    def test_phase_4_lock_refuses_a_repository_card_with_no_table_section(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            schematic_dir = _make_schematic_dir(tmp)
+            (schematic_dir / "components" / "script_repository.md").write_text(_PKG_REPOSITORY_CARD)
+
+            # Then
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                # When
+                self._lock_phase_4(
+                    schematic_dir=schematic_dir,
+                    project_root=Path(tmp),
+                )
+
+    def test_phase_4_lock_passes_a_repository_card_whose_table_section_records_none(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            schematic_dir = _make_schematic_dir(tmp)
+            (schematic_dir / "components" / "script_repository.md").write_text(
+                _PKG_REPOSITORY_CARD + "\n**Table** — none: reads `scripts`, owned by another card\n",
+            )
+
+            # When
+            self._lock_phase_4(
+                schematic_dir=schematic_dir,
+                project_root=Path(tmp),
+            )
+
+            # Then
+            self.assertEqual(_cli.load_state(schematic_dir)["phases"]["4"]["status"], "locked")
+
+    def test_required_sections_flag_a_router_card_with_no_access_patterns(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            schematic_dir = _make_schematic_dir(tmp)
+            (schematic_dir / "components" / "script_router.md").write_text("## `ScriptRouter`\n**Table** — n/a\n")
+
+            # When
+            section_findings = _cli._required_card_section_findings(schematic_dir=schematic_dir)
+
+            # Then
+            self.assertEqual(
+                section_findings,
+                ["components/script_router.md — `ScriptRouter` has no **Access patterns** section"],
+            )
+
+
+class TestModelTierAndReviewBatching(unittest.TestCase):
+    """A task's Model: tier, and the shared reviewer's batch settings."""
+
+    def test_parse_tasks_reads_each_tasks_model_tier(self) -> None:
+        # Given / When
+        tiered_tasks = _gen_tiered_tasks(
+            tag_to_model={
+                "a.1": _PKG_SONNET,
+                "a.2": None,
+            },
+        )
+
+        # Then
+        self.assertEqual(
+            [
+                task["model"]
+                for task in tiered_tasks
+            ],
+            [_PKG_SONNET, None],
+        )
+
+    def test_validate_flags_a_model_tier_that_is_not_opus_or_sonnet(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            schematic_dir = _make_schematic_dir(tmp)
+            tasks_md = schematic_dir / "tasks.md"
+            tasks_md.write_text(
+                tasks_md.read_text().replace(
+                    "## b.2 | Create | AnotherService\n",
+                    "## b.2 | Create | AnotherService\nModel: haiku\n",
+                ),
+            )
+
+            # When
+            with patch.object(_cli, "find_project_root", return_value=Path(tmp)):
+                validate_findings = _cli._validate_schematic(schematic_dir)
+
+            # Then
+            self.assertIn("tasks.md #b.2 — Model: 'haiku' is not one of opus, sonnet", validate_findings)
+
+    def test_review_batching_reads_the_schematic_block(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            _gen_manifest_with_schematic_block(
+                project_root=Path(tmp),
+                schematic_block={
+                    "reviewBatchSize": 3,
+                    "reviewerContextCap": 100_000,
+                },
+            )
+
+            # When
+            review_batching = _cli._resolve_review_batching(project_root=Path(tmp))
+
+            # Then
+            self.assertEqual(
+                review_batching,
+                _cli.ReviewBatching(
+                    batch_size=3,
+                    context_cap=100_000,
+                ),
+            )
+
+    def test_review_batching_defaults_to_five_tasks_under_250k_tokens(self) -> None:
+        with TemporaryDirectory() as tmp:
+            # Given
+            _gen_manifest_with_schematic_block(
+                project_root=Path(tmp),
+                schematic_block={},
+            )
+
+            # When
+            review_batching = _cli._resolve_review_batching(project_root=Path(tmp))
+
+            # Then
+            self.assertEqual(
+                review_batching,
+                _cli.ReviewBatching(
+                    batch_size=5,
+                    context_cap=250_000,
+                ),
+            )
+
 # Fixtures
 
 

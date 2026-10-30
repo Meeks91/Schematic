@@ -1,73 +1,39 @@
 # Contract Audit (Phase 4 — Contracts + Models + Function ACs + Tests)
 
-Quality gate for Phase 4. Read the freshly-locked component contract files from this gate and run them through the rules below. Return findings in the format defined in `audits/README.md`.
+Quality gate for Phase 4. Its job is the gaps a builder would otherwise find mid-build: a type nobody defines, a value nobody specified, a table or route nobody designed. Return findings in the format defined in `audits/README.md`.
 
 ## Files to read
 
-- `<schematic_dir>/components/<class>.md` (one or more — the gate's locked contracts)
-- `<schematic_dir>/objective.md` (Feature AC traceability) + `<schematic_dir>/components/_overview.md` §Component Summary (Class AC cross-ref)
-- The resolved `styling.<language>` + `testing` standards modules (see `../standards_resolution.md`; defaults: `~/.claude/skills/python-standards/SKILL.md`, `~/.claude/skills/writing-tests/SKILL.md`)
-- `<skill_dir>/phase_4_contracts_and_tests.md` (Contract Card Format, Function AC Definition) + `<skill_dir>/SKILL.md` §AC Hierarchy
+- `<schematic_dir>/components/<class>.md` (every locked card) + `<schematic_dir>/components/_overview.md` (§Component Summary, §Storage, §Wire Rules)
+- `<schematic_dir>/objective.md` (Feature ACs; § Architecture Deviations)
+- The resolved `styling.<language>` + `testing` standards modules (see `../standards_resolution.md`), and `sql-standards` when any card is a Repository
+- `<skill_dir>/phase_4_contracts_and_tests.md` (Contract Card Format)
+
+Standards the cards lock (signatures, defaults, `Optional`, model placement, naming, test names) are judged against those modules, citing the rule — never restated here. Code-level patterns (magic literals, try/except, comments) belong to the Phase 8 review, not this audit.
 
 ## Checks (in order)
 
-### 1. Function AC completeness
-Each public method MUST have a Function AC with:
-- **Functionality** — what inputs/outputs/transformations/invariants
-- **Failure modes** — present unless N/A (then omit, not blank)
-- **Performance** — present only when constraints exist (omit otherwise)
+### 1. Type ownership (mechanical)
+Run `schematic package check --all --schematic <name>`. Every `MISSING` line is a BLOCKER: a signature or field type defined on no card and absent from src. (Ownership ORDER needs tasks; the post-Phase-7 audit judges it.)
 
-Flag any public method missing a Function AC.
-Flag any Function AC with empty `Functionality:` or copy-pasted boilerplate.
+### 2. Open values
+Every wire shape, cap, limit, error code, enum spelling and prompt rendering a card leaves unspecified is a BLOCKER — it is ruled into the card before lock, never discovered by a builder. "TBD", "a sensible default" and "as needed" are open values.
 
-### 2. Signature rigor
-- All param types fully specified — no bare `Any`.
-- Return types declared explicitly — no implicit `None` returns where a value flows.
-- Flag any default parameter values (styling standards: "NEVER default parameters — force callers to be explicit"). The ONLY exception: `conn: sa.Connection | None = None` for the transactional pass-through pattern.
+### 3. Table sections (Repository cards)
+`phase complete 4` already refuses a Repository card with no `**Table**` section; this check reads its content against card item 11 and `sql-standards` § Schema design. BLOCKER: a table named for something other than one row; a second writing repository not listed under Architecture Deviations; a nullable column without its reason; an index or `CHECK` with no access pattern; no `ON DELETE`, retention, migration file or readers.
 
-### 3. Optional / Nullable return — flagged for sign-off
-Per the styling standards' "Optional fields on a dataclass are a smell" and the skill's Rules section: ANY `X | None` return type or model field MUST have an inline justification (one sentence). Flag any unjustified Optional.
+### 4. Access patterns (Router cards)
+Each route answers every question of card item 12; a mutating reply that does not return the revision is a BLOCKER. Enum spelling, casing and id types are cited from `_overview.md` § Wire Rules — a card restating them is a NIT, one contradicting them a BLOCKER.
 
-### 4. Swallowed exceptions — flagged for sign-off
-Any Function AC that mentions:
-- "returns empty …"
-- "no-op if …"
-- "silent fallback"
-- "best-effort"
-- "logged, not raised"
+### 5. Function ACs and loud failure
+Every public method has a `Behaviour` line and a `Failure modes` line. A swallowed / empty-return / silent-fallback path, or an `X | None` return or field without its one-line justification and `⚠️ USER SIGN-OFF REQUIRED`, is a BLOCKER.
 
-MUST be flagged in the contract with `⚠️ USER SIGN-OFF REQUIRED` per the skill's Rules. Flag any swallowed exception without the sign-off marker.
+### 6. Coverage and cross-references
+- Every Function AC has ≥1 test (`schematic validate` covers the Feature-AC links).
+- Constructor deps match `components/_overview.md` §Component Summary.
 
-### 5. AC Test naming + coverage
-- Test names follow `test_<scenario>` (underscore-separated, lowercase; scenario = the event under test + qualifying `when_<condition>` clause, e.g. `test_successful_submission`, `test_submission_when_slot_limit_reached`; the event is omitted only when the test class scopes to exactly it; numbered suffixes banned). Flag CamelCase, mechanism-chain names (`X_then_Y`), outcome-slice fragmentation, or vague names.
-- Every Function AC has ≥1 AC Test. Flag uncovered ACs.
-- Each test name is unambiguous about outcome AND condition. Flag "test_works" or similar.
-- Flag contrast clauses — the name states what happens instead of something else (`, not X`, `, never Y`,
-  `rather than`, `exactly as before`, `unchanged`). A negative is fine only when the absence is the behaviour under test.
-- Flag vague verbs that hide what is asserted (`advertises`, `is used`, `configured correctly`, `handles`, `processes`).
-- Flag sequence names (`X then Y`) and same-shape scenarios split into separate tests instead of one parameterised test.
-
-### 6. Model location
-- Public models live in `models.py` next to the consuming class.
-- Private types prefixed `_` may nest inside the class file.
-- Flag inline models that should be in `models.py`.
-
-### 7. Naming intent (role, not shape)
-- Constructor params: name the intent, not the slot. `max_workers` → `max_concurrent_seeds`. Flag mechanism-named params.
-- Method names: describe outcome, not mechanism. `process()` / `run()` / `call_once()` → name the verb-of-outcome. Flag vague verbs.
-- Dict types: ALWAYS `key_to_value: dict[K, V]`. Flag any dict variable named without this pattern.
-
-### 8. Banned patterns
-- Magic literals in tests (look for fixture constants `_NAME` style). Flag inline literals in test code.
-- `try/except` blocks with broad catches — flag unless the contract explicitly justifies.
-- Comments explaining WHAT — flag, only WHY is acceptable.
-
-### 9. Cross-reference integrity
-- Constructor deps match the topology in `components/_overview.md` §Component Summary.
-- Type names match models defined in `<class>.md` or imported from another `components/*.md`. Flag dangling type refs.
-
-### 10. Design quality
-The architecture design implied by the contracts conforms to the architecture standards and is high quality. Real issues or simplifications are flagged in the review.
+### 7. Design quality
+The architecture the contracts imply conforms to the architecture standards and is high quality. Real issues or simplifications are flagged.
 
 ## Output
 

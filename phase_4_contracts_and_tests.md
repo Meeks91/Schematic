@@ -12,14 +12,12 @@ Writes to `<schematic_dir>/components/<class>.md` (one per class) and, at phase-
 ## Per-class lock order (single atomic gate per class, do NOT split)
 
 1. **Method signatures** — full types, parameters, return types (the API table)
-2. **Models / Config** — the shapes that appear in signatures
+2. **Models / Config** — the shapes that appear in signatures (+ a Repository's **Table**, a Router's **Access patterns**)
 3. **Behaviour** — the one-line per-method behaviour + any `Behaviour notes` (failure modes, invariants)
 4. **Feature tests** — prove the public method (the feature) works as intended: happy + core paths; binding, sign-off required
 5. **Branch tests** — internal branches and wiring (delegation, forks, error propagation); extensible during implementation
 
 All sub-blocks appear together in one card per class. One `Confirm: y/comment` locks the whole card. On `y`, write to `components/<class_name>.md` before moving to the next class.
-
-Present max 3 classes per gate.
 
 ---
 
@@ -49,9 +47,11 @@ Fixed order:
 6. **Updated methods** — *(only methods whose signature or behaviour changed)* a bold heading `**Updated methods**` then a table: `Name | Change`. `Change` is a **one-line max** explanation of what changed (e.g. `user_id → user; drops find_by_id`). Do NOT re-spec the full signature — only the delta.
 7. **Behaviour notes** — *(only if needed)* short bullets for invariants, atomicity, ordering. This is where detail lives — keep it OUT of the table cells.
 8. **Failure modes** — *(mandatory, every class)* a bold heading `**Failure modes**` then, per method, one line naming what it **raises**, what it **propagates**, and what it **converts**. This is the loud-failure behaviour Phase 2 defers here; a method that cannot fail states `never fails` explicitly. Never omitted.
-9. **Models / Config** — *(only if any)* a table per shape, with the model/file named above it: `Field | Type | Note` (models) or `Key | Value | Note` (config).
+9. **Models / Config** — *(only if any)* one row per type (`Type | Fields | Note`), or a table per shape with the model named above it (`Field | Type | Note`); config: `Key | Value | Note`. `schematic package check` reads type names from these cells and from `Parameters` / `Returns`, so every type is backticked.
 10. **Errors** — *(only if the class raises domain errors)* table: `Code | Meaning`.
-11. **Tests** — ALWAYS two tables (never an inline `·`-separated list): **Feature tests** then **Branch tests**, each with columns `Test | Proves`. `Proves` names the Feature AC(s) the test covers (`1.A — …`); `schematic validate` reads these refs for the coverage check. If a behaviour is already covered by an existing unchanged test, do NOT repeat it — note the coverage in one line.
+11. **Table** — *(every Repository card; `phase complete 4` refuses one without it)* `**Table** — \`<table>\`` then `Column | Type | Null | Holds`, signed column by column, then each key, index and `CHECK` with its access pattern, `ON DELETE`, retention, the migration file (auto or `manual/`, any backfill) and every reader. Design rules: `sql-standards` § Schema design. A repository writing no table of its own: `**Table** — none: <why>`.
+12. **Access patterns** — *(every Router card; same gate)* one line per route answering: the cap on every free-text field · an idempotency key minted per tap on a paid or mutating call · the revision/ETag it takes AND returns on every mutating reply · another account's id reads as not-found · per tap or on load — one aggregated read per screen load, no N+1 · pagination and list order · each error code's HTTP status. `**Access patterns** — none: <why>` when no route applies.
+13. **Tests** — ALWAYS two tables (never an inline `·`-separated list): **Feature tests** then **Branch tests**, each with columns `Test | Proves`. `Proves` names the Feature AC(s) the test covers (`1.A — …`); `schematic validate` reads these refs for the coverage check. If a behaviour is already covered by an existing unchanged test, do NOT repeat it — note the coverage in one line.
 
 Rules:
 - **Separator between cards (when a gate shows >1 card):** put a long red rule between consecutive cards — a `diff` fenced block containing a single `-`-prefixed line of ~95 dashes (renderers colour `-` lines red, giving a strong section break). NOT a bare `---` (too short, renders grey). Example:
@@ -61,12 +61,10 @@ Rules:
   ```
   ````
 - Every section after the identity line gets its own **bold heading** — Constructor changes, New methods, Updated methods, etc. Nothing renders bare under the previous table (that makes methods look nested under the constructor).
-- A **New** class lists all its methods under **New methods**; it has no **Updated methods** section.
-- A **Modified** class splits: genuinely new methods → **New methods** (full signature); changed methods → **Updated methods** (1-line delta only). Unchanged methods appear NOWHERE.
+- A **New** class lists all its methods under **New methods**; it has no **Updated methods** section. Unchanged methods appear NOWHERE.
 - Names, params, types, fields, paths, codes → backticks everywhere the eye should snap to a token.
-- New-method signatures live in the New-methods table (`name` · `param: Type` · `Return`), NOT in prose or code fences. Use a code fence ONLY for a multi-line snippet a table genuinely cannot express.
-- No "unchanged" rows. No stray `return` row — the return type is the `Returns` column.
-- `Change Required` is hard-capped at 2 bullet lines.
+- New-method signatures live in the New-methods table, NOT in prose or code fences. Use a code fence ONLY for a multi-line snippet a table genuinely cannot express. No stray `return` row.
+- **Wire rules are decided once**, at the first Router card, in `_overview.md` § Wire Rules: enum spelling, body casing, path-id types (a malformed id is a 422). Cards cite them, never restate them.
 
 ### Worked reference
 

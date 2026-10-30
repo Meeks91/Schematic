@@ -46,7 +46,7 @@ Canonical location: **`.schematic/standards.json`** — harness-neutral and fram
   "exemplars": ["src/services/reelEnrichment/"],
   "unresolved": "learn",
   "schematic": {
-    "reviewModel": "sonnet",
+    "reviewModel": "sonnet", "reviewBatchSize": 5, "reviewerContextCap": 250000,
     "correctnessModel": "<inherit or a model name>",
     "completionCompression": {
       "archDocsPath": "docs/architecture/",
@@ -67,11 +67,12 @@ Canonical location: **`.schematic/standards.json`** — harness-neutral and fram
 
 A slot may also map to an **ordered list** of sources (`["file:~/…/review-lenses.md", "file:.schematic/review_lenses.md"]`) when several modules fill one slot — each is inlined into review prompts under its own header, in list order. A mapped source that is not on disk is refused; a slot left out of the manifest is simply UNMAPPED.
 
-**Model settings** (`schematic` block):
+**Review settings** (`schematic` block):
 
 | Key | What it selects |
 |---|---|
 | `reviewModel` | the model that runs the diff-scoped standards reviews (per-task gate, Pass 1 sweep). Default `sonnet`. |
+| `reviewBatchSize` · `reviewerContextCap` | one shared reviewer takes this many tasks per pass (default 5) and is resumed for the next batch until its context passes the cap (default 250000 tokens); then a fresh one starts. |
 | `correctnessModel` | the model that runs the Pass-3 adversarial correctness read (one reviewer per entry point + the reconciler). Omit the key to inherit the session's planning model — it is deliberately NOT `reviewModel`, because Pass 3 reads the whole system rather than a diff. |
 
 ## Resolution algorithm

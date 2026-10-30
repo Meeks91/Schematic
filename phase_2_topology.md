@@ -133,7 +133,7 @@ Tables are topology nodes: they have ownership, relationships, and consumers, ex
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-**Layer split (mirrors class cards):** Phase 2 owns existence, identity (what one row IS), ownership, relationships, population/read semantics, and the fork decision. Column DDL, types, nullability, indexes, partitioning, and migrations stay in Phase 4 models. Storage forks are presented as options with a recommendation, decided at the roster gate. Storage cards are auto-written to `components/_overview.md` under a §Storage section.
+**Layer split (mirrors class cards):** Phase 2 owns existence, identity (what one row IS), ownership, relationships, population/read semantics, and the fork decision. Columns, types, nullability, indexes, partitioning, and migrations are the Phase 4 Repository card's signed **Table** section. Storage forks are presented as options with a recommendation, decided at the roster gate. Storage cards are auto-written to `components/_overview.md` under a §Storage section.
 
 **Component types vocabulary:** see `reference/component_types.md` for the full taxonomy (Service / PipelineService / RequestPipelineService / Controller / Router / Factory / Repository / Validator / Resolver / Client / `<Noun><Verb>er`).
 

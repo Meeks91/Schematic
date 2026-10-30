@@ -3,19 +3,18 @@
 Phase 7 produces `tasks.md`. Phase 8 is the loop that executes each task.
 
 The schematic is the contract; the sketch loop in `~/.claude/CLAUDE.md`
-(Plan→Sketch→Confirm→Implement) is the delivery mechanism. Four clauses
-in this phase keep that delivery honest:
+(Plan→Sketch→Confirm→Implement) is the delivery mechanism. These clauses
+keep that delivery honest:
 
 1. **Cross-cutting concerns must be read before implementing.** Component
    files are self-contained for shape but reference `_overview.md` for the
    *why* behind atomicity, FK invariants, security boundaries, and other
    cross-cutting concerns. Read it before touching code.
 2. **Implemented code passes a standards review before it can complete.**
-   Moving a task to `review` emits a review request; the implementing agent
-   launches it as a review-model subagent (`schematic.reviewModel` in
-   `standards.json`, default `sonnet`) scoped to the task's git diff (see
-   "Review gate" below). Findings are resolved and a `clean` verdict recorded
-   before completion — the CLI hard-blocks `complete` without it.
+   Moving a task to `review` emits a review request; one shared review-model
+   agent reviews the requests in batches (see "Review gate" below). Findings are
+   resolved and a `clean` verdict recorded per task before completion — the CLI
+   hard-blocks `complete` without it.
 3. **Completion is reported through the CLI, not narrated free-text.** The
    CLI forces an explicit answer on whether implementation matched the
    schematic and (if not) whether the schematic was patched to reflect
@@ -28,28 +27,12 @@ in this phase keep that delivery honest:
    history, review rounds, or the CLI's own ledger.
    **Link it from the top of `objective.md`** (one blockquote line) — the
    dashboard renders the bundle, and an unlinked report is invisible there.
-5. **Independent decisions are logged, then signed off at the end.** Any decision
-   made during implementation that the schematic didn't answer AND that no user
-   sketch gate approved is recorded to the decision ledger the moment it's made.
-   At end-of-impl these are presented as a batch for user sign-off and folded into
-   the completion record. See "Decision ledger (both modes)" below.
-6. **A note is not a state.** A decision the design does not answer is not resolved by
-   annotating a card, a report, or a commit message. The agent files a question and the
-   CLI holds the task:
-
-   ```
-   schematic task ask <tag> "<question> — why: <what is blocked>"
-   ```
-
-   That moves the task to `pendingInput` and files the question in the same Q&A relay
-   the dashboard bubble uses. Add `--scope internal` when the task's public surface is
-   settled and only a value or behaviour inside it is in question — then `task next` keeps
-   serving its dependents; the default `--scope contract` holds them too. The user answers
-   with `schematic answer <id> "<text>"`, which returns the task to `in_progress`. The CLI refuses `task complete` and
-   `task status <tag> review` while any question on the task is unanswered — and
-   `--override` does NOT close one. `validate` fails on any task in `pendingInput`,
-   on any unanswered question, and on ratification prose ("awaiting ratification",
-   "needs sign-off") sitting in a card or ledger with no question behind it.
+5. **Independent decisions are logged, then signed off at the end** — see "Decision
+   ledger (both modes)" below.
+6. **A note is not a state** (`SKILL.md` § A note is not a state — the CLI refusals live
+   there). A decision the design does not answer is `schematic task ask <tag> "<question> —
+   why: <what is blocked>"`, never an annotation; the task sits in `pendingInput` until
+   `schematic answer <id> "<text>"`. How far a hold reaches: `--scope`, in the block below.
 
 > [!CAUTION]
 > ## Manual mode NEVER auto-implements. Auto mode is opt-in ONLY.
@@ -80,6 +63,30 @@ front; auto omits it and adds the consistency pass and entry-point tracing (see 
 
 ---
 
+## Package dispatch — pre-scan before any builder starts (both modes, binding)
+
+Builders carry packages of tasks (handover § Batching), one implementation agent at a time.
+Before dispatching a package the orchestrator runs:
+
+1. **Type ownership (mechanical).** `schematic package check <tags…> --schematic <name>`: every
+   type in every signature, and every field type inside those types, is in src, on a card in
+   the package, or on a completed task's card. Each `MISSING` / `OWNED-BY-<tag>` line is
+   `GATE: plan` — build the owner first, add it to the package, or rule the type onto a card.
+   The result is recorded: `task next` (and `task status <tag> in_progress`) refuses a task
+   whose latest covering check is not clean; `--override "<reason>"` is recorded and `validate`
+   lists it. The gate arms at the Phase 7 lock, or at a bundle's first recorded check.
+2. **Open values.** Every wire shape, cap, code, enum spelling or prompt rendering the cards
+   leave open is ruled into one file, `<schematic_dir>/rulings.md` (value · ruling · who
+   ruled), which the cards and the handover card cite. One nobody can rule is `task ask`.
+3. **Tier.** Dispatch on the package's tier (the check prints it from the `Model:` lines); a
+   task whose gaps step 2 ruled moves down to `sonnet` by editing its `Model:` line.
+4. **Builder STEP 0** (in the card): re-run step 1's command; stop on any gap.
+
+A fresh builder with a short card beats resuming one over a 390–570k transcript. Builders never
+copy the repo or make scratch copies of it — a disk-filling copy halted a build.
+
+---
+
 ## Per-task protocol
 
 For each task in `tasks.md`, in order:
@@ -87,8 +94,8 @@ For each task in `tasks.md`, in order:
 ```
 1. CLAIM the task:
        schematic task next --schematic <name>
-   This shows the task AND moves it to in_progress atomically.
-   (Use --peek to inspect without claiming.)
+   This shows the task AND moves it to in_progress atomically — refused until a
+   clean package check covers it (above). (Use --peek to inspect without claiming.)
 2. READ the component file at components/<class>.md
 3. READ components/_overview.md if this task is flagged as participating in a
    cross-cutting concern (atomicity, security, FK invariant, etc.)
@@ -98,11 +105,10 @@ For each task in `tasks.md`, in order:
 5. Run tests (the new tests for this class AND the full suite at each milestone boundary)
 6. Move the task to REVIEW — this emits the review request:
        schematic task status <tag> review --schematic <name>
-   Launch the printed prompt as a review-model subagent (Agent tool), then record
-   the verdict:
+   The request joins the current review batch ("Review gate" below); record the
+   task's verdict from the batch verdict:
        schematic task review-result <tag> clean|findings --summary "<one line>" --schematic <name>
-   See "Review gate" below. The task CANNOT complete until the recorded
-   verdict is clean.
+   The task CANNOT complete until the recorded verdict is clean.
 7. Resolve review findings: address every note the review agent leaves, then
    re-run tests. Re-trigger step 6 if you changed code.
 8. Mark task complete via the CLI (drift report) once the verdict is clean:
@@ -155,7 +161,8 @@ may take alone: what to call a thing, and where to put it. Anything that
 
 is **not a decision — it is a question.** Use `schematic task ask`. Recording such a
 choice as a decision and continuing is the exact failure this rule exists to stop: the
-task reaches `complete` carrying a defect the design never sanctioned.
+task reaches `complete` carrying a defect the design never sanctioned. Value rulings the
+orchestrator makes under delegated authority live in `rulings.md` (§ Package dispatch), never here.
 
 - **Manual mode** — the sketch gate covers most choices; the ledger captures the
   residue (calls the sketch didn't cover, made independently of the user).
@@ -194,38 +201,32 @@ never restated here.
 schematic task status <tag> review --schematic <name>
 ```
 
-**Dispatch model: the CLI is the gatekeeper, the session agent is the
-dispatcher.** On that transition the CLI records a `review_request` and prints
-the review prompt; the **implementing agent** launches it as a review-model subagent
-via its Agent tool (in-session — so the dispatcher can prepend known
-sanctioned patterns and prior false-positive rulings to the prompt). The CLI
-never spawns `claude -p` itself.
+**Dispatch model: the CLI is the gatekeeper, the orchestrator dispatches, and reviews run
+in batches.** On that transition the CLI records a `review_request` and prints the task's
+prompt. ONE review-model agent (`schematic.reviewModel`, default `sonnet`) reviews
+`schematic.reviewBatchSize` tasks (default 5) in a single pass, reading the standards once,
+and is resumed for the next batch while its context stays under `schematic.reviewerContextCap`
+(default 250000); then a fresh one starts. That setting overrides handover's "Resume cap: 2"
+for the shared reviewer. The orchestrator may prepend sanctioned patterns and prior
+false-positive rulings; the CLI never spawns `claude -p` itself.
 
-**Scope: the git diff ONLY.** The reviewer reads `git diff HEAD` /
-`git status --short`, intersects the changed files with the task's component
-spec, and reviews **only added/modified lines**. Pre-existing code — even in
-the same file, even verbatim-moved code — is out of scope and must never be
-flagged: findings on unchanged code are false flags by definition. Primary
-lens is the resolved standards modules — the CLI resolves and lists their
-exact paths in the printed prompt (styling + testing for the task's language,
-the `review` module if mapped, plus the project's CLAUDE.md, which overrides
-on conflict). The review runs on the configured review model
-(`schematic.reviewModel`, default `sonnet`), not the session's planning model.
+**Scope: the git diff ONLY** — each task's printed prompt carries the hard rules (only added
+or modified lines; pre-existing or verbatim-moved code is never flagged) and the exact paths of
+the resolved standards modules, with the project's CLAUDE.md overriding on conflict.
 
 Protocol:
 
 1. **Request** — `task status <tag> review` records a `review_request`
    (status: pending) and prints the diff-scoped review prompt.
-2. **Dispatch** — the implementing agent launches the prompt as a review-model
-   subagent (Agent tool). Never skip; never review your own code inline
-   instead.
-3. **Findings land as notes** — the review agent records each finding via
-   `schematic task note <tag> "<finding>"` and ends with `VERDICT: clean` or
-   `VERDICT: findings`. It does **not** self-complete the task.
-4. **Record** — the implementing agent records the verdict:
-   `schematic task review-result <tag> clean|findings --summary "<one line>"`.
-5. **Resolve** — on `findings`: fix every note through the normal sketch loop,
-   re-run tests, re-dispatch from step 1.
+2. **Dispatch** — the batch goes to the shared reviewer. Never skip; never
+   review your own code inline instead.
+3. **Findings land as notes** — the reviewer records each finding via
+   `schematic task note <tag> "<finding>"` and ends with one `VERDICT: clean` or
+   `VERDICT: findings` per task. It does **not** self-complete a task.
+4. **Record** — each task's verdict from that batch verdict, never from a separate
+   per-task pass: `schematic task review-result <tag> clean|findings --summary "<one line>"`.
+5. **Resolve** — the batch's NITs go to ONE fix pass; re-run tests and re-request
+   review. The orchestrator verifies a small blocker fix itself instead of a new pass.
 6. **Complete** — only once the recorded verdict is `clean`, run
    `schematic-task-done` (below). Both `schematic task complete` and
    `schematic-task-done` hard-block without a clean verdict (`--override` /
@@ -257,10 +258,10 @@ while `schematic task next` returns a task:
   1. READ the component file (+ _overview.md if a cross-cutting concern is flagged)
   2. implement the task directly — no sketch, no confirm
   3. run its tests + the full suite at each milestone boundary
-  4. per-task review gate, diff-scoped to THIS task only:
-       schematic task status <tag> review        → dispatch review-model subagent on the task's diff
-       schematic task review-result <tag> clean|findings --summary "..."
-     fix findings, re-dispatch until clean
+  4. per-task review gate, diff-scoped to THIS task, in the shared reviewer's batch:
+       schematic task status <tag> review        → the request joins the current batch
+       schematic task review-result <tag> clean|findings --summary "..."   (from the batch verdict)
+     fix findings, re-request until clean
   5. schematic-task-done <tag> --matched [y|n] --updated [y|n]
 ```
 
@@ -280,7 +281,7 @@ mode records every unanswered decision via `schematic task decision <tag> "<what
 ### Three review layers (auto mode)
 
 ```
-#1  per-task review      one task's diff        standards + correctness   loops to clean       per task (driver loop above)
+#1  per-task review      one task's diff        standards + correctness   loops to clean       per task, batched (driver loop above)
 #2  consistency pass     whole diff, one agent  duplication/redundancy    single pass, NO loop feature end
 #3  entry-point tracing  per entry point        correctness (ACs)         no loop              feature end
 ```

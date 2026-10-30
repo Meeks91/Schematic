@@ -19,7 +19,7 @@ from typing import Any, NoReturn, TypeAlias
 
 # ── constants ──────────────────────────────────────────────────────────────────
 
-# One task as parsed out of tasks.md: tag, action, target, status, component_file, blocked_by, raw_lines.
+# One task as parsed out of tasks.md: tag, action, target, status, component_file, blocked_by, model, raw_lines.
 TaskRecord: TypeAlias = dict[str, Any]
 
 SCHEMATICS_BASE = "docs/schematics"
@@ -95,6 +95,10 @@ REVIEW_VERDICT_FINDINGS = "findings"
 REVIEW_VERDICTS = {REVIEW_VERDICT_CLEAN, REVIEW_VERDICT_FINDINGS}
 REVIEW_GATE_STATUS_PENDING = "pending"  # a consistency/e2e gate opened but not yet recorded
 
+REVIEW_BATCH_SIZE_KEY = "reviewBatchSize"
+REVIEW_BATCH_SIZE_DEFAULT = 5  # tasks one shared reviewer takes per pass
+REVIEWER_CONTEXT_CAP_KEY = "reviewerContextCap"
+REVIEWER_CONTEXT_CAP_DEFAULT = 250_000  # tokens; past it the next batch gets a fresh reviewer
 MAX_FILE_LINES_KEY = "maxFileLines"
 MAX_FILE_LINES_DEFAULT = 220  # per-file logic lines, imports excluded — the styling standard
 RUN_MODE_MANUAL = "manual"  # per-task sketch gate (default)
@@ -138,6 +142,57 @@ CARD_BASE_PATTERN = re.compile(
     re.MULTILINE,
 )
 DEVIATION_PATTERN = re.compile(r"`(?P<consumer>\w+)` ← `(?P<dependency>\w+)`")
+
+# ── package check (type ownership, before a builder starts) ─────────────────────
+# A builder handed a card whose signature names a type nobody has built yet burns its whole
+# context finding that out. The check reads the type names out of the cards' Parameters,
+# Returns and Fields cells and says, per name, whether it is reachable.
+CONTRACTS_PHASE = 4
+PACKAGE_GATE_KEY = "package_gate"  # armed by phase complete 7, or by a bundle's first recorded check
+PACKAGE_CHECKS_KEY = "package_checks"
+MODEL_TIER_OPUS = "opus"
+MODEL_TIER_SONNET = "sonnet"
+MODEL_TIER_TO_PACKAGE_CAP = {MODEL_TIER_OPUS: 10, MODEL_TIER_SONNET: 6}
+TYPE_GAP_MISSING = "MISSING"
+TYPE_GAP_OWNED_BY_PREFIX = "OWNED-BY-"
+UNOWNED_CARD_LABEL = "—"  # a card no task builds yet (Phase 4): only MISSING applies
+CARD_HEADING_RE = re.compile(r"^## `(?P<class_name>\w+)`", re.MULTILINE)
+# A card table's first header says what kind it is; the named columns hold the types it references.
+FIRST_HEADER_TO_REFERENCE_COLUMNS: dict[str, tuple[str, ...]] = {
+    "Name": ("Parameters", "Returns"),
+    "Type": ("Fields / values", "Fields"),
+    "Field": ("Type",),
+}
+MODEL_ROW_TABLE_HEADER = "Type"  # `Type | Fields | Note`: one row defines one type
+MODEL_FIELD_TABLE_HEADER = "Field"  # `Field | Type | Note`: the line above names the type
+MODELS_LINE_PREFIX = "**Models"  # `**Models** — <file>: `A`, `B`` names types the card defines
+TABLE_HEADER_LINE_COUNT = 2  # the header row and its |---| separator
+BUNDLE_GAP_MEANING = (
+    "MISSING: on no card and not in src · OWNED-BY-<tag>: the task does not wait on the task "
+    "that owns it (add `Blocked by: <tag>` or move the type onto the card that needs it first)"
+)
+PACKAGE_GAP_MEANING = (
+    "each is GATE: plan — build the owner first, add it to this package, or rule the type onto "
+    "a card; then re-run (recorded: task next refuses these tags until a clean check)"
+)
+CODE_SPAN_RE = re.compile(r"`([^`]+)`")
+QUOTED_LITERAL_RE = re.compile(r"\"[^\"]*\"|'[^']*'")
+TYPE_TOKEN_RE = re.compile(r"[A-Za-z_][\w.]*")
+IDENTIFIER_RE = re.compile(r"\w+")
+TABLE_CELL_SPLIT_RE = re.compile(r"(?<!\\)\|")
+BUILTIN_TYPE_NAMES = frozenset({
+    "None", "True", "False", "NewType", "Literal", "Any", "Self",
+    "String", "Int", "Long", "Boolean", "Double", "Float", "Unit", "List", "Map", "Set", "Pair", "Nothing",
+    "Promise", "Record", "Array", "Partial", "Readonly", "Date",
+})
+SOURCE_DEFINITION_RE = re.compile(r"\b(?:class|interface|object|typealias|type|enum)\s+([A-Z]\w*)")
+SOURCE_ASSIGNMENT_RE = re.compile(r"^([A-Z]\w*)\s*(?::[^=\n]*)?=", re.MULTILINE)
+SOURCE_FROM_IMPORT_RE = re.compile(r"^\s*from\s+[\w.]+\s+import\s+(\([^)]*\)|[^\n]+)", re.MULTILINE)
+SOURCE_DOTTED_IMPORT_RE = re.compile(r"^\s*import\s+[\w.]+\.([A-Z]\w*)", re.MULTILINE)
+SOURCE_BRACED_IMPORT_RE = re.compile(r"^\s*import\s+(?:type\s+)?\{([^}]*)\}", re.MULTILINE)
+SOURCE_SKIPPED_DIRNAMES = frozenset({"node_modules", ".venv", "venv", "__pycache__"})
+# Phase 4 cannot lock while a card of these kinds lacks its section (`**Table** — none: <why>` counts).
+CARD_SUFFIX_TO_REQUIRED_SECTION = {"Repository": "**Table**", "Router": "**Access patterns**"}
 
 # ── roster gate (Phase 2 topology present) ──────────────────────────────────────
 # The roster gate is the ONLY legitimate way to present the topology: it validates the
@@ -354,6 +409,22 @@ def _resolve_correctness_model(project_root: Path) -> str | None:
     return correctness_model
 
 
+@dataclass(frozen=True)
+class ReviewBatching:
+    """How the shared reviewer runs: tasks per pass, and the context past which a fresh one starts."""
+    batch_size: int
+    context_cap: int
+
+
+def _resolve_review_batching(project_root: Path) -> ReviewBatching:
+    """Review batching from schematic.reviewBatchSize / reviewerContextCap, else the packaged defaults."""
+    schematic_config = _load_standards_manifest(project_root).get(SCHEMATIC_CONFIG_KEY, {})
+    return ReviewBatching(
+        batch_size=schematic_config.get(REVIEW_BATCH_SIZE_KEY, REVIEW_BATCH_SIZE_DEFAULT),
+        context_cap=schematic_config.get(REVIEWER_CONTEXT_CAP_KEY, REVIEWER_CONTEXT_CAP_DEFAULT),
+    )
+
+
 def _resolve_max_file_lines(project_root: Path) -> int:
     """Per-file logic-line ceiling from schematic.maxFileLines, else the packaged default."""
     manifest = _load_standards_manifest(project_root)
@@ -473,6 +544,7 @@ def parse_tasks(tasks_md: Path) -> list[dict]:
                 "status": TASK_STATUS_PENDING,
                 "component_file": None,
                 "blocked_by": [],
+                "model": None,
                 "divergence": None,
                 "raw_lines": [line],
             }
@@ -488,6 +560,8 @@ def parse_tasks(tasks_md: Path) -> list[dict]:
             elif stripped.startswith("Blocked by:"):
                 blocked_text = stripped.split(":", 1)[1]
                 current["blocked_by"].extend(BLOCKED_BY_TAG_RE.findall(blocked_text))
+            elif stripped.startswith("Model:"):
+                current["model"] = stripped.split(":", 1)[1].strip()
             elif stripped.startswith("Divergence:"):
                 current["divergence"] = stripped.split(":", 1)[1].strip()
 
@@ -907,9 +981,12 @@ def _print_slot_paths(slot_label: str, module_paths: list[Path]) -> None:
 
 
 def _print_model_config(project_root: Path) -> None:
-    """Print which model runs the diff review and which runs the Pass-3 correctness read."""
+    """Print which model runs the diff review, how it batches, and which runs the Pass-3 correctness read."""
     correctness_model = _resolve_correctness_model(project_root)
+    review_batching = _resolve_review_batching(project_root)
     print(f"  {'reviewModel:':<18} {_resolve_review_model(project_root)}")
+    print(f"  {'reviewBatchSize:':<18} {review_batching.batch_size}")
+    print(f"  {'reviewerContextCap:':<18} {review_batching.context_cap}")
     print(f"  {'correctnessModel:':<18} {correctness_model or CORRECTNESS_MODEL_INHERIT_LABEL}")
 
 
@@ -1253,6 +1330,13 @@ def _validate_schematic(schematic_dir: Path) -> list[str]:
                 findings.append(
                     f"tasks.md #{task['tag']} — Component file '{task['component_file']}' not found"
                 )
+
+    for task in tasks:
+        if task["model"] is not None and task["model"] not in MODEL_TIER_TO_PACKAGE_CAP:
+            findings.append(
+                f"tasks.md #{task['tag']} — Model: '{task['model']}' is not one of "
+                f"{', '.join(sorted(MODEL_TIER_TO_PACKAGE_CAP))}"
+            )
 
     objective_md = schematic_dir / "objective.md"
     if objective_md.exists() and not parse_feature_acs(objective_md):
@@ -1919,6 +2003,25 @@ def _phase_complete(args: argparse.Namespace) -> None:
         else:
             _exit_error(milestone_refusal)
 
+    card_section_findings = (
+        _required_card_section_findings(schematic_dir=schematic_dir)
+        if args.num == CONTRACTS_PHASE
+        else []
+    )
+    if card_section_findings:
+        if args.override:
+            record_override(state, context, args.override)
+        else:
+            findings_text = "\n".join(
+                f"    {finding}"
+                for finding in card_section_findings
+            )
+            _exit_error(
+                f"phase {args.num} cannot lock — a card lacks a section its kind requires:\n{findings_text}\n"
+                f"  write and sign it (phase_4_contracts_and_tests.md), or record why it is absent:\n"
+                f"  `**Table** — none: <why>` · `**Access patterns** — none: <why>`"
+            )
+
     for rel_path, heading in PHASE_ARTIFACT_CHECKS.get(args.num, []):
         target = schematic_dir / rel_path
         content = target.read_text() if target.exists() else ""
@@ -1954,6 +2057,8 @@ def _phase_complete(args: argparse.Namespace) -> None:
             )
 
     state["phases"].setdefault(str(args.num), {})["status"] = PHASE_STATUS_LOCKED
+    if args.num == PLANNING_FINAL_PHASE:
+        state[PACKAGE_GATE_KEY] = True
     save_state(schematic_dir, state)
     print(f"phase {args.num} locked ✓")
     if args.num < PLANNING_FINAL_PHASE:
@@ -2159,6 +2264,13 @@ def _task_status(args: argparse.Namespace) -> None:
             f"  answer: schematic answer {TASK_QUESTIONS_STEM}#<idx> \"<text>\" {schematic_dir.name}"
         )
 
+    if current_status == TASK_STATUS_PENDING and new_status == TASK_STATUS_IN_PROGRESS:
+        _pass_package_gate(
+            schematic_dir=schematic_dir,
+            tag=args.tag,
+            override=args.override,
+        )
+
     if new_status not in legal_targets:
         if args.override:
             state = load_state(schematic_dir)
@@ -2245,8 +2357,10 @@ def _emit_review_request(schematic_dir: Path, tag: str, task: dict) -> None:
         f"Final line of your reply: VERDICT: clean | VERDICT: findings\n"
     )
 
-    print(f"  ↪ SESSION AGENT: launch this review as a {review_model} subagent (Agent tool),")
-    print(f"    then record the verdict: schematic task review-result {tag} <clean|findings> --summary \"<one line>\" --schematic {schematic_dir.name}")
+    review_batching = _resolve_review_batching(project_root)
+    print(f"  ↪ SESSION AGENT: review this task in a batch of {review_batching.batch_size} with ONE {review_model} subagent (Agent tool);")
+    print(f"    resume that reviewer for the next batch while its context is under {review_batching.context_cap} tokens, then start a fresh one.")
+    print(f"    Record this task's verdict from the batch verdict: schematic task review-result {tag} <clean|findings> --summary \"<one line>\" --schematic {schematic_dir.name}")
     print("    Task cannot complete until the recorded verdict is 'clean'.\n")
     print("  ── review prompt ───────────────────────────────────────────────")
     print(textwrap.indent(review_prompt, "  "))
@@ -2378,6 +2492,12 @@ def _task_next(args: argparse.Namespace) -> None:
         servable_task = _servable_task(schematic_dir)
         if servable_task is None:
             continue
+        if not peek:
+            _pass_package_gate(
+                schematic_dir=schematic_dir,
+                tag=servable_task["tag"],
+                override=getattr(args, "override", None),
+            )
         print(f"schematic: {schematic_dir.name}")
         print("\n".join(servable_task["raw_lines"]))
         if not peek:
@@ -2449,6 +2569,615 @@ def _print_decision_ledger(state: dict) -> None:
     for tag, decisions in sorted(tag_to_decisions.items()):
         for decision in decisions:
             print(f"  {tag}: {decision['text']}")
+
+# ── package check: type ownership before a builder starts ─────────────────────
+
+
+@dataclass(frozen=True)
+class CardTable:
+    """One markdown table in a card file: its kind (first header), class heading, the line above it, its cells."""
+    kind: str
+    class_name: str
+    caption: str
+    header: tuple[str, ...]
+    rows: tuple[tuple[str, ...], ...]
+
+
+@dataclass(frozen=True)
+class TypeReference:
+    """One type a card names in a signature or a model field, and the column it sits in."""
+    type_name: str
+    class_name: str
+    column: str
+
+
+@dataclass(frozen=True)
+class CardTypes:
+    """The types one card file defines, and the types its signatures and fields reference."""
+    defined: frozenset[str]
+    references: tuple[TypeReference, ...]
+
+
+@dataclass(frozen=True)
+class CheckedCard:
+    """A card judged for one task: the task that builds it, and the tasks whose types it may use."""
+    user_tag: str
+    card_file: str
+    allowed_owner_tags: frozenset[str]
+
+
+@dataclass(frozen=True)
+class TypeOwnership:
+    """Where the bundle's types live: each card file's types, the tasks building each card, the source's names."""
+    card_file_to_types: dict[str, CardTypes]
+    card_file_to_tags: dict[str, frozenset[str]]
+    source_type_names: frozenset[str]
+
+
+def _table_cells(table_line: str) -> tuple[str, ...]:
+    """A markdown table row's cells, split on unescaped pipes, with `\\|` read back as `|`."""
+    inner = table_line.strip().removeprefix("|").removesuffix("|")
+    return tuple(
+        cell.strip().replace("\\|", "|")
+        for cell in TABLE_CELL_SPLIT_RE.split(inner)
+    )
+
+
+def _card_table(class_name: str, caption: str, table_lines: list[str]) -> CardTable:
+    """One table from its lines: the header row, its `|---|` separator, then the body rows."""
+    header_line = table_lines[0]
+    header = _table_cells(header_line)
+    return CardTable(
+        kind=header[0],
+        class_name=class_name,
+        caption=caption,
+        header=header,
+        rows=tuple(
+            _table_cells(row_line)
+            for row_line in table_lines[TABLE_HEADER_LINE_COUNT:]
+        ),
+    )
+
+
+def _card_tables(card_text: str) -> list[CardTable]:
+    """Every table in a card file, with the class heading it sits under and the line just above it."""
+    tables: list[CardTable] = []
+    table_lines: list[str] = []
+    class_name = ""
+    caption = ""
+    for line in [*card_text.splitlines(), ""]:
+        if line.lstrip().startswith("|"):
+            table_lines.append(line)
+            continue
+        if table_lines:
+            tables.append(
+                _card_table(
+                    class_name=class_name,
+                    caption=caption,
+                    table_lines=table_lines,
+                ),
+            )
+            table_lines = []
+        heading_match = CARD_HEADING_RE.match(line)
+        if heading_match:
+            class_name = heading_match["class_name"]
+        if line.strip():
+            caption = line
+    return tables
+
+
+def _is_type_name(token: str) -> bool:
+    """A CapWords name with a lowercase letter, never module-qualified, a builtin, or an ENUM_VALUE."""
+    first_character = token[0]
+    return (
+        first_character.isupper()
+        and token.upper() != token
+        and "." not in token
+        and token not in BUILTIN_TYPE_NAMES
+    )
+
+
+def _type_names_in(cell: str) -> frozenset[str]:
+    """The type names inside a cell's code spans; quoted literals are skipped."""
+    return frozenset(
+        token
+        for code_span in CODE_SPAN_RE.findall(cell)
+        for token in TYPE_TOKEN_RE.findall(QUOTED_LITERAL_RE.sub("", code_span))
+        if _is_type_name(token)
+    )
+
+
+def _defined_type_names(card_text: str, tables: list[CardTable]) -> frozenset[str]:
+    """What a card file defines: its class headings, its Models lines, each row-per-type model, each field table."""
+    return frozenset({
+        *(
+            heading_match["class_name"]
+            for heading_match in CARD_HEADING_RE.finditer(card_text)
+        ),
+        *(
+            type_name
+            for line in card_text.splitlines()
+            if line.startswith(MODELS_LINE_PREFIX)
+            for type_name in _type_names_in(line)
+        ),
+        *(
+            type_name
+            for table in tables
+            if table.kind == MODEL_ROW_TABLE_HEADER
+            for row in table.rows
+            for type_name in _type_names_in(row[0])
+        ),
+        *(
+            type_name
+            for table in tables
+            if table.kind == MODEL_FIELD_TABLE_HEADER
+            for type_name in _type_names_in(table.caption)
+        ),
+    })
+
+
+def _referenced_types(tables: list[CardTable]) -> tuple[TypeReference, ...]:
+    """Every type named in a card file's Parameters, Returns and Fields cells."""
+    return tuple(
+        TypeReference(
+            type_name=type_name,
+            class_name=table.class_name,
+            column=column,
+        )
+        for table in tables
+        for column_idx, column in enumerate(table.header)
+        if column in FIRST_HEADER_TO_REFERENCE_COLUMNS.get(table.kind, ())
+        for row in table.rows
+        if column_idx < len(row)
+        for type_name in sorted(_type_names_in(row[column_idx]))
+    )
+
+
+def _card_file_types(card_text: str) -> CardTypes:
+    """The types one card file defines and references."""
+    tables = _card_tables(card_text)
+    return CardTypes(
+        defined=_defined_type_names(
+            card_text=card_text,
+            tables=tables,
+        ),
+        references=_referenced_types(tables=tables),
+    )
+
+
+def _type_names_in_source(source_text: str) -> set[str]:
+    """Type names a source file defines (class, type alias, NewType) or imports."""
+    imported_name_lists = [
+        *SOURCE_FROM_IMPORT_RE.findall(source_text),
+        *SOURCE_BRACED_IMPORT_RE.findall(source_text),
+    ]
+    return {
+        *SOURCE_DEFINITION_RE.findall(source_text),
+        *SOURCE_ASSIGNMENT_RE.findall(source_text),
+        *SOURCE_DOTTED_IMPORT_RE.findall(source_text),
+        *(
+            imported_name
+            for imported_name_list in imported_name_lists
+            for imported_name in IDENTIFIER_RE.findall(imported_name_list)
+        ),
+    }
+
+
+def _top_folder(repo_relative_path: str) -> str:
+    """The first folder of a repo-relative path."""
+    top_folder, *_ = Path(repo_relative_path).parts
+    return top_folder
+
+
+def _source_roots(card_texts: list[str]) -> frozenset[Path]:
+    """`src`, plus the top folder of every card's Dir: where the bundle's classes live or will."""
+    project_root = find_project_root()
+    top_folders = {
+        SOURCE_ROOT_DIRNAME,
+        *(
+            _top_folder(card_dir_match["path"])
+            for card_text in card_texts
+            for card_dir_match in CARD_DIR_PATTERN.finditer(card_text)
+        ),
+    }
+    return frozenset(
+        project_root / top_folder
+        for top_folder in top_folders
+        if (project_root / top_folder).is_dir()
+    )
+
+
+def _source_type_names(source_roots: frozenset[Path]) -> frozenset[str]:
+    """Every type name the source roots define or import: the names a card may use without owning them."""
+    return frozenset(
+        type_name
+        for source_root in sorted(source_roots)
+        for source_file_glob in SOURCE_FILE_GLOBS
+        for source_path in source_root.rglob(source_file_glob)
+        if SOURCE_SKIPPED_DIRNAMES.isdisjoint(source_path.relative_to(source_root).parts)
+        for type_name in _type_names_in_source(source_path.read_text(errors="replace"))
+    )
+
+
+def _card_file_to_tags(tasks: list[TaskRecord]) -> dict[str, frozenset[str]]:
+    """Each bundle-relative card file → the tasks that build it."""
+    card_file_to_tags: dict[str, set[str]] = {}
+    for task in tasks:
+        if task["component_file"]:
+            card_file_to_tags.setdefault(task["component_file"].lstrip("./"), set()).add(task["tag"])
+    return {
+        card_file: frozenset(tags)
+        for card_file, tags in card_file_to_tags.items()
+    }
+
+
+def _type_ownership(schematic_dir: Path, tasks: list[TaskRecord]) -> TypeOwnership:
+    """Read every card in the bundle, which task builds each, and every type name its source roots hold."""
+    card_file_to_text = {
+        f"components/{card_path.name}": card_path.read_text()
+        for card_path in sorted((schematic_dir / "components").glob("*.md"))
+        if not card_path.name.startswith(NON_CARD_FILENAME_PREFIX)
+    }
+    return TypeOwnership(
+        card_file_to_types={
+            card_file: _card_file_types(card_text=card_text)
+            for card_file, card_text in card_file_to_text.items()
+        },
+        card_file_to_tags=_card_file_to_tags(tasks=tasks),
+        source_type_names=_source_type_names(
+            source_roots=_source_roots(
+                card_texts=list(card_file_to_text.values()),
+            ),
+        ),
+    )
+
+
+def _type_to_owner_tags(ownership: TypeOwnership) -> dict[str, frozenset[str]]:
+    """Each card-defined type → the tasks building a card that defines it (empty: only a task-less card does)."""
+    type_to_owner_tags: dict[str, set[str]] = {}
+    for card_file, card_types in ownership.card_file_to_types.items():
+        for type_name in card_types.defined:
+            type_to_owner_tags.setdefault(type_name, set()).update(
+                ownership.card_file_to_tags.get(card_file, frozenset()),
+            )
+    return {
+        type_name: frozenset(owner_tags)
+        for type_name, owner_tags in type_to_owner_tags.items()
+    }
+
+
+def _type_gap_kind(
+    type_name: str,
+    allowed_owner_tags: frozenset[str],
+    type_to_owner_tags: dict[str, frozenset[str]],
+    source_type_names: frozenset[str],
+) -> str:
+    """MISSING, OWNED-BY-<tag>, or empty when the card can reach the type."""
+    if type_name not in type_to_owner_tags:
+        return (
+            ""
+            if type_name in source_type_names
+            else TYPE_GAP_MISSING
+        )
+    owner_tags = type_to_owner_tags[type_name]
+    if not owner_tags or owner_tags & allowed_owner_tags:
+        return ""
+    first_owner_tag = sorted(owner_tags)[0]
+    return f"{TYPE_GAP_OWNED_BY_PREFIX}{first_owner_tag}"
+
+
+def _type_gap_lines(ownership: TypeOwnership, checked_cards: list[CheckedCard]) -> list[str]:
+    """One line per type a checked card cannot reach: its gap kind, the task, and the cell that names it."""
+    type_to_owner_tags = _type_to_owner_tags(ownership=ownership)
+    gap_key_to_line: dict[tuple[str, str, str], str] = {}
+    for checked_card in checked_cards:
+        for reference in ownership.card_file_to_types[checked_card.card_file].references:
+            gap_kind = _type_gap_kind(
+                type_name=reference.type_name,
+                allowed_owner_tags=checked_card.allowed_owner_tags,
+                type_to_owner_tags=type_to_owner_tags,
+                source_type_names=ownership.source_type_names,
+            )
+            gap_key = (checked_card.user_tag, reference.type_name, reference.class_name)
+            if gap_kind and gap_key not in gap_key_to_line:
+                gap_key_to_line[gap_key] = (
+                    f"{gap_kind:<14} `{reference.type_name}` — {checked_card.user_tag} "
+                    f"{reference.class_name} {reference.column} ({checked_card.card_file})"
+                )
+    return list(gap_key_to_line.values())
+
+
+def _tag_to_blocker_closure(tasks: list[TaskRecord]) -> dict[str, frozenset[str]]:
+    """Each task → every task it waits on, directly or through another."""
+    tag_to_blockers = {
+        task["tag"]: set(task["blocked_by"])
+        for task in tasks
+    }
+    tag_to_closure: dict[str, frozenset[str]] = {}
+    for tag, blockers in tag_to_blockers.items():
+        reached: set[str] = set()
+        frontier = list(blockers)
+        while frontier:
+            blocker = frontier.pop()
+            if blocker not in reached:
+                reached.add(blocker)
+                frontier.extend(tag_to_blockers.get(blocker, set()))
+        tag_to_closure[tag] = frozenset(reached)
+    return tag_to_closure
+
+
+def _complete_tags(tasks: list[TaskRecord]) -> frozenset[str]:
+    """Tags of the tasks already built."""
+    return frozenset(
+        task["tag"]
+        for task in tasks
+        if task["status"] == TASK_STATUS_COMPLETE
+    )
+
+
+def _package_checked_cards(
+    ownership: TypeOwnership,
+    tasks: list[TaskRecord],
+    package_tags: frozenset[str],
+) -> list[CheckedCard]:
+    """The package's cards; each may use a type from a card in the package or one a completed task built."""
+    allowed_owner_tags = package_tags | _complete_tags(tasks=tasks)
+    return [
+        CheckedCard(
+            user_tag=tag,
+            card_file=card_file,
+            allowed_owner_tags=allowed_owner_tags,
+        )
+        for card_file, tags in sorted(ownership.card_file_to_tags.items())
+        if card_file in ownership.card_file_to_types
+        for tag in sorted(tags & package_tags)
+    ]
+
+
+def _bundle_checked_cards(ownership: TypeOwnership, tasks: list[TaskRecord]) -> list[CheckedCard]:
+    """Every card: a task may use its own types, a waited-on or completed task's; a task-less card, MISSING only."""
+    tag_to_blocker_closure = _tag_to_blocker_closure(tasks=tasks)
+    complete_tags = _complete_tags(tasks=tasks)
+    every_tag = frozenset(
+        task["tag"]
+        for task in tasks
+    )
+    return [
+        *(
+            CheckedCard(
+                user_tag=tag,
+                card_file=card_file,
+                allowed_owner_tags=frozenset({tag}) | tag_to_blocker_closure[tag] | complete_tags,
+            )
+            for card_file, tags in sorted(ownership.card_file_to_tags.items())
+            if card_file in ownership.card_file_to_types
+            for tag in sorted(tags)
+        ),
+        *(
+            CheckedCard(
+                user_tag=UNOWNED_CARD_LABEL,
+                card_file=card_file,
+                allowed_owner_tags=every_tag,
+            )
+            for card_file in sorted(ownership.card_file_to_types)
+            if card_file not in ownership.card_file_to_tags
+        ),
+    ]
+
+
+def _package_tier(package_tasks: list[TaskRecord]) -> str:
+    """The package's model tier: sonnet only when every task in it is tiered sonnet."""
+    every_task_is_sonnet = all(
+        task["model"] == MODEL_TIER_SONNET
+        for task in package_tasks
+    )
+    return (
+        MODEL_TIER_SONNET
+        if every_task_is_sonnet
+        else MODEL_TIER_OPUS
+    )
+
+
+def _package_cap_lines(package_tasks: list[TaskRecord], tier: str) -> list[str]:
+    """A gap line when the package holds more tasks than its tier's cap."""
+    tier_cap = MODEL_TIER_TO_PACKAGE_CAP[tier]
+    if len(package_tasks) <= tier_cap:
+        return []
+    return [f"{'CAP':<14} {len(package_tasks)} tasks exceed the {tier} package cap of {tier_cap} — split the package"]
+
+
+def _record_package_check(schematic_dir: Path, package_tags: frozenset[str], gap_lines: list[str]) -> None:
+    """Record the check (the gate reads the latest one covering a tag) and arm the bundle's gate."""
+    state = load_state(schematic_dir)
+    state.setdefault(PACKAGE_CHECKS_KEY, []).append({
+        "tags": sorted(package_tags),
+        "gaps": gap_lines,
+        "at": datetime.now(tz=timezone.utc).isoformat(),
+    })
+    state[PACKAGE_GATE_KEY] = True
+    save_state(
+        schematic_dir=schematic_dir,
+        state=state,
+    )
+
+
+def _report_type_gaps(heading: str, gap_lines: list[str], gap_meaning: str, clean_line: str) -> None:
+    """Print a check's heading and gaps; exit 1 on any gap."""
+    print(heading)
+    for gap_line in gap_lines:
+        print(f"  {gap_line}")
+    if gap_lines:
+        print(f"✗ {len(gap_lines)} gap(s) — {gap_meaning}")
+        sys.exit(1)
+    print(clean_line)
+
+
+def cmd_package(args: argparse.Namespace) -> None:
+    package_handlers = {"check": _package_check}
+    package_handlers[args.package_command](args)
+
+
+def _package_check(args: argparse.Namespace) -> None:
+    """Type ownership for one package (recorded; `task next` gates on it) or, with --all, the whole bundle."""
+    if bool(args.tags) == args.all:
+        _exit_error("name the package's task tags, or pass --all for the whole bundle — not both")
+    schematic_dir = resolve_schematic_dir(args.schematic)
+    tasks = parse_tasks(schematic_dir / "tasks.md")
+    ownership = _type_ownership(
+        schematic_dir=schematic_dir,
+        tasks=tasks,
+    )
+    if not args.all:
+        _check_package(
+            schematic_dir=schematic_dir,
+            tasks=tasks,
+            ownership=ownership,
+            package_tags=frozenset(args.tags),
+        )
+        return
+    _report_type_gaps(
+        heading=f"type ownership — whole bundle ({len(ownership.card_file_to_types)} card files, {len(tasks)} tasks)",
+        gap_lines=_type_gap_lines(
+            ownership=ownership,
+            checked_cards=_bundle_checked_cards(
+                ownership=ownership,
+                tasks=tasks,
+            ),
+        ),
+        gap_meaning=BUNDLE_GAP_MEANING,
+        clean_line="✓ type ownership: clean",
+    )
+
+
+def _check_package(
+    schematic_dir: Path,
+    tasks: list[TaskRecord],
+    ownership: TypeOwnership,
+    package_tags: frozenset[str],
+) -> None:
+    """Check one package's cards, record the result, and print it with the package's tier."""
+    unknown_tags = sorted(
+        package_tags - {
+            task["tag"]
+            for task in tasks
+        },
+    )
+    if unknown_tags:
+        _exit_error(f"not task tags in tasks.md: {', '.join(unknown_tags)}")
+    package_tasks = [
+        task
+        for task in tasks
+        if task["tag"] in package_tags
+    ]
+    tier = _package_tier(package_tasks=package_tasks)
+    gap_lines = [
+        *_type_gap_lines(
+            ownership=ownership,
+            checked_cards=_package_checked_cards(
+                ownership=ownership,
+                tasks=tasks,
+                package_tags=package_tags,
+            ),
+        ),
+        *_package_cap_lines(
+            package_tasks=package_tasks,
+            tier=tier,
+        ),
+    ]
+    _record_package_check(
+        schematic_dir=schematic_dir,
+        package_tags=package_tags,
+        gap_lines=gap_lines,
+    )
+    task_tiers = " · ".join(
+        f"{task['tag']} {task['model'] or UNOWNED_CARD_LABEL}"
+        for task in package_tasks
+    )
+    _report_type_gaps(
+        heading=f"package {' '.join(sorted(package_tags))} — tier {tier} (Model: {task_tiers})",
+        gap_lines=gap_lines,
+        gap_meaning=PACKAGE_GAP_MEANING,
+        clean_line=f"✓ clean — recorded: task next may claim {', '.join(sorted(package_tags))}",
+    )
+
+
+def _package_gate_refusal(state: dict, tag: str, schematic_name: str) -> str:
+    """Why `tag` may not start: the gate is armed and its latest covering check is missing or has gaps."""
+    if not state.get(PACKAGE_GATE_KEY):
+        return ""
+    covering_checks = [
+        package_check
+        for package_check in state.get(PACKAGE_CHECKS_KEY, [])
+        if tag in package_check["tags"]
+    ]
+    if covering_checks and not covering_checks[-1]["gaps"]:
+        return ""
+    verdict = (
+        f"its latest package check found {len(covering_checks[-1]['gaps'])} gap(s)"
+        if covering_checks
+        else "no package check covers it"
+    )
+    return (
+        f"task {tag} cannot start — {verdict}.\n"
+        f"  A builder never starts on a card whose types are missing or owned by an unbuilt card.\n"
+        f"  run: schematic package check {tag} <the package's other tags> --schematic {schematic_name}\n"
+        f"  or:  pass --override \"<reason>\" (recorded; validate lists it)"
+    )
+
+
+def _pass_package_gate(schematic_dir: Path, tag: str, override: str | None) -> None:
+    """Refuse to start a task no clean package check covers, unless an override reason is recorded."""
+    state = load_state(schematic_dir)
+    refusal = _package_gate_refusal(
+        state=state,
+        tag=tag,
+        schematic_name=schematic_dir.name,
+    )
+    if not refusal:
+        return
+    if override is None:
+        _exit_error(refusal)
+    record_override(
+        state=state,
+        context=f"start {tag} without a clean package check",
+        reason=override,
+    )
+    save_state(
+        schematic_dir=schematic_dir,
+        state=state,
+    )
+
+
+def _card_sections(card_text: str) -> list[tuple[str, str]]:
+    """Each card in a file: its class name, and its text up to the next card."""
+    heading_matches = list(CARD_HEADING_RE.finditer(card_text))
+    section_ends = [
+        *(
+            heading_match.start()
+            for heading_match in heading_matches[1:]
+        ),
+        len(card_text),
+    ]
+    return [
+        (heading_match["class_name"], card_text[heading_match.start():section_end])
+        for heading_match, section_end in zip(heading_matches, section_ends)
+    ]
+
+
+def _required_card_section_findings(schematic_dir: Path) -> list[str]:
+    """Repository cards with no `**Table**` section and Router cards with no `**Access patterns**` section."""
+    return [
+        f"components/{card_path.name} — `{class_name}` has no {required_section} section"
+        for card_path in sorted((schematic_dir / "components").glob("*.md"))
+        if not card_path.name.startswith(NON_CARD_FILENAME_PREFIX)
+        for class_name, card_text in _card_sections(card_path.read_text())
+        for card_suffix, required_section in CARD_SUFFIX_TO_REQUIRED_SECTION.items()
+        if class_name.endswith(card_suffix)
+        and not any(
+            line.startswith(required_section)
+            for line in card_text.splitlines()
+        )
+    ]
 
 
 # ── milestone commands (optional multi-stage delivery) ─────────────────────────
@@ -4312,7 +5041,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_tstat.add_argument("tag")
     p_tstat.add_argument("status", choices=MANUAL_TASK_STATUS_CHOICES)
     p_tstat.add_argument("--schematic", required=True, metavar="NAME")
-    p_tstat.add_argument("--override", metavar="REASON", help="Bypass legal transition check")
+    p_tstat.add_argument(
+        "--override",
+        metavar="REASON",
+        help="Bypass the legal transition check, or start a task without a clean package check (recorded)",
+    )
 
     p_tcomp = task_sub.add_parser("complete", help="Mark task complete (requires clean review)")
     p_tcomp.add_argument("tag")
@@ -4328,6 +5061,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_tnext = task_sub.add_parser("next", help="Show next unblocked pending task and claim it")
     p_tnext.add_argument("name", nargs="?", help="Schematic name (omit for all)")
     p_tnext.add_argument("--peek", action="store_true", help="Show without claiming (no status transition)")
+    p_tnext.add_argument("--override", metavar="REASON", help="Claim without a clean package check (recorded)")
 
     p_tnote = task_sub.add_parser("note", help="Add agent note to a task")
     p_tnote.add_argument("tag", help="Task tag (e.g. a.1)")
@@ -4363,6 +5097,24 @@ def _build_parser() -> argparse.ArgumentParser:
         help="naming | placement — a contract change, caveat, or unspecified value must use `task ask`",
     )
     p_tdecision.add_argument("--schematic", required=True, metavar="NAME")
+
+    p_package = sub.add_parser(
+        "package",
+        help="Type ownership before a builder starts (Phase 4/7 audits; the Phase 8 dispatch gate)",
+    )
+    package_sub = p_package.add_subparsers(dest="package_command", required=True)
+    p_pcheck = package_sub.add_parser(
+        "check",
+        help="Every type a package's cards name is in src or on a card in reach: reports MISSING and "
+             "OWNED-BY-<tag>; records the result `task next` gates on",
+    )
+    p_pcheck.add_argument("tags", nargs="*", help="The package's task tags (e.g. b.1 b.2)")
+    p_pcheck.add_argument(
+        "--all",
+        action="store_true",
+        help="Whole bundle, nothing recorded: each task against the tasks it waits on (the audits)",
+    )
+    p_pcheck.add_argument("--schematic", required=True, metavar="NAME")
 
     p_milestone = sub.add_parser(
         "milestone",
@@ -4502,6 +5254,7 @@ def dispatch(args: argparse.Namespace) -> None:
         "phase": cmd_phase,
         "roster": cmd_roster,
         "task": cmd_task,
+        "package": cmd_package,
         "milestone": cmd_milestone,
         "review": cmd_review,
         "track": cmd_track,

@@ -51,7 +51,8 @@ Fixed order:
 10. **Errors** — *(only if the class raises domain errors)* table: `Code | Meaning`.
 11. **Table** — *(every Repository card; `phase complete 4` refuses one without it)* `**Table** — \`<table>\`` then `Column | Type | Null | Holds`, signed column by column, then each key, index and `CHECK` with its access pattern, `ON DELETE`, retention, the migration file (auto or `manual/`, any backfill) and every reader. Design rules: `sql-standards` § Schema design. A repository writing no table of its own: `**Table** — none: <why>`.
 12. **Access patterns** — *(every Router card; same gate)* one line per route answering: the cap on every free-text field · an idempotency key minted per tap on a paid or mutating call · the revision/ETag it takes AND returns on every mutating reply · another account's id reads as not-found · per tap or on load — one aggregated read per screen load, no N+1 · pagination and list order · each error code's HTTP status. `**Access patterns** — none: <why>` when no route applies.
-13. **Tests** — ALWAYS two tables (never an inline `·`-separated list): **Feature tests** then **Branch tests**, each with columns `Test | Proves`. `Proves` names the Feature AC(s) the test covers (`1.A — …`); `schematic validate` reads these refs for the coverage check. If a behaviour is already covered by an existing unchanged test, do NOT repeat it — note the coverage in one line.
+13. **Concurrency** — *(mandatory, every class)* a bold heading `**Concurrency**` then three lines: the **transaction boundary** (where it opens and closes), the **locks taken** in their order, and the **outcome when two requests race** (who wins, what the loser sees). A class with no shared state reads `none: no shared state`. Never omitted.
+14. **Tests** — ALWAYS two tables (never an inline `·`-separated list): **Feature tests** then **Branch tests**, each with columns `Test | Proves`. `Proves` names the Feature AC(s) the test covers (`1.A — …`); `schematic validate` reads these refs for the coverage check. If a behaviour is already covered by an existing unchanged test, do NOT repeat it — note the coverage in one line.
 
 Rules:
 - **Separator between cards (when a gate shows >1 card):** put a long red rule between consecutive cards — a `diff` fenced block containing a single `-`-prefixed line of ~95 dashes (renderers colour `-` lines red, giving a strong section break). NOT a bare `---` (too short, renders grey). Example:
@@ -90,6 +91,11 @@ Rules:
 | Name | Change |
 |---|---|
 | `complete` | `user_id → user`; promotes onto the configured tier in-tx |
+
+**Concurrency**
+- Transaction: opens in `complete`, closes after the settings insert.
+- Locks: `SELECT ... FOR UPDATE` on the user row.
+- Race: two completes serialise on the row lock; the second sees the promoted tier and is a no-op.
 
 Feature tests
 | Test | Proves |

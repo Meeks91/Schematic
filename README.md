@@ -123,7 +123,7 @@ Phase 8 runs **manual** (sketch → confirm → implement, per task) or **auto**
 | `phase complete 8` unsigned-milestone check | Calling the feature done with a stage you never signed off |
 | `task complete` / `schematic-task-done` review check | Completing a task that never passed review |
 | `schematic-task-done --matched/--updated` | Silent schematic drift — divergence is recorded, always |
-| `schematic validate` | Cross-reference rot (blockers, component files, AC pyramid) |
+| `schematic validate` | Cross-reference rot (blockers, component files, AC pyramid, completed tasks' test names exist) |
 
 ## CLI
 

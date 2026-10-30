@@ -149,7 +149,7 @@ Feature AC   (Phase 1 — grill)      → "what must the feature achieve?"
             └── AC Test   (Phase 4 — tests)     → "proof that the method delivers"
 ```
 
-Each card's tests cite the Feature ACs they prove in their `Proves` column — that is the only place the link is written. `schematic validate` checks it mechanically at end of Phase 4: every Feature AC is cited by ≥1 card test, and every card's tests cite ≥1 Feature AC. Nothing orphaned, nothing assumed.
+Each card's tests cite the Feature ACs they prove in their `Proves` column — that is the only place the link is written. `schematic validate` checks it mechanically at end of Phase 4: every Feature AC is cited by ≥1 card test, and every card's tests cite ≥1 Feature AC. Nothing orphaned, nothing assumed. Once a task is recorded complete in Phase 8, `schematic validate` also checks that every test name in its card's test tables is declared in the repo's test files (Python `def`, TS/JS `it('…')`/`test('…')`, Kotlin `fun`).
 
 ---
 

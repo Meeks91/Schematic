@@ -351,16 +351,28 @@ owns; this pass reads once. Standards are NOT re-checked — the per-task review
 Duplication is a cross-file property, so this pass needs the whole diff in one view (a
 per-task review cannot see a helper duplicated eight tasks away).
 
-Plus a **mechanical per-file line-limit check**: the CLI itself flags any Python feature
-file whose logic lines (imports excluded) exceed the ceiling (`schematic.maxFileLines`,
-default 220) — no subagent, no standards read. The master splits or justifies each.
+Plus a **mechanical size check**: by default the CLI flags any Python feature file whose
+logic lines (imports excluded) exceed the per-file ceiling (`schematic.maxFileLines`,
+default 220). A project that sizes by unit opts in with `schematic.maxClassLines` and/or
+`schematic.maxMethodLines` in `standards.json`: when either is set, the check measures each
+Python class and each method instead (docstrings and blank lines excluded; private
+`_`-prefixed module-level utils belong to no class and are not counted). No subagent, no
+standards read. The master splits or justifies each.
+
+**Readable by one agent.** Generated and noise files are dropped before review: lockfiles,
+`openapi.json`, `*.generated.*`, snapshots, and anything git-ignored or in `.git/info/exclude`
+(`schematic.reviewNoiseGlobs` replaces the built-in list; `--only` scopes as above). A diff
+over the prompt byte budget (`schematic.reviewPromptByteBudget`, default 400000) is split into
+numbered batches grouped by top directory, one prompt file each under
+`review_prompts/`. Dispatch ONE reviewer per batch and record each with `--batch N`; the gate
+is clean only when every batch is recorded clean. One batch behaves as it always did.
 
 The master triages findings with full context (a locked card or ledgered ruling beats the
 reviewer), fixes the accepted ones, and records the verdict. Plus the project's whole-tree
 gates (linter, type checker, full suites — whatever its own config declares) run once.
 
 ```
-schematic review consistency-result clean|findings --summary "<one line>" --schematic <name>
+schematic review consistency-result clean|findings [--batch N] --summary "<one line>" --schematic <name>
 ```
 
 ### #3 — e2e entry-point tracing (adversarial)
@@ -413,11 +425,13 @@ research/correctness_pass_2026-09-03/
 **Findings are user-dispositioned, never auto-fixed** — including in auto mode. `#3` is a
 *reading* pass; the agent presents `R_reconciled.md` and stops. The user decides per
 finding: fix now, fix later (with a named home), or accept. The dispositions addendum
-records that ruling. An agent that silently fixes a finding has destroyed the evidence the
+records that ruling. Over the same byte budget the e2e files are batched too: entry-point files
+(routers, routes, journeys, CLIs, MCP tools) are repeated whole in every batch, or the CLI says
+they cannot fit; run the tracing pass once per batch and record each with `--batch N`. An agent that silently fixes a finding has destroyed the evidence the
 user needed to judge how bad it was. Record the reconciled verdict:
 
 ```
-schematic review e2e-result clean|findings --summary "<one line>" --schematic <name>
+schematic review e2e-result clean|findings [--batch N] --summary "<one line>" --schematic <name>
 ```
 
 **Feature done** = every task reviewed clean (`#1`) + consistency CLEAN (`#2`) + e2e tracing

@@ -101,6 +101,20 @@ REVIEWER_CONTEXT_CAP_KEY = "reviewerContextCap"
 REVIEWER_CONTEXT_CAP_DEFAULT = 250_000  # tokens; past it the next batch gets a fresh reviewer
 MAX_FILE_LINES_KEY = "maxFileLines"
 MAX_FILE_LINES_DEFAULT = 220  # per-file logic lines, imports excluded — the styling standard
+MAX_CLASS_LINES_KEY = "maxClassLines"  # opt-in: when set (or maxMethodLines), the check measures classes and methods, not files
+MAX_METHOD_LINES_KEY = "maxMethodLines"
+REVIEW_NOISE_GLOBS_KEY = "reviewNoiseGlobs"
+REVIEW_NOISE_GLOBS_DEFAULT = (
+    "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "uv.lock", "Pipfile.lock",
+    "Cargo.lock", "Gemfile.lock", "composer.lock", "go.sum",
+    "openapi.json", "*.generated.*", "*.snap", "*/__snapshots__/*", "__snapshots__/*",
+)  # generated and snapshot files; matched against the full path and the basename (fnmatch)
+REVIEW_PROMPT_BYTE_BUDGET_KEY = "reviewPromptByteBudget"
+REVIEW_PROMPT_BYTE_BUDGET_DEFAULT = 400_000  # diff bytes one reviewer prompt may carry
+REVIEW_PROMPT_DIRNAME = "review_prompts"
+REVIEW_ROOT_GROUP = "."  # batch group for files that sit at the repo root
+E2E_ENTRY_POINT_PATH_MARKERS = ("router", "routes", "routing", "journey", "/e2e/", "cli.py", "/mcp/")
+E2E_ENTRY_POINT_MAX_BUDGET_SHARE = 0.5  # entry-point diffs repeated in every batch may take at most this share
 RUN_MODE_MANUAL = "manual"  # per-task sketch gate (default)
 RUN_MODE_AUTO = "auto"      # long-running driver loop + consistency + e2e tracing
 VALID_RUN_MODES = {RUN_MODE_MANUAL, RUN_MODE_AUTO}
@@ -222,6 +236,16 @@ TASK_HEADER_RE = re.compile(r"^## ([a-z]\.\d+) \| (\w+) \| (.+)$")
 FEATURE_AC_RE = re.compile(r"(\d+\.[A-Z])\b")
 CARD_TEST_PROVES_RE = re.compile(r"^\|\s*`test_[^`]+`\s*\|(.*)$", re.MULTILINE)
 NON_CARD_FILENAME_PREFIX = "_"
+CARD_TEST_TABLE_KIND = "Test"
+TEST_FILE_SUFFIXES = (".py", ".ts", ".tsx", ".js", ".jsx", ".kt")
+TEST_FILE_PATH_MARKER = "test"
+TEST_SEARCH_SKIPPED_DIRS = frozenset({".git", "node_modules", "venv", ".venv", "__pycache__", "build", "dist"})
+TEST_DECLARATION_PATTERNS = (
+    r"\bdef {name}\b",
+    r"\bfun {name}\b",
+    r"\bfun\s*`{name}`",
+    r"\b(?:it|test)(?:\.\w+)?\(\s*['\"`]{name}['\"`]",
+)
 FEATURE_HEADING_RE = re.compile(r"^### (\d+)\. (.+)$", re.MULTILINE)
 BLOCKED_BY_TAG_RE = re.compile(r"\b([a-z]\.\d+)\b")
 MILESTONE_ID_RE = re.compile(r"^M\d+$")
@@ -407,6 +431,37 @@ def _resolve_correctness_model(project_root: Path) -> str | None:
     schematic_config = manifest.get(SCHEMATIC_CONFIG_KEY, {})
     correctness_model: str | None = schematic_config.get(CORRECTNESS_MODEL_KEY)
     return correctness_model
+
+
+@dataclass(frozen=True)
+class UnitLimits:
+    """Opt-in per-class and per-method logic-line limits; None leaves that unit unchecked."""
+    max_class_lines: int | None
+    max_method_lines: int | None
+
+
+def _resolve_unit_limits(project_root: Path) -> UnitLimits | None:
+    """Class/method limits from schematic.maxClassLines / maxMethodLines; None when neither is set (per-file mode)."""
+    schematic_config = _load_standards_manifest(project_root).get(SCHEMATIC_CONFIG_KEY, {})
+    unit_limits = UnitLimits(
+        max_class_lines=schematic_config.get(MAX_CLASS_LINES_KEY),
+        max_method_lines=schematic_config.get(MAX_METHOD_LINES_KEY),
+    )
+    if unit_limits.max_class_lines is None and unit_limits.max_method_lines is None:
+        return None
+    return unit_limits
+
+
+def _resolve_review_noise_globs(project_root: Path) -> tuple[str, ...]:
+    """Generated/noise globs from schematic.reviewNoiseGlobs, else the packaged list."""
+    schematic_config = _load_standards_manifest(project_root).get(SCHEMATIC_CONFIG_KEY, {})
+    return tuple(schematic_config.get(REVIEW_NOISE_GLOBS_KEY, REVIEW_NOISE_GLOBS_DEFAULT))
+
+
+def _resolve_review_prompt_byte_budget(project_root: Path) -> int:
+    """Per-prompt diff byte budget from schematic.reviewPromptByteBudget, else the packaged default."""
+    schematic_config = _load_standards_manifest(project_root).get(SCHEMATIC_CONFIG_KEY, {})
+    return schematic_config.get(REVIEW_PROMPT_BYTE_BUDGET_KEY, REVIEW_PROMPT_BYTE_BUDGET_DEFAULT)
 
 
 @dataclass(frozen=True)
@@ -1344,6 +1399,7 @@ def _validate_schematic(schematic_dir: Path) -> list[str]:
 
     findings.extend(_ac_coverage_findings(schematic_dir=schematic_dir))
     findings.extend(_boundary_findings(schematic_dir=schematic_dir))
+    findings.extend(_missing_test_findings(schematic_dir=schematic_dir, tasks=tasks, state=state))
 
     for task in tasks:
         state_task = state.get("tasks", {}).get(task["tag"])
@@ -1823,6 +1879,92 @@ def _undeclared_crossings(
             class_to_base=class_to_base,
             class_to_service_folder=class_to_service_folder,
         )
+    ]
+
+
+def _card_test_names(card_text: str) -> list[str]:
+    """Test names in the first column of a card's Feature and Branch test tables."""
+    return [
+        CODE_SPAN_RE.sub(r"\1", row[0]).strip()
+        for card_table in _card_tables(card_text)
+        if card_table.kind == CARD_TEST_TABLE_KIND
+        for row in card_table.rows
+        if row and CODE_SPAN_RE.search(row[0])
+    ]
+
+
+def _walked_relative_paths(project_root: Path) -> list[Path]:
+    """Every file under project_root, relative to it, skipping vendored and build directories."""
+    relative_paths: list[Path] = []
+    for directory, subdirectories, filenames in os.walk(project_root):
+        subdirectories[:] = [name for name in subdirectories if name not in TEST_SEARCH_SKIPPED_DIRS]
+        relative_paths.extend(Path(directory, filename).relative_to(project_root) for filename in filenames)
+    return relative_paths
+
+
+def _repo_test_file_paths(project_root: Path) -> list[Path]:
+    """Test-looking source files in the repo: tracked plus untracked-not-ignored, else a directory walk."""
+    listed = subprocess.run(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+    )
+    if listed.returncode == 0:
+        relative_paths = [Path(line) for line in listed.stdout.splitlines() if line.strip()]
+    else:
+        relative_paths = _walked_relative_paths(project_root=project_root)
+    return [
+        project_root / relative_path
+        for relative_path in relative_paths
+        if relative_path.suffix in TEST_FILE_SUFFIXES
+        and TEST_FILE_PATH_MARKER in str(relative_path).lower()
+        and (project_root / relative_path).is_file()
+    ]
+
+
+def _test_name_is_declared(test_name: str, test_source: str) -> bool:
+    """Whether the combined test source declares test_name as a Python, Kotlin, or TS/JS test."""
+    escaped_name = re.escape(test_name)
+    return any(
+        re.search(pattern.format(name=escaped_name), test_source)
+        for pattern in TEST_DECLARATION_PATTERNS
+    )
+
+
+def _completed_task_tags(tasks: list[TaskRecord], state: dict) -> set[str]:
+    """Tags of tasks Phase 8 has recorded complete, in the state file or tasks.md."""
+    return {
+        task["tag"]
+        for task in tasks
+        if state.get("tasks", {}).get(task["tag"], {}).get("status", task["status"]) == TASK_STATUS_COMPLETE
+    }
+
+
+def _missing_test_findings(schematic_dir: Path, tasks: list[TaskRecord], state: dict) -> list[str]:
+    """A completed task's card test names that no test file in the repo declares."""
+    completed_tags = _completed_task_tags(tasks=tasks, state=state)
+    completed_tasks = [
+        task for task in tasks
+        if task["tag"] in completed_tags
+        and task["component_file"]
+        and (schematic_dir / task["component_file"].lstrip("./")).exists()
+    ]
+    if not completed_tasks:
+        return []
+    project_root = schematic_dir.parents[len(Path(SCHEMATICS_BASE).parts)]
+    test_source = "\n".join(
+        test_path.read_text(errors="replace")
+        for test_path in _repo_test_file_paths(project_root=project_root)
+    )
+    return [
+        f"components/{Path(task['component_file']).name} — test `{test_name}` is not in the repo "
+        f"(task {task['tag']} is complete)"
+        for task in completed_tasks
+        for test_name in _card_test_names(
+            (schematic_dir / task["component_file"].lstrip("./")).read_text(),
+        )
+        if not _test_name_is_declared(test_name=test_name, test_source=test_source)
     ]
 
 
@@ -4402,6 +4544,98 @@ def _oversized_feature_files(
     return path_to_logic_lines
 
 
+@dataclass(frozen=True)
+class OversizedUnit:
+    """One class or method over its logic-line limit."""
+    path: str
+    name: str
+    kind: str
+    logic_line_count: int
+    limit: int
+
+
+UNIT_KIND_CLASS = "class"
+UNIT_KIND_METHOD = "method"
+
+
+def _docstring_line_numbers(node: ast.AST) -> set[int]:
+    """Lines occupied by the docstrings of node and of every class/function nested in it."""
+    docstring_lines: set[int] = set()
+    for nested in ast.walk(node):
+        if not isinstance(nested, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        first_statement = nested.body[0] if nested.body else None
+        if (
+            isinstance(first_statement, ast.Expr)
+            and isinstance(first_statement.value, ast.Constant)
+            and isinstance(first_statement.value.value, str)
+        ):
+            docstring_lines.update(range(first_statement.lineno, (first_statement.end_lineno or first_statement.lineno) + 1))
+    return docstring_lines
+
+
+def _node_logic_line_count(node: ast.AST, source_lines: list[str]) -> int:
+    """Lines of a class/function node (decorators included) minus its docstrings and blank lines."""
+    first_line = min([node.lineno, *(decorator.lineno for decorator in getattr(node, "decorator_list", []))])
+    docstring_lines = _docstring_line_numbers(node)
+    return sum(
+        1
+        for line_number in range(first_line, (node.end_lineno or node.lineno) + 1)
+        if line_number not in docstring_lines and source_lines[line_number - 1].strip()
+    )
+
+
+def _python_oversized_units(
+    path: str,
+    python_source: str,
+    unit_limits: UnitLimits,
+) -> list[OversizedUnit]:
+    """Classes and their methods over the limits; module-level functions (private utils included) are not counted."""
+    source_lines = python_source.splitlines()
+    oversized_units: list[OversizedUnit] = []
+    for class_node in (node for node in ast.walk(ast.parse(python_source)) if isinstance(node, ast.ClassDef)):
+        class_line_count = _node_logic_line_count(class_node, source_lines)
+        if unit_limits.max_class_lines is not None and class_line_count > unit_limits.max_class_lines:
+            oversized_units.append(OversizedUnit(path, class_node.name, UNIT_KIND_CLASS, class_line_count, unit_limits.max_class_lines))
+        if unit_limits.max_method_lines is None:
+            continue
+        for method_node in (n for n in class_node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))):
+            method_line_count = _node_logic_line_count(method_node, source_lines)
+            if method_line_count > unit_limits.max_method_lines:
+                oversized_units.append(
+                    OversizedUnit(path, f"{class_node.name}.{method_node.name}", UNIT_KIND_METHOD, method_line_count, unit_limits.max_method_lines)
+                )
+    return oversized_units
+
+
+def _oversized_feature_units(
+    diff_files: list[str],
+    project_root: Path,
+    unit_limits: UnitLimits,
+) -> list[OversizedUnit]:
+    """Python feature files' classes and methods over the configured limits."""
+    return [
+        oversized_unit
+        for path in diff_files
+        if path.endswith(_PYTHON_SUFFIX) and (project_root / path).exists()
+        for oversized_unit in _python_oversized_units(
+            path=path,
+            python_source=(project_root / path).read_text(),
+            unit_limits=unit_limits,
+        )
+    ]
+
+
+def _print_oversized_units(oversized_units: list[OversizedUnit]) -> None:
+    """Surface classes and methods over their limits as consistency findings."""
+    if not oversized_units:
+        return
+    print(f"⚠ {len(oversized_units)} class/method unit(s) over the configured logic-line limits "
+          f"(docstrings and blank lines excluded; private module-level utils not counted) — split or justify each:")
+    for unit in sorted(oversized_units, key=lambda u: (u.path, u.name)):
+        print(f"    {unit.path}: {unit.kind} {unit.name} — {unit.logic_line_count} lines (limit {unit.limit})")
+
+
 def _print_oversized_files(
     path_to_logic_lines: dict[str, int],
     max_file_lines: int,
@@ -4440,8 +4674,151 @@ def _diff_only_scope_and_body(diff_content: str, rule_three: str) -> str:
     )
 
 
+def _ignored_paths(paths: list[str], project_root: Path) -> set[str]:
+    """Paths git ignores (.gitignore, .git/info/exclude), tracked or not; empty when git cannot say."""
+    checked = subprocess.run(
+        ["git", "check-ignore", "--no-index", "--stdin"],
+        cwd=project_root,
+        input="\n".join(paths),
+        capture_output=True,
+        text=True,
+    )
+    return set(checked.stdout.splitlines())
+
+
+def _is_noise_path(path: str, noise_globs: tuple[str, ...]) -> bool:
+    """Whether a path matches a noise glob, by full path or by basename."""
+    basename = path.rsplit("/", 1)[-1]
+    return any(fnmatch.fnmatch(path, glob) or fnmatch.fnmatch(basename, glob) for glob in noise_globs)
+
+
+def _reviewable_files(diff_files: list[str], project_root: Path) -> tuple[list[str], list[str]]:
+    """Diff files minus generated/noise and git-ignored ones → (kept, dropped)."""
+    noise_globs = _resolve_review_noise_globs(project_root=project_root)
+    ignored = _ignored_paths(paths=diff_files, project_root=project_root)
+    dropped = [path for path in diff_files if path in ignored or _is_noise_path(path, noise_globs)]
+    dropped_set = set(dropped)
+    return [path for path in diff_files if path not in dropped_set], dropped
+
+
+def _top_directory(path: str) -> str:
+    """The first path component, or the root group for a file at the repo root."""
+    return path.split("/", 1)[0] if "/" in path else REVIEW_ROOT_GROUP
+
+
+def _group_files_into_batches(path_to_bytes: dict[str, int], byte_budget: int) -> list[list[str]]:
+    """Pack files into batches under the byte budget, keeping each top directory together when it fits."""
+    top_directory_to_paths: dict[str, list[str]] = {}
+    for path in sorted(path_to_bytes):
+        top_directory_to_paths.setdefault(_top_directory(path), []).append(path)
+
+    batches: list[list[str]] = []
+    current: list[str] = []
+    current_bytes = 0
+
+    def flush() -> None:
+        nonlocal current, current_bytes
+        if current:
+            batches.append(current)
+        current, current_bytes = [], 0
+
+    for top_directory in sorted(top_directory_to_paths):
+        paths = top_directory_to_paths[top_directory]
+        group_bytes = sum(path_to_bytes[path] for path in paths)
+        if group_bytes <= byte_budget:
+            if current_bytes + group_bytes > byte_budget:
+                flush()
+            current.extend(paths)
+            current_bytes += group_bytes
+            continue
+        flush()
+        for path in paths:
+            if current and current_bytes + path_to_bytes[path] > byte_budget:
+                flush()
+            current.append(path)
+            current_bytes += path_to_bytes[path]
+    flush()
+    return batches
+
+
+def _write_batch_prompts(schematic_dir: Path, gate: str, batch_to_prompt: dict[int, str]) -> dict[int, Path]:
+    """Write one prompt file per batch under the schematic's review_prompts directory."""
+    prompt_dir = schematic_dir / REVIEW_PROMPT_DIRNAME
+    prompt_dir.mkdir(exist_ok=True)
+    batch_to_path = {batch: prompt_dir / f"{gate}_batch_{batch}.md" for batch in batch_to_prompt}
+    for batch, prompt_path in batch_to_path.items():
+        prompt_path.write_text(batch_to_prompt[batch])
+    return batch_to_path
+
+
+def _gate_opened(batch_count: int) -> dict:
+    """A freshly opened consistency/e2e gate record."""
+    return {
+        "status": REVIEW_GATE_STATUS_PENDING,
+        "started_at": datetime.now(tz=timezone.utc).isoformat(),
+        "verdict": None,
+        "summary": None,
+        "batch_count": batch_count,
+        "batch_verdicts": {},
+    }
+
+
+def _aggregate_batch_status(batch_verdicts: dict[str, dict], batch_count: int) -> str:
+    """findings if any batch has findings; clean only when every batch is recorded clean; else pending."""
+    verdicts = [recorded["verdict"] for recorded in batch_verdicts.values()]
+    if REVIEW_VERDICT_FINDINGS in verdicts:
+        return REVIEW_VERDICT_FINDINGS
+    if len(verdicts) == batch_count:
+        return REVIEW_VERDICT_CLEAN
+    return REVIEW_GATE_STATUS_PENDING
+
+
+def _record_gate_verdict(gate: dict, verdict: str, summary: str, batch: int | None) -> str:
+    """Record one batch's verdict (a single-batch gate needs no --batch) → the gate's overall status."""
+    batch_count = gate.get("batch_count", 1)
+    if batch_count == 1:
+        if batch not in (None, 1):
+            _exit_error(f"this gate has 1 batch — got --batch {batch}")
+        status, gate_summary = verdict, summary
+    else:
+        if batch is None or not 1 <= batch <= batch_count:
+            _exit_error(f"this gate has {batch_count} batches — record each with --batch 1..{batch_count}")
+        gate.setdefault("batch_verdicts", {})[str(batch)] = {"verdict": verdict, "summary": summary}
+        status = _aggregate_batch_status(gate["batch_verdicts"], batch_count)
+        gate_summary = "; ".join(
+            f"batch {number}: {recorded['summary']}"
+            for number, recorded in sorted(gate["batch_verdicts"].items(), key=lambda item: int(item[0]))
+        )
+    gate["status"] = status
+    gate["verdict"] = status if status in REVIEW_VERDICTS else None
+    gate["summary"] = gate_summary
+    if status in REVIEW_VERDICTS:
+        gate["completed_at"] = datetime.now(tz=timezone.utc).isoformat()
+    return status
+
+
+def _missing_batches(gate: dict) -> list[int]:
+    """Batch numbers with no recorded verdict yet."""
+    recorded = {int(number) for number in gate.get("batch_verdicts", {})}
+    return [number for number in range(1, gate.get("batch_count", 1) + 1) if number not in recorded]
+
+
+def _batch_label(batch: int | None, batch_count: int) -> str:
+    return "" if batch_count == 1 else f" (batch {batch} of {batch_count})"
+
+
+def _print_noise_dropped(dropped: list[str]) -> None:
+    if dropped:
+        print(f"dropped {len(dropped)} generated/noise/git-ignored file(s) from the review "
+              f"(schematic.{REVIEW_NOISE_GLOBS_KEY} overrides the list):")
+        for path in dropped[:10]:
+            print(f"    {path}")
+        if len(dropped) > 10:
+            print(f"    … and {len(dropped) - 10} more")
+
+
 def _review_consistency(args: argparse.Namespace) -> None:
-    """Single-agent whole-diff consistency gate — duplication/redundancy + line-limit, once every task is reviewed clean."""
+    """Whole-diff consistency gate — duplication/redundancy + line-limit, once every task is reviewed clean."""
     schematic_dir = resolve_schematic_dir(args.schematic)
     project_root = find_project_root()
     review_model = _resolve_review_model(project_root)
@@ -4455,18 +4832,42 @@ def _review_consistency(args: argparse.Namespace) -> None:
         )
 
     only_globs = _review_scope_globs(state, run, getattr(args, "only", None))
-    diff_files = _cumulative_diff_files(run["base_ref"], project_root, only_globs)
+    changed_files = _cumulative_diff_files(run["base_ref"], project_root, only_globs)
+    diff_files, dropped = _reviewable_files(changed_files, project_root)
+    _print_noise_dropped(dropped)
     if not diff_files:
-        _exit_error(f"no changes since base_ref {run['base_ref'][:12]} — nothing to review")
+        _exit_error(f"no reviewable changes since base_ref {run['base_ref'][:12]} — nothing to review")
 
-    state["consistency"] = {
-        "status": REVIEW_GATE_STATUS_PENDING,
-        "started_at": datetime.now(tz=timezone.utc).isoformat(),
-        "verdict": None,
-        "summary": None,
-    }
+    file_to_diff = {path: _file_diff(path, run["base_ref"], project_root) for path in diff_files}
+    byte_budget = _resolve_review_prompt_byte_budget(project_root=project_root)
+    batches = _group_files_into_batches(
+        path_to_bytes={path: len(diff.encode()) for path, diff in file_to_diff.items()},
+        byte_budget=byte_budget,
+    )
+    state["consistency"] = _gate_opened(batch_count=len(batches))
     save_state(schematic_dir, state)
 
+    _print_size_findings(diff_files=diff_files, project_root=project_root)
+    if len(batches) == 1:
+        _emit_consistency_prompt(schematic_dir, diff_files, "".join(file_to_diff.values()), review_model)
+        return
+    _emit_consistency_batches(
+        schematic_dir=schematic_dir,
+        batches=batches,
+        file_to_diff=file_to_diff,
+        review_model=review_model,
+        byte_budget=byte_budget,
+    )
+
+
+def _print_size_findings(diff_files: list[str], project_root: Path) -> None:
+    """The mechanical size check: class/method limits when configured, else the per-file ceiling."""
+    unit_limits = _resolve_unit_limits(project_root=project_root)
+    if unit_limits is not None:
+        _print_oversized_units(
+            _oversized_feature_units(diff_files=diff_files, project_root=project_root, unit_limits=unit_limits),
+        )
+        return
     max_file_lines = _resolve_max_file_lines(project_root=project_root)
     _print_oversized_files(
         path_to_logic_lines=_oversized_feature_files(
@@ -4477,21 +4878,11 @@ def _review_consistency(args: argparse.Namespace) -> None:
         max_file_lines=max_file_lines,
     )
 
-    whole_diff = "".join(
-        _file_diff(path, run["base_ref"], project_root)
-        for path in diff_files
-    )
-    _emit_consistency_prompt(schematic_dir, diff_files, whole_diff, review_model)
 
-
-def _emit_consistency_prompt(
-    schematic_dir: Path,
-    files: list[str],
-    diff_content: str,
-    review_model: str,
-) -> None:
+def _consistency_prompt_text(files: list[str], diff_content: str, batch_header: str) -> str:
     file_list = "\n".join(f"  - {path}" for path in files)
     review_prompt = (
+        f"{batch_header}"
         f"Consistency review of the WHOLE feature diff in a single view — one pass, no loop.\n"
         f"Files:\n"
         f"{file_list}\n\n"
@@ -4509,12 +4900,54 @@ def _emit_consistency_prompt(
         f"Output: a numbered list of findings (file:line — what repeats — the unit to extract or\n"
         f"canonical form to keep), then a final line: VERDICT: clean | VERDICT: findings\n"
     )
+    return review_prompt
+
+
+def _emit_consistency_prompt(
+    schematic_dir: Path,
+    files: list[str],
+    diff_content: str,
+    review_model: str,
+) -> None:
+    review_prompt = _consistency_prompt_text(files=files, diff_content=diff_content, batch_header="")
     print(f"consistency review — ONE {review_model} subagent over the whole diff ({len(files)} files, single view):")
     print(textwrap.indent(review_prompt, "  "))
     print(f"  dispatch as ONE {review_model} subagent, triage findings, fix the accepted ones, then record")
     print("  (this pass does NOT loop — one read, triage, fix):")
     print(f"    schematic review consistency-result clean|findings --summary \"<one line>\" --schematic {schematic_dir.name}")
     print(f"  after clean: schematic review e2e --schematic {schematic_dir.name}")
+
+
+def _emit_consistency_batches(
+    schematic_dir: Path,
+    batches: list[list[str]],
+    file_to_diff: dict[str, str],
+    review_model: str,
+    byte_budget: int,
+) -> None:
+    """Write one consistency prompt per batch and print the one-reviewer-per-batch dispatch instruction."""
+    batch_count = len(batches)
+    batch_to_prompt = {
+        number: _consistency_prompt_text(
+            files=batch,
+            diff_content="".join(file_to_diff[path] for path in batch),
+            batch_header=(
+                f"BATCH {number} of {batch_count} — duplication is judged within this batch's files; "
+                f"other batches are reviewed by other reviewers.\n"
+            ),
+        )
+        for number, batch in enumerate(batches, 1)
+    }
+    batch_to_path = _write_batch_prompts(schematic_dir=schematic_dir, gate="consistency", batch_to_prompt=batch_to_prompt)
+    print(f"consistency review — the diff is over the {byte_budget}-byte prompt budget "
+          f"(schematic.{REVIEW_PROMPT_BYTE_BUDGET_KEY}); split into {batch_count} batches, one prompt each:")
+    for number, batch in enumerate(batches, 1):
+        batch_bytes = sum(len(file_to_diff[path].encode()) for path in batch)
+        print(f"  batch {number}: {len(batch)} files, {batch_bytes} bytes — {batch_to_path[number]}")
+    print(f"  dispatch ONE {review_model} subagent PER batch (parallel), each reading only its prompt file;")
+    print("  triage the findings, fix the accepted ones, then record EACH batch (the gate is clean only when every batch is):")
+    print(f"    schematic review consistency-result clean|findings --batch N --summary \"<one line>\" --schematic {schematic_dir.name}")
+    print(f"  after every batch is clean: schematic review e2e --schematic {schematic_dir.name}")
 
 
 def _review_consistency_result(args: argparse.Namespace) -> None:
@@ -4525,17 +4958,74 @@ def _review_consistency_result(args: argparse.Namespace) -> None:
         _exit_error(
             f"no consistency gate recorded — run `schematic review consistency --schematic {args.schematic}` first"
         )
-    consistency["status"] = args.verdict
-    consistency["verdict"] = args.verdict
-    consistency["summary"] = args.summary
-    consistency["completed_at"] = datetime.now(tz=timezone.utc).isoformat()
+    status = _record_gate_verdict(consistency, args.verdict, args.summary, getattr(args, "batch", None))
     save_state(schematic_dir, state)
-    print(f"consistency result: {args.verdict} — {args.summary}")
-    if args.verdict == REVIEW_VERDICT_CLEAN:
+    batch_count = consistency.get("batch_count", 1)
+    print(f"consistency result{_batch_label(getattr(args, 'batch', None), batch_count)}: {args.verdict} — {args.summary}")
+    if status == REVIEW_GATE_STATUS_PENDING:
+        print(f"  batches still to record: {', '.join(str(n) for n in _missing_batches(consistency))}")
+    elif status == REVIEW_VERDICT_CLEAN:
         print(f"  consistency clean — next: schematic review e2e --schematic {args.schematic}")
     else:
         print("  fix the accepted findings, then re-run:")
         print(f"    schematic review consistency --schematic {args.schematic}")
+
+
+def _entry_point_files(files: list[str]) -> list[str]:
+    """Files that are entry points (routers, routes, journeys, CLIs, MCP tools), by path marker."""
+    return [path for path in files if any(marker in f"/{path.lower()}" for marker in E2E_ENTRY_POINT_PATH_MARKERS)]
+
+
+def _e2e_batches(
+    path_to_bytes: dict[str, int],
+    byte_budget: int,
+) -> tuple[list[list[str]], list[str], str | None]:
+    """E2E batches, the entry-point files repeated whole in each, and a warning when they cannot be repeated."""
+    all_paths = list(path_to_bytes)
+    if sum(path_to_bytes.values()) <= byte_budget:
+        return [all_paths], [], None
+    entry_points = _entry_point_files(all_paths)
+    entry_bytes = sum(path_to_bytes[path] for path in entry_points)
+    if entry_bytes > byte_budget * E2E_ENTRY_POINT_MAX_BUDGET_SHARE:
+        warning = (
+            f"ENTRY POINTS DO NOT FIT: the {len(entry_points)} entry-point file(s) total {entry_bytes} bytes, over "
+            f"{int(E2E_ENTRY_POINT_MAX_BUDGET_SHARE * 100)}% of the {byte_budget}-byte budget, so they are NOT repeated "
+            f"in every batch — they sit in their own batch(es) and a tracing reviewer must open the other batches' files "
+            f"itself to follow a route end to end."
+        )
+        return _group_files_into_batches(path_to_bytes, byte_budget), [], warning
+    rest = {path: size for path, size in path_to_bytes.items() if path not in set(entry_points)}
+    return _group_files_into_batches(rest, byte_budget - entry_bytes), entry_points, None
+
+
+def _e2e_orchestration_lines(model_label: str, pass_dir: str) -> list[str]:
+    return [
+        "ORCHESTRATE the tracing pass — do NOT review inline:",
+        "  1. Enumerate every ENTRY POINT the feature adds or changes — HTTP routes, MCP tools,",
+        "     public service methods, any runner that applies files from a directory (migrations,",
+        "     seed scripts, jobs), the deploy subcommands, and the cron/scheduled/workflow entries",
+        "     (including pg_cron, Cloud Scheduler, terraform).",
+        f"  2. Dispatch ONE {model_label} reviewer PER entry point, in parallel. Each traces its",
+        "     entry point end to end — to storage and back — against the ACs as the oracle, and",
+        "     MUST produce cross-path claims (what a DIFFERENT entry point now does as a result).",
+        "     Each reviewer carries the 7 checks: wiring, contracts, test coverage, integration,",
+        "     correctness, blast radius, and the meeting-point inventory table",
+        "     (state · writer file:line · reader file:line · axes · e2e test).",
+        f"  3. One {model_label} reconciler dedupes, resolves contradictions, ranks by blast radius.",
+        f"  4. Write {pass_dir}/ — R<n>_<entry_point>.md per reviewer, R_reconciled.md, R_dispositions.md.",
+        "  5. CORRECTNESS ONLY — the ACs and functional behaviour are the oracle. Style, naming and",
+        "     standards are never in scope here (the per-task reviews own them).",
+    ]
+
+
+def _e2e_batch_prompt(number: int, batch_count: int, entry_points: list[str], files: list[str]) -> str:
+    entry_list = "\n".join(f"  - {path}" for path in entry_points) or "  (none repeated)"
+    file_list = "\n".join(f"  - {path}" for path in files)
+    return (
+        f"e2e entry-point tracing — BATCH {number} of {batch_count}.\n\n"
+        f"Entry-point files (whole diff, repeated in every batch):\n{entry_list}\n\n"
+        f"Files in this batch:\n{file_list}\n"
+    )
 
 
 def _review_e2e(args: argparse.Namespace) -> None:
@@ -4554,17 +5044,20 @@ def _review_e2e(args: argparse.Namespace) -> None:
         )
 
     only_globs = _review_scope_globs(state, run, getattr(args, "only", None))
-    diff_files = _cumulative_diff_files(run["base_ref"], project_root, only_globs)
+    changed_files = _cumulative_diff_files(run["base_ref"], project_root, only_globs)
+    diff_files, dropped = _reviewable_files(changed_files, project_root)
+    _print_noise_dropped(dropped)
     if not diff_files:
-        _exit_error(f"no changes since base_ref {run['base_ref'][:12]} — nothing to review")
+        _exit_error(f"no reviewable changes since base_ref {run['base_ref'][:12]} — nothing to review")
+
+    byte_budget = _resolve_review_prompt_byte_budget(project_root=project_root)
+    batches, entry_points, entry_warning = _e2e_batches(
+        path_to_bytes={path: len(_file_diff(path, run["base_ref"], project_root).encode()) for path in diff_files},
+        byte_budget=byte_budget,
+    )
 
     # Record e2e gate start.
-    state["e2e"] = {
-        "status": REVIEW_GATE_STATUS_PENDING,
-        "started_at": datetime.now(tz=timezone.utc).isoformat(),
-        "verdict": None,
-        "summary": None,
-    }
+    state["e2e"] = _gate_opened(batch_count=len(batches))
     save_state(schematic_dir, state)
 
     correctness_model = _resolve_correctness_model(project_root)
@@ -4572,31 +5065,67 @@ def _review_e2e(args: argparse.Namespace) -> None:
     pass_date = datetime.now(tz=timezone.utc).date().isoformat()
     pass_dir = f"research/correctness_pass_{pass_date}"
 
+    if len(batches) > 1:
+        _emit_e2e_batches(
+            schematic_dir=schematic_dir,
+            batches=batches,
+            entry_points=entry_points,
+            entry_warning=entry_warning,
+            orchestration=_e2e_orchestration_lines(model_label, pass_dir),
+            byte_budget=byte_budget,
+            decision_ledger_state=state,
+        )
+        return
+
     file_list = "\n".join(f"  - {path}" for path in diff_files)
     print(f"e2e entry-point tracing — adversarial correctness gate over {len(diff_files)} changed files:")
     print(file_list)
     print()
-    print("ORCHESTRATE the tracing pass — do NOT review inline:")
-    print("  1. Enumerate every ENTRY POINT the feature adds or changes — HTTP routes, MCP tools,")
-    print("     public service methods, any runner that applies files from a directory (migrations,")
-    print("     seed scripts, jobs), the deploy subcommands, and the cron/scheduled/workflow entries")
-    print("     (including pg_cron, Cloud Scheduler, terraform).")
-    print(f"  2. Dispatch ONE {model_label} reviewer PER entry point, in parallel. Each traces its")
-    print("     entry point end to end — to storage and back — against the ACs as the oracle, and")
-    print("     MUST produce cross-path claims (what a DIFFERENT entry point now does as a result).")
-    print("     Each reviewer carries the 7 checks: wiring, contracts, test coverage, integration,")
-    print("     correctness, blast radius, and the meeting-point inventory table")
-    print("     (state · writer file:line · reader file:line · axes · e2e test).")
-    print(f"  3. One {model_label} reconciler dedupes, resolves contradictions, ranks by blast radius.")
-    print(f"  4. Write {pass_dir}/ — R<n>_<entry_point>.md per reviewer, R_reconciled.md, R_dispositions.md.")
-    print("  5. CORRECTNESS ONLY — the ACs and functional behaviour are the oracle. Style, naming and")
-    print("     standards are never in scope here (the per-task reviews own them).")
+    print("\n".join(_e2e_orchestration_lines(model_label, pass_dir)))
     _print_decision_ledger(state)
     print()
     print("Findings are USER-DISPOSITIONED, never auto-fixed — including in auto mode. Present")
     print("R_reconciled.md and STOP; the user rules each finding (fix now / fix later / accept) into")
     print("R_dispositions.md. Record the reconciled verdict (never a silent fix):")
     print(f"  schematic review e2e-result clean|findings --summary \"<one line>\" --schematic {args.schematic}")
+
+
+def _emit_e2e_batches(
+    schematic_dir: Path,
+    batches: list[list[str]],
+    entry_points: list[str],
+    entry_warning: str | None,
+    orchestration: list[str],
+    byte_budget: int,
+    decision_ledger_state: dict,
+) -> None:
+    """Write one e2e prompt per batch and print the one-tracing-pass-per-batch instruction."""
+    batch_count = len(batches)
+    batch_to_path = _write_batch_prompts(
+        schematic_dir=schematic_dir,
+        gate="e2e",
+        batch_to_prompt={
+            number: _e2e_batch_prompt(number, batch_count, entry_points, batch)
+            for number, batch in enumerate(batches, 1)
+        },
+    )
+    print(f"e2e entry-point tracing — the changed files are over the {byte_budget}-byte budget "
+          f"(schematic.{REVIEW_PROMPT_BYTE_BUDGET_KEY}); split into {batch_count} batches, one prompt each:")
+    for number, batch in enumerate(batches, 1):
+        print(f"  batch {number}: {len(batch)} files (+ {len(entry_points)} entry-point file(s)) — {batch_to_path[number]}")
+    if entry_warning:
+        print(f"  ⚠ {entry_warning}")
+    elif entry_points:
+        print(f"  entry points kept whole in every batch: {len(entry_points)} file(s)")
+    print()
+    print("Run the tracing pass ONCE PER BATCH (one set of reviewers per batch, each reading only its prompt file):")
+    print("\n".join(orchestration))
+    _print_decision_ledger(decision_ledger_state)
+    print()
+    print("Findings are USER-DISPOSITIONED, never auto-fixed — including in auto mode. Present each batch's")
+    print("R_reconciled.md and STOP; the user rules each finding. Record EACH batch's verdict (the gate is")
+    print("clean only when every batch is recorded clean):")
+    print(f"  schematic review e2e-result clean|findings --batch N --summary \"<one line>\" --schematic {schematic_dir.name}")
 
 
 def _review_e2e_result(args: argparse.Namespace) -> None:
@@ -4607,13 +5136,13 @@ def _review_e2e_result(args: argparse.Namespace) -> None:
         _exit_error(
             f"no e2e gate recorded — run `schematic review e2e --schematic {args.schematic}` first"
         )
-    e2e["status"] = args.verdict
-    e2e["verdict"] = args.verdict
-    e2e["summary"] = args.summary
-    e2e["completed_at"] = datetime.now(tz=timezone.utc).isoformat()
+    status = _record_gate_verdict(e2e, args.verdict, args.summary, getattr(args, "batch", None))
     save_state(schematic_dir, state)
-    print(f"e2e result: {args.verdict} — {args.summary}")
-    if args.verdict == REVIEW_VERDICT_CLEAN:
+    batch_count = e2e.get("batch_count", 1)
+    print(f"e2e result{_batch_label(getattr(args, 'batch', None), batch_count)}: {args.verdict} — {args.summary}")
+    if status == REVIEW_GATE_STATUS_PENDING:
+        print(f"  batches still to record: {', '.join(str(n) for n in _missing_batches(e2e))}")
+    elif status == REVIEW_VERDICT_CLEAN:
         print("  feature review complete — every task reviewed clean + consistency CLEAN + e2e tracing CLEAN.")
     else:
         print("  findings recorded — the user dispositions each in R_dispositions.md")
@@ -4635,12 +5164,16 @@ def _review_status(args: argparse.Namespace) -> None:
     if consistency:
         consistency_flag = "CLEAN ✓" if consistency.get("verdict") == REVIEW_VERDICT_CLEAN else consistency.get("status", "pending")
         print(f"consistency: {consistency_flag}")
+        if consistency.get("batch_count", 1) > 1:
+            print(f"  batches recorded: {len(consistency.get('batch_verdicts', {}))}/{consistency['batch_count']}")
         if consistency.get("summary"):
             print(f"  {consistency['summary']}")
     e2e = state.get("e2e")
     if e2e:
         e2e_flag = "CLEAN ✓" if e2e.get("verdict") == REVIEW_VERDICT_CLEAN else e2e.get("status", "pending")
         print(f"e2e correctness: {e2e_flag}")
+        if e2e.get("batch_count", 1) > 1:
+            print(f"  batches recorded: {len(e2e.get('batch_verdicts', {}))}/{e2e['batch_count']}")
         if e2e.get("summary"):
             print(f"  {e2e['summary']}")
 
@@ -5191,6 +5724,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_rconsistency_result = review_sub.add_parser("consistency-result", help="Record consistency verdict")
     p_rconsistency_result.add_argument("verdict", choices=sorted(REVIEW_VERDICTS))
     p_rconsistency_result.add_argument("--summary", required=True, help="One-line consistency outcome")
+    p_rconsistency_result.add_argument("--batch", type=int, metavar="N", help="Batch number when the gate was split (omit for a single batch)")
     p_rconsistency_result.add_argument("--schematic", required=True, metavar="NAME")
 
     p_re2e = review_sub.add_parser("e2e", help="Entry-point tracing gate (after clean consistency)")
@@ -5200,6 +5734,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_re2e_result = review_sub.add_parser("e2e-result", help="Record e2e correctness verdict")
     p_re2e_result.add_argument("verdict", choices=sorted(REVIEW_VERDICTS))
     p_re2e_result.add_argument("--summary", required=True, help="One-line e2e outcome")
+    p_re2e_result.add_argument("--batch", type=int, metavar="N", help="Batch number when the gate was split (omit for a single batch)")
     p_re2e_result.add_argument("--schematic", required=True, metavar="NAME")
 
     p_rstatus = review_sub.add_parser("status", help="Show run mode + consistency and e2e verdicts")

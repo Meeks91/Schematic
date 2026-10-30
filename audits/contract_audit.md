@@ -28,6 +28,9 @@ Each route answers every question of card item 12; a mutating reply that does no
 ### 5. Function ACs and loud failure
 Every public method has a `Behaviour` line and a `Failure modes` line. A swallowed / empty-return / silent-fallback path, or an `X | None` return or field without its one-line justification and `⚠️ USER SIGN-OFF REQUIRED`, is a BLOCKER.
 
+### 5b. Concurrency
+Every card has a `**Concurrency**` section (card item 13) naming the transaction boundary, the locks taken in order, and the outcome when two requests race; `none: no shared state` is the only accepted shorthand. A card that writes shared state and reads `none`, or omits the section, is a BLOCKER.
+
 ### 6. Coverage and cross-references
 - Every Function AC has ≥1 test (`schematic validate` covers the Feature-AC links).
 - Constructor deps match `components/_overview.md` §Component Summary.

@@ -1553,6 +1553,7 @@ class TestReviewE2e(unittest.TestCase):
         with patch.object(_cli, "resolve_schematic_dir", return_value=schematic_dir), \
              patch.object(_cli, "find_project_root", return_value=schematic_dir), \
              patch.object(_cli, "_cumulative_diff_files", return_value=diff_files), \
+             patch.object(_cli, "_run_git_raw", return_value=""), \
              contextlib.redirect_stdout(captured):
             _cli._review_e2e(args)
         return captured.getvalue()
@@ -1714,6 +1715,436 @@ class TestReviewConsistency(unittest.TestCase):
             # Then the verdict is recorded on the consistency gate
             consistency = _cli.load_state(schematic_dir)["consistency"]
             assert consistency["verdict"] == "clean"
+
+
+_CARD_WITH_TEST_TABLES = textwrap.dedent("""\
+    ## `FoundationService`
+    **Dir:** `src/foundation.py` · **Type:** New
+
+    Feature tests
+    | Test | Proves |
+    |---|---|
+    | `test_foundation_builds_the_base` | 1.A — base |
+
+    Branch tests
+    | Test | Proves |
+    |---|---|
+    | `shows the empty state` | 1.B — empty |
+""")
+
+
+class TestValidateCardTestNames(unittest.TestCase):
+    """_missing_test_findings — a completed task's card test names must exist in the repo's test files."""
+
+    def _seed_card(self, tmp: str) -> Path:
+        schematic_dir = _make_schematic_dir(tmp)
+        (schematic_dir / "components" / "foundation_service.md").write_text(_CARD_WITH_TEST_TABLES)
+        return schematic_dir
+
+    def _write_repo_file(self, tmp: str, relative_path: str, body: str) -> None:
+        file_path = Path(tmp) / relative_path
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(body)
+
+    def test_flags_a_test_name_missing_from_the_repo_for_a_complete_task(self) -> None:
+        # Given a complete task whose card names two tests and a repo that declares neither
+        with TemporaryDirectory() as tmp:
+            schematic_dir = self._seed_card(tmp)
+
+            # When validating
+            findings = _cli._validate_schematic(schematic_dir)
+
+            # Then each missing test is named with its card and task
+            assert (
+                "components/foundation_service.md — test `test_foundation_builds_the_base` "
+                "is not in the repo (task a.1 is complete)"
+            ) in findings
+            assert any("`shows the empty state`" in finding and "task a.1" in finding for finding in findings)
+
+    def test_passes_when_python_and_kotlin_tests_exist(self) -> None:
+        # Given a Python def and a backticked Kotlin fun declaring the two names
+        with TemporaryDirectory() as tmp:
+            schematic_dir = self._seed_card(tmp)
+            self._write_repo_file(tmp, "tests/test_foundation.py", "def test_foundation_builds_the_base():\n    pass\n")
+            self._write_repo_file(tmp, "app/FoundationTest.kt", "fun `shows the empty state`() {}\n")
+
+            # When validating
+            findings = _cli._validate_schematic(schematic_dir)
+
+            # Then no missing-test finding is raised
+            assert [finding for finding in findings if "is not in the repo" in finding] == []
+
+    def test_passes_when_a_typescript_it_block_declares_the_name(self) -> None:
+        # Given Jest it() and test() blocks declaring the names
+        with TemporaryDirectory() as tmp:
+            schematic_dir = self._seed_card(tmp)
+            self._write_repo_file(
+                tmp,
+                "web/foundation.test.ts",
+                "it('test_foundation_builds_the_base', () => {});\ntest(\"shows the empty state\", () => {});\n",
+            )
+
+            # When validating
+            findings = _cli._validate_schematic(schematic_dir)
+
+            # Then no missing-test finding is raised
+            assert [finding for finding in findings if "is not in the repo" in finding] == []
+
+    def test_skips_a_task_not_yet_complete(self) -> None:
+        # Given the same card owned by a pending task
+        with TemporaryDirectory() as tmp:
+            schematic_dir = self._seed_card(tmp)
+            (schematic_dir / "components" / "reel_enrichment_service.md").write_text(
+                _CARD_WITH_TEST_TABLES.replace("test_foundation_builds_the_base", "test_not_written_yet")
+            )
+
+            # When validating
+            findings = _cli._validate_schematic(schematic_dir)
+
+            # Then only the complete task's tests are checked
+            assert not any("test_not_written_yet" in finding for finding in findings)
+
+
+_PYTHON_UNITS_SOURCE = textwrap.dedent('''\
+    def _private_util():
+        a = 1
+        b = 2
+        c = 3
+        d = 4
+        e = 5
+        return a + b + c + d + e
+
+
+    class Wide:
+        """Docstring lines never count.
+
+        Even several of them.
+        """
+
+        def short(self) -> int:
+            return 1
+
+        def long(self) -> int:
+            """One-line docstring."""
+            first = 1
+
+            second = 2
+            third = 3
+            fourth = 4
+            return first + second + third + fourth
+''')
+
+
+class TestClassAndMethodLimits(unittest.TestCase):
+    """Opt-in class/method mode: maxClassLines / maxMethodLines; module-level private utils never count."""
+
+    def _units(self, max_class_lines: int | None, max_method_lines: int | None) -> list[Any]:
+        return _cli._python_oversized_units(
+            path="src/wide.py",
+            python_source=_PYTHON_UNITS_SOURCE,
+            unit_limits=_cli.UnitLimits(max_class_lines=max_class_lines, max_method_lines=max_method_lines),
+        )
+
+    def test_flags_a_method_over_the_method_limit_without_docstring_or_blank_lines(self) -> None:
+        # Given a method of 6 counted lines (docstring and blank excluded)
+        # When measuring with a method limit of 5
+        oversized_units = self._units(max_class_lines=None, max_method_lines=5)
+
+        # Then only that method is flagged, with its count
+        assert oversized_units == [_cli.OversizedUnit("src/wide.py", "Wide.long", "method", 6, 5)]
+
+    def test_flags_the_class_over_the_class_limit_and_never_counts_the_private_util(self) -> None:
+        # Given a class of 9 counted lines beside a 7-line private util
+        # When measuring with a class limit of 8
+        oversized_units = self._units(max_class_lines=8, max_method_lines=None)
+
+        # Then the class is flagged at its own count, the util is not in it
+        assert oversized_units == [_cli.OversizedUnit("src/wide.py", "Wide", "class", 9, 8)]
+
+    def test_keeps_units_at_their_limits_out(self) -> None:
+        # Given limits exactly at the class and method counts
+        # When measuring
+        oversized_units = self._units(max_class_lines=9, max_method_lines=6)
+
+        # Then nothing is flagged — the limits are strict
+        assert oversized_units == []
+
+    def test_unit_mode_is_off_when_neither_key_is_set(self) -> None:
+        # Given a manifest with no class or method keys
+        with TemporaryDirectory() as tmp:
+            project_root = _gen_project_root_with_manifest(tmp, manifest={"schematic": {}})
+
+            # When resolving / Then per-file mode applies
+            assert _cli._resolve_unit_limits(project_root=project_root) is None
+
+    def test_unit_mode_reads_the_configured_keys(self) -> None:
+        # Given a manifest setting both keys
+        with TemporaryDirectory() as tmp:
+            project_root = _gen_project_root_with_manifest(
+                tmp, manifest={"schematic": {"maxClassLines": 200, "maxMethodLines": 35}},
+            )
+
+            # When resolving / Then both limits are read
+            assert _cli._resolve_unit_limits(project_root=project_root) == _cli.UnitLimits(200, 35)
+
+    def test_size_check_runs_per_file_by_default_and_per_class_when_configured(self) -> None:
+        # Given a 9-line class file in a project, first without and then with class keys
+        with TemporaryDirectory() as tmp:
+            project_root = Path(tmp)
+            (project_root / "src").mkdir()
+            (project_root / "src" / "wide.py").write_text(_PYTHON_UNITS_SOURCE)
+
+            # When checking with no config / Then the per-file ceiling (220) flags nothing
+            per_file_output = _captured_stdout(
+                _cli._print_size_findings, diff_files=["src/wide.py"], project_root=project_root,
+            )
+            assert per_file_output == ""
+
+            # When checking with maxClassLines=5 / Then the class mode names the class
+            manifest_root = _gen_project_root_with_manifest(tmp, manifest={"schematic": {"maxClassLines": 5}})
+            class_output = _captured_stdout(
+                _cli._print_size_findings, diff_files=["src/wide.py"], project_root=manifest_root,
+            )
+            assert "class Wide — 9 lines (limit 5)" in class_output
+
+
+class TestReviewableFiles(unittest.TestCase):
+    """_reviewable_files — lockfiles, generated files, snapshots and git-ignored paths are dropped."""
+
+    def test_drops_lockfiles_generated_files_and_snapshots(self) -> None:
+        # Given a diff mixing source with noise
+        with TemporaryDirectory() as tmp:
+            diff_files = [
+                "src/a.py", "web/package-lock.json", "openapi.json", "web/api.generated.ts",
+                "web/__snapshots__/a.snap", "tests/b.snap", "src/openapi_client.py",
+            ]
+
+            # When filtering
+            kept, dropped = _cli._reviewable_files(diff_files, Path(tmp))
+
+            # Then only source remains
+            assert kept == ["src/a.py", "src/openapi_client.py"]
+            assert sorted(dropped) == sorted(set(diff_files) - set(kept))
+
+    def test_drops_git_ignored_and_info_exclude_paths(self) -> None:
+        # Given a git repo ignoring build/ via .gitignore and scratch.txt via .git/info/exclude
+        with TemporaryDirectory() as tmp:
+            project_root = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=project_root, check=True)
+            (project_root / ".gitignore").write_text("build/\n")
+            (project_root / ".git" / "info" / "exclude").write_text("scratch.txt\n")
+
+            # When filtering
+            kept, dropped = _cli._reviewable_files(
+                ["src/a.py", "build/out.js", "scratch.txt"], project_root,
+            )
+
+            # Then the ignored paths are dropped
+            assert kept == ["src/a.py"]
+            assert sorted(dropped) == ["build/out.js", "scratch.txt"]
+
+    def test_the_manifest_can_override_the_noise_list(self) -> None:
+        # Given a manifest listing only docs/*.md as noise
+        with TemporaryDirectory() as tmp:
+            project_root = _gen_project_root_with_manifest(
+                tmp, manifest={"schematic": {"reviewNoiseGlobs": ["docs/*.md"]}},
+            )
+
+            # When filtering
+            kept, dropped = _cli._reviewable_files(["docs/x.md", "package-lock.json"], project_root)
+
+            # Then the override replaces the packaged list
+            assert (kept, dropped) == (["package-lock.json"], ["docs/x.md"])
+
+
+class TestGroupFilesIntoBatches(unittest.TestCase):
+
+    def test_keeps_one_batch_under_the_budget(self) -> None:
+        # Given files totalling under the budget / When grouping / Then one batch
+        batches = _cli._group_files_into_batches({"a/x.py": 10, "b/y.py": 10}, byte_budget=100)
+        assert batches == [["a/x.py", "b/y.py"]]
+
+    def test_splits_over_the_budget_grouped_by_top_directory(self) -> None:
+        # Given three top directories of 60 bytes each and a budget of 130
+        batches = _cli._group_files_into_batches(
+            {"a/1.py": 30, "a/2.py": 30, "b/1.py": 60, "c/1.py": 60}, byte_budget=130,
+        )
+
+        # Then directories stay whole: a+b fit, c spills to its own batch
+        assert batches == [["a/1.py", "a/2.py", "b/1.py"], ["c/1.py"]]
+
+    def test_splits_a_single_directory_larger_than_the_budget_by_file(self) -> None:
+        # Given one directory of three 50-byte files and a budget of 100
+        batches = _cli._group_files_into_batches({"a/1.py": 50, "a/2.py": 50, "a/3.py": 50}, byte_budget=100)
+
+        # Then it is split across batches in path order
+        assert batches == [["a/1.py", "a/2.py"], ["a/3.py"]]
+
+
+class TestBatchedReviewGates(unittest.TestCase):
+    """consistency / e2e over the byte budget: one prompt per batch, per-batch verdicts, clean only when all are."""
+
+    def _seed_run(self, schematic_dir: Path, consistency_clean: bool) -> None:
+        state = _cli.load_state(schematic_dir)
+        state["run"] = {"mode": "auto", "goal": "g", "base_ref": "BASE", "started_at": "t"}
+        for tag in ("a.1", "b.1", "b.2"):
+            _cli.update_task_status_in_file(schematic_dir / "tasks.md", tag, "complete")
+            state["tasks"].setdefault(tag, {})["review_request"] = {"tag": tag, "status": "clean"}
+        if consistency_clean:
+            state["consistency"] = {"status": "clean", "verdict": "clean", "summary": "ok"}
+        _cli.save_state(schematic_dir, state)
+
+    def _run_gate(self, gate: Any, schematic_dir: Path, diff_files: list[str], budget: int, file_bytes: int) -> str:
+        captured = io.StringIO()
+        with patch.object(_cli, "resolve_schematic_dir", return_value=schematic_dir), \
+             patch.object(_cli, "find_project_root", return_value=schematic_dir), \
+             patch.object(_cli, "_cumulative_diff_files", return_value=diff_files), \
+             patch.object(_cli, "_resolve_review_prompt_byte_budget", return_value=budget), \
+             patch.object(_cli, "_run_git_raw", return_value="x" * file_bytes), \
+             contextlib.redirect_stdout(captured):
+            gate(_make_args(schematic=schematic_dir.name))
+        return captured.getvalue()
+
+    def _record(self, recorder: Any, schematic_dir: Path, verdict: str, batch: int | None) -> str:
+        captured = io.StringIO()
+        with patch.object(_cli, "resolve_schematic_dir", return_value=schematic_dir), \
+             contextlib.redirect_stdout(captured):
+            recorder(_make_args(verdict=verdict, summary=f"{verdict} s", schematic=schematic_dir.name, batch=batch))
+        return captured.getvalue()
+
+    def test_consistency_over_the_budget_writes_one_prompt_per_batch(self) -> None:
+        # Given three 60-byte files in three top directories and a 100-byte budget
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            self._seed_run(schematic_dir, consistency_clean=False)
+
+            # When opening the consistency gate
+            output = self._run_gate(
+                _cli._review_consistency, schematic_dir, ["a/1.py", "b/1.py", "c/1.py"], budget=100, file_bytes=60,
+            )
+
+            # Then three prompt files exist, the dispatch is one reviewer per batch, and the gate holds 3 batches
+            prompt_dir = schematic_dir / "review_prompts"
+            assert sorted(path.name for path in prompt_dir.iterdir()) == [
+                "consistency_batch_1.md", "consistency_batch_2.md", "consistency_batch_3.md",
+            ]
+            assert "- b/1.py" in (prompt_dir / "consistency_batch_2.md").read_text()
+            assert "PER batch" in output and "--batch N" in output
+            assert _cli.load_state(schematic_dir)["consistency"]["batch_count"] == 3
+
+    def test_consistency_under_the_budget_is_a_single_unchanged_batch(self) -> None:
+        # Given one small file
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            self._seed_run(schematic_dir, consistency_clean=False)
+
+            # When opening the gate
+            output = self._run_gate(_cli._review_consistency, schematic_dir, ["src/a.py"], budget=1000, file_bytes=10)
+
+            # Then the prompt prints inline, no prompt directory, and a plain result needs no --batch
+            assert "ONE" in output and "single view" in output
+            assert not (schematic_dir / "review_prompts").exists()
+            self._record(_cli._review_consistency_result, schematic_dir, "clean", batch=None)
+            assert _cli.load_state(schematic_dir)["consistency"]["verdict"] == "clean"
+
+    def test_the_gate_is_clean_only_when_every_batch_is_recorded_clean(self) -> None:
+        # Given a consistency gate split into three batches
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            self._seed_run(schematic_dir, consistency_clean=False)
+            self._run_gate(
+                _cli._review_consistency, schematic_dir, ["a/1.py", "b/1.py", "c/1.py"], budget=100, file_bytes=60,
+            )
+
+            # When two batches are recorded clean
+            self._record(_cli._review_consistency_result, schematic_dir, "clean", batch=1)
+            output = self._record(_cli._review_consistency_result, schematic_dir, "clean", batch=3)
+
+            # Then the gate is still pending and names the missing batch
+            consistency = _cli.load_state(schematic_dir)["consistency"]
+            assert consistency["verdict"] is None and consistency["status"] == "pending"
+            assert "batches still to record: 2" in output
+
+            # When the last batch is recorded clean / Then the gate is clean
+            self._record(_cli._review_consistency_result, schematic_dir, "clean", batch=2)
+            assert _cli.load_state(schematic_dir)["consistency"]["verdict"] == "clean"
+
+    def test_one_batch_with_findings_makes_the_gate_findings(self) -> None:
+        # Given a split gate / When one batch records findings
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            self._seed_run(schematic_dir, consistency_clean=False)
+            self._run_gate(
+                _cli._review_consistency, schematic_dir, ["a/1.py", "b/1.py", "c/1.py"], budget=100, file_bytes=60,
+            )
+            self._record(_cli._review_consistency_result, schematic_dir, "findings", batch=2)
+
+            # Then the gate reads findings
+            assert _cli.load_state(schematic_dir)["consistency"]["verdict"] == "findings"
+
+    def test_a_split_gate_refuses_a_result_without_a_batch(self) -> None:
+        # Given a split gate / When recording with no --batch / Then it exits
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            self._seed_run(schematic_dir, consistency_clean=False)
+            self._run_gate(
+                _cli._review_consistency, schematic_dir, ["a/1.py", "b/1.py", "c/1.py"], budget=100, file_bytes=60,
+            )
+            with self.assertRaises(SystemExit):
+                self._record(_cli._review_consistency_result, schematic_dir, "clean", batch=None)
+
+    def test_e2e_repeats_the_entry_points_whole_in_every_batch(self) -> None:
+        # Given a router file and three other 40-byte files over a 150-byte budget
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            self._seed_run(schematic_dir, consistency_clean=True)
+
+            # When opening the e2e gate
+            output = self._run_gate(
+                _cli._review_e2e, schematic_dir,
+                ["api/FooRouter.py", "a/1.py", "b/1.py", "c/1.py"], budget=150, file_bytes=40,
+            )
+
+            # Then every batch prompt carries the router, and no warning is printed
+            prompt_dir = schematic_dir / "review_prompts"
+            batch_prompts = sorted(prompt_dir.glob("e2e_batch_*.md"))
+            assert len(batch_prompts) == 2
+            assert all("- api/FooRouter.py" in path.read_text() for path in batch_prompts)
+            assert "ENTRY POINTS DO NOT FIT" not in output
+            assert _cli.load_state(schematic_dir)["e2e"]["batch_count"] == 2
+
+    def test_e2e_says_so_when_the_entry_points_cannot_fit(self) -> None:
+        # Given two router files of 40 bytes against a 100-byte budget (80 > half of it)
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            self._seed_run(schematic_dir, consistency_clean=True)
+
+            # When opening the e2e gate
+            output = self._run_gate(
+                _cli._review_e2e, schematic_dir,
+                ["api/FooRouter.py", "api/BarRouter.py", "a/1.py"], budget=100, file_bytes=40,
+            )
+
+            # Then the output states they are not repeated rather than dropping them silently
+            assert "ENTRY POINTS DO NOT FIT" in output
+
+    def test_e2e_per_batch_results_gate_on_every_batch(self) -> None:
+        # Given a split e2e gate
+        with TemporaryDirectory() as tmp:
+            schematic_dir = _make_schematic_dir(tmp)
+            self._seed_run(schematic_dir, consistency_clean=True)
+            self._run_gate(
+                _cli._review_e2e, schematic_dir, ["a/1.py", "b/1.py", "c/1.py"], budget=100, file_bytes=60,
+            )
+
+            # When recording batches 1 and 2 clean
+            self._record(_cli._review_e2e_result, schematic_dir, "clean", batch=1)
+            self._record(_cli._review_e2e_result, schematic_dir, "clean", batch=2)
+
+            # Then it is pending until batch 3 is recorded
+            assert _cli.load_state(schematic_dir)["e2e"]["verdict"] is None
+            self._record(_cli._review_e2e_result, schematic_dir, "clean", batch=3)
+            assert _cli.load_state(schematic_dir)["e2e"]["verdict"] == "clean"
 
 
 class TestStatusOutput(unittest.TestCase):

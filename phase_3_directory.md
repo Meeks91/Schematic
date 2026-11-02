@@ -10,6 +10,8 @@ After topology is signed off, define the file placement for every new class and 
 
 > **Gate enforcement:** `schematic phase complete` will reject if `objective.md` does not contain `## Directory Structure`. Write to disk before locking.
 
+**Show the tree in chat (BINDING):** the gate message pastes the COMPLETE directory tree — every NEW / MODIFIED / DELETED file with its driving ACs, exactly as written to `objective.md` — in a fenced block, above `Confirm: y/comment`. Pointing at the file instead is a skipped gate: a sign-off on a tree the user was not shown is void.
+
 For each new file:
 - Full path from project root
 - What it contains (class name or model names)

@@ -256,6 +256,8 @@ AC tags MUST carry their one-line title here — no bare refs. Abbreviate with `
 
 `Locked:` is printed verbatim by `schematic status` (the `locked:` line) — paste it, don't hand-maintain it. Phase files never restate this template; they inherit it.
 
+**Show before sign-off (mandatory, binding):** every gate that asks the user to sign off an artifact shows that artifact IN the gate message — the tree, table, card, or diagram itself — never only a path to it. The one exception is an artifact gated in the live editor (the roster), where the stamped envelope + editor link is the surface. A sign-off on something the user was not shown is void.
+
 **Absorption rule (mandatory, binding):**
 
 Decisions locked in an earlier phase — roster, topology cards, Decision Log entries, diagram/editor Q&A answers — are ABSORBED into later-phase artifacts as fixed facts, cited by source (`Decision Log 2026-07-15`, `card 3.13`). Never re-open them as gate questions or option tables. A gate question is legitimate ONLY for a decision the locked record does not answer — before asking, check the roster, Decision Log, and topology cards; if the answer is there, apply it silently and cite it.
